@@ -125,7 +125,7 @@ for _, row in watchlist.iterrows():
 
         if isinstance(ticker.columns, pd.MultiIndex):
 
-        ticker.columns = ticker.columns.get_level_values(0)
+            ticker.columns = ticker.columns.get_level_values(0)
 
         # ============================================================================
         # APPLY TECHNICAL INDICATORS
@@ -300,7 +300,9 @@ for _, row in watchlist.iterrows():
         if score < 70:
 
             print(
+
                 f"❌ Weak setup skipped: "
+
                 f"{symbol} | Score={score}"
             )
 
