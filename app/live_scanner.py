@@ -5,7 +5,7 @@
 import pandas as pd
 import yfinance as yf
 
-from datetime import datetime
+from datetime import datetime, time
 
 from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
@@ -22,12 +22,38 @@ from config import WATCHLIST_PATH
 init_db()
 
 # =====================================================================================
+# MARKET HOURS FILTER
+# =====================================================================================
+
+current_time = datetime.now().time()
+
+if not (time(9, 15) <= current_time <= time(15, 30)):
+
+    print("⏰ Market Closed")
+
+    exit()
+
+# =====================================================================================
 # LOAD WATCHLIST
 # =====================================================================================
 
-watchlist = pd.read_parquet(WATCHLIST_PATH)
+try:
+
+    watchlist = pd.read_parquet(WATCHLIST_PATH)
+
+except Exception as e:
+
+    print(f"❌ WATCHLIST LOAD ERROR -> {e}")
+
+    exit()
 
 print(f"\n🚀 SCANNING {len(watchlist)} STOCKS...\n")
+
+# =====================================================================================
+# ALERT COUNTER
+# =====================================================================================
+
+total_alerts = 0
 
 # =====================================================================================
 # MAIN LOOP
@@ -60,7 +86,7 @@ for _, row in watchlist.iterrows():
             interval="1d",
 
             progress=False,
-            
+
             auto_adjust=True
         )
 
@@ -99,6 +125,14 @@ for _, row in watchlist.iterrows():
         latest = ticker.iloc[-1]
 
         # ============================================================================
+        # RSI SAFETY
+        # ============================================================================
+
+        if pd.isna(latest["RSI"]):
+
+            continue
+
+        # ============================================================================
         # VOLUME ANALYSIS
         # ============================================================================
 
@@ -113,6 +147,27 @@ for _, row in watchlist.iterrows():
         volume_ratio = latest_volume / avg_volume
 
         # ============================================================================
+        # STRONG BREAKOUT CANDLE FILTER
+        # ============================================================================
+
+        candle_range = latest["High"] - latest["Low"]
+
+        candle_body = abs(
+            latest["Close"] - latest["Open"]
+        )
+
+        if candle_range <= 0:
+
+            continue
+
+        body_ratio = candle_body / candle_range
+
+        # WEAK CANDLE REJECTION
+        if body_ratio < 0.5:
+
+            continue
+
+        # ============================================================================
         # FAKE BREAKOUT FILTERS
         # ============================================================================
 
@@ -123,6 +178,11 @@ for _, row in watchlist.iterrows():
 
         # HEALTHY RSI
         if latest["RSI"] < 55:
+
+            continue
+
+        # AVOID OVEREXTENDED MOVES
+        if latest["RSI"] > 85:
 
             continue
 
@@ -178,7 +238,10 @@ for _, row in watchlist.iterrows():
 
         if score < 70:
 
-            print(f"❌ Weak setup skipped: {symbol} | Score={score}")
+            print(
+                f"❌ Weak setup skipped: "
+                f"{symbol} | Score={score}"
+            )
 
             continue
 
@@ -239,6 +302,8 @@ Time:
             )
         )
 
+        total_alerts += 1
+
         print(f"✅ ALERT SENT: {symbol}")
 
     # ============================================================================
@@ -250,5 +315,9 @@ Time:
         print(f"❌ ERROR: {symbol} -> {e}")
 
 # =====================================================================================
+# FINAL SUMMARY
+# =====================================================================================
+
+print(f"\n✅ TOTAL ALERTS SENT: {total_alerts}")
 
 print("\n✅ SCAN COMPLETED\n")
