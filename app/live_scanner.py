@@ -57,19 +57,13 @@ except Exception as e:
 
     print("🚀 RUNNING DAILY BUILDER...")
 
-    result = os.system(
-        "python app/daily_builder.py"
-    )
+ from daily_builder import main as build_watchlist
 
-    if result != 0:
+build_watchlist()
 
-        print("❌ DAILY BUILDER FAILED")
-
-        exit()
-
-    watchlist = pd.read_parquet(
-        WATCHLIST_PATH
-    )
+watchlist = pd.read_parquet(
+    WATCHLIST_PATH
+)
 
 print(f"\n🚀 SCANNING {len(watchlist)} STOCKS...\n")
 
