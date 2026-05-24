@@ -1,19 +1,6 @@
 # =====================================================================================
 # app/daily_builder.py
 # =====================================================================================
-#
-# ELITE NSE FUNDAMENTAL WATCHLIST BUILDER
-#
-# BUILDS DAILY DYNAMIC ELITE UNIVERSE CONTAINING:
-#
-# 1. HIGH GROWTH STOCKS
-# 2. ELITE COMPOUNDERS
-# 3. MATURE QUALITY GIANTS
-#
-# OUTPUT:
-# data/elite_fundamental_watchlist.parquet
-#
-# =====================================================================================
 
 import os
 import pandas as pd
@@ -24,15 +11,22 @@ from tqdm import tqdm
 from datetime import datetime
 from tradingview_screener import Query, col
 
+from config import WATCHLIST_PATH
+
 # =====================================================================================
-# CONFIG
+# OUTPUT FILES
 # =====================================================================================
 
-OUTPUT_DIR = "data"
+OUTPUT_PARQUET = WATCHLIST_PATH
 
-OUTPUT_CSV = f"{OUTPUT_DIR}/elite_fundamental_watchlist.csv"
+OUTPUT_CSV = WATCHLIST_PATH.replace(
+    ".parquet",
+    ".csv"
+)
 
-OUTPUT_PARQUET = f"{OUTPUT_DIR}/elite_fundamental_watchlist.parquet"
+# =====================================================================================
+# THREADS
+# =====================================================================================
 
 MAX_WORKERS = 5
 
@@ -42,9 +36,9 @@ MAX_WORKERS = 5
 
 MIN_PRICE = 50
 
-MIN_MARKET_CAP = 5_000_000_000      # 500 Cr
+MIN_MARKET_CAP = 5_000_000_000
 
-MIN_TRADED_VALUE = 100_000_000      # 10 Cr/day
+MIN_TRADED_VALUE = 100_000_000
 
 MIN_ROE = 10
 
@@ -66,7 +60,7 @@ COMPOUNDER_YOY = 0.03
 
 def fetch_base_universe():
 
-    print("\n📡 Fetching NSE stocks from TradingView...\n")
+    print("\n📡 Fetching NSE stocks...\n")
 
     fields = [
 
@@ -94,22 +88,16 @@ def fetch_base_universe():
 
         .where(
 
-            # NSE ONLY
             col("exchange") == "NSE",
 
-            # REMOVE PENNY STOCKS
             col("close") >= MIN_PRICE,
 
-            # REMOVE MICROCAP JUNK
             col("market_cap_basic") >= MIN_MARKET_CAP,
 
-            # PROFITABLE COMPANIES ONLY
             col("earnings_per_share_basic_ttm") > 0,
 
-            # BASIC QUALITY
             col("return_on_equity_fy") >= MIN_ROE,
 
-            # DECENT OPERATING BUSINESS
             col("operating_margin") >= MIN_OPM
         )
 
@@ -118,7 +106,7 @@ def fetch_base_universe():
 
     total, df = q.get_scanner_data()
 
-    print(f"✅ Base universe fetched: {total} stocks")
+    print(f"✅ Base universe fetched: {total}")
 
     return df
 
@@ -136,16 +124,9 @@ def analyze_stock(row):
 
         q = ticker.quarterly_financials
 
-        # ============================================================================
-        # NEED MINIMUM 5 QUARTERS
-        # ============================================================================
-
         if q is None or q.empty or q.shape[1] < 5:
-            return None
 
-        # ============================================================================
-        # FUZZY MATCHING
-        # ============================================================================
+            return None
 
         revenue_rows = q[
             q.index.str.contains(
@@ -164,15 +145,12 @@ def analyze_stock(row):
         ]
 
         if revenue_rows.empty or profit_rows.empty:
+
             return None
 
         revenue = revenue_rows.iloc[0]
 
         profit = profit_rows.iloc[0]
-
-        # ============================================================================
-        # EXTRACT VALUES
-        # ============================================================================
 
         current_rev = float(revenue.iloc[0])
 
@@ -186,10 +164,6 @@ def analyze_stock(row):
 
         last_year_profit = float(profit.iloc[4])
 
-        # ============================================================================
-        # SAFETY CHECKS
-        # ============================================================================
-
         if (
 
             current_rev <= 0 or
@@ -200,30 +174,43 @@ def analyze_stock(row):
             prev_q_profit <= 0 or
             last_year_profit <= 0
         ):
+
             return None
 
         # ============================================================================
-        # GROWTH CALCULATIONS
+        # GROWTH
         # ============================================================================
 
         qoq_sales = (
-            (current_rev - prev_q_rev) / prev_q_rev
+
+            (current_rev - prev_q_rev)
+
+            / prev_q_rev
         )
 
         yoy_sales = (
-            (current_rev - last_year_rev) / last_year_rev
+
+            (current_rev - last_year_rev)
+
+            / last_year_rev
         )
 
         qoq_profit = (
-            (current_profit - prev_q_profit) / prev_q_profit
+
+            (current_profit - prev_q_profit)
+
+            / prev_q_profit
         )
 
         yoy_profit = (
-            (current_profit - last_year_profit) / last_year_profit
+
+            (current_profit - last_year_profit)
+
+            / last_year_profit
         )
 
         # ============================================================================
-        # MARGIN CHECK
+        # MARGIN
         # ============================================================================
 
         current_margin = current_profit / current_rev
@@ -231,59 +218,87 @@ def analyze_stock(row):
         previous_margin = prev_q_profit / prev_q_rev
 
         margin_improving = (
+
             current_margin >= previous_margin
         )
 
         # ============================================================================
-        # LIQUIDITY CHECK
+        # LIQUIDITY
         # ============================================================================
 
         avg_volume = float(
-            row.get("average_volume_30d_calc", 0)
+
+            row.get(
+                "average_volume_30d_calc",
+                0
+            )
         )
 
         close_price = float(
-            row.get("close", 0)
+
+            row.get(
+                "close",
+                0
+            )
         )
 
         traded_value = avg_volume * close_price
 
         if traded_value < MIN_TRADED_VALUE:
+
             return None
 
         # ============================================================================
-        # COMMON QUALITY METRICS
+        # QUALITY
         # ============================================================================
 
         roe = float(
-            row.get("return_on_equity_fy", 0)
+
+            row.get(
+                "return_on_equity_fy",
+                0
+            )
         )
 
         opm = float(
-            row.get("operating_margin", 0)
+
+            row.get(
+                "operating_margin",
+                0
+            )
         )
 
         debt_equity = float(
-            row.get("debt_to_equity_fq", 0)
+
+            row.get(
+                "debt_to_equity_fq",
+                0
+            )
         )
 
         # ============================================================================
-        # CATEGORY 1 : HIGH GROWTH
+        # HIGH GROWTH
         # ============================================================================
 
         high_growth = (
 
             (
+
                 qoq_sales > HIGH_GROWTH_QOQ
+
                 or
+
                 yoy_sales > HIGH_GROWTH_YOY
             )
 
             and
 
             (
+
                 qoq_profit > HIGH_GROWTH_QOQ
+
                 or
+
                 yoy_profit > HIGH_GROWTH_YOY
             )
 
@@ -293,7 +308,7 @@ def analyze_stock(row):
         )
 
         # ============================================================================
-        # CATEGORY 2 : ELITE COMPOUNDER
+        # ELITE COMPOUNDER
         # ============================================================================
 
         elite_compounder = (
@@ -322,7 +337,7 @@ def analyze_stock(row):
         )
 
         # ============================================================================
-        # CATEGORY 3 : MATURE QUALITY
+        # MATURE QUALITY
         # ============================================================================
 
         mature_quality = (
@@ -344,27 +359,21 @@ def analyze_stock(row):
             and
 
             float(row["market_cap_basic"]) >= 50_000_000_000
-
-            and
-
-            current_profit > 0
         )
 
-        # ============================================================================
-        # FINAL FILTER
-        # ============================================================================
-
         if not (
+
             high_growth
             or
             elite_compounder
             or
             mature_quality
         ):
+
             return None
 
         # ============================================================================
-        # CATEGORY LABELS
+        # CATEGORY
         # ============================================================================
 
         categories = []
@@ -381,12 +390,11 @@ def analyze_stock(row):
         category = " + ".join(categories)
 
         # ============================================================================
-        # SCORING SYSTEM
+        # SCORE
         # ============================================================================
 
         score = 0
 
-        # Growth Scores
         if yoy_sales > 0.20:
             score += 20
 
@@ -399,7 +407,6 @@ def analyze_stock(row):
         if qoq_profit > 0.10:
             score += 15
 
-        # Quality Scores
         if roe > 20:
             score += 15
 
@@ -409,11 +416,9 @@ def analyze_stock(row):
         if margin_improving:
             score += 5
 
-        # Low Debt Bonus
         if debt_equity <= 0.5:
             score += 10
 
-        # Mature Quality Bonus
         if mature_quality:
             score += 10
 
@@ -427,17 +432,15 @@ def analyze_stock(row):
 
             "Category": category,
 
-            "Sector": row.get("sector", "Unknown"),
+            "Sector": row.get(
+                "sector",
+                "Unknown"
+            ),
 
             "CMP": round(close_price, 2),
 
             "Market Cap Cr": round(
                 float(row["market_cap_basic"]) / 10_000_000,
-                2
-            ),
-
-            "Avg Traded Value Cr": round(
-                traded_value / 10_000_000,
                 2
             ),
 
@@ -470,8 +473,6 @@ def analyze_stock(row):
                 2
             ),
 
-            "Margin Improving": margin_improving,
-
             "Fundamental Score": score,
 
             "Scan Time": datetime.now().strftime(
@@ -480,6 +481,7 @@ def analyze_stock(row):
         }
 
     except Exception:
+
         return None
 
 # =====================================================================================
@@ -488,59 +490,65 @@ def analyze_stock(row):
 
 def main():
 
-    print("\n🚀 ELITE FUNDAMENTAL WATCHLIST SCAN STARTED\n")
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    # ============================================================================
-    # FETCH BASE UNIVERSE
-    # ============================================================================
+    print("\n🚀 ELITE FUNDAMENTAL SCAN STARTED\n")
 
     base_df = fetch_base_universe()
 
     if base_df.empty:
+
         print("❌ No stocks fetched")
+
         return
 
-    # ============================================================================
-    # FUNDAMENTAL ANALYSIS
-    # ============================================================================
+    rows = [
 
-    rows = [row for _, row in base_df.iterrows()]
+        row
 
-    print("\n📊 Running deep fundamental analysis...\n")
+        for _, row in base_df.iterrows()
+    ]
+
+    print("\n📊 Running deep analysis...\n")
 
     with concurrent.futures.ThreadPoolExecutor(
+
         max_workers=MAX_WORKERS
+
     ) as executor:
 
         results = list(
 
             tqdm(
-                executor.map(analyze_stock, rows),
+
+                executor.map(
+                    analyze_stock,
+                    rows
+                ),
+
                 total=len(rows)
             )
         )
 
-    winners = [r for r in results if r]
+    winners = [
 
-    # ============================================================================
-    # FINAL DATAFRAME
-    # ============================================================================
+        r
+
+        for r in results
+
+        if r
+    ]
 
     final_df = pd.DataFrame(winners)
 
     if final_df.empty:
-        print("❌ No qualifying stocks found")
-        return
 
-    # ============================================================================
-    # SORTING
-    # ============================================================================
+        print("❌ No qualifying stocks")
+
+        return
 
     final_df = final_df.sort_values(
 
         by=[
+
             "Fundamental Score",
             "ROE %",
             "YOY Profit %"
@@ -550,16 +558,20 @@ def main():
     )
 
     # ============================================================================
-    # SAVE FILES
+    # SAVE
     # ============================================================================
 
     final_df.to_csv(
+
         OUTPUT_CSV,
+
         index=False
     )
 
     final_df.to_parquet(
+
         OUTPUT_PARQUET,
+
         index=False
     )
 
@@ -567,37 +579,22 @@ def main():
     # OUTPUT
     # ============================================================================
 
-    print("\n========================================================")
-    print(f"✅ FINAL WATCHLIST: {len(final_df)} STOCKS")
-    print("========================================================\n")
-
-    print("📊 CATEGORY BREAKDOWN\n")
-
-    exploded = (
-        final_df["Category"]
-        .str.split(" + ", regex=False)
-        .explode()
-    )
+    print("\n================================================")
 
     print(
-        exploded.value_counts()
+        f"✅ FINAL WATCHLIST: {len(final_df)}"
     )
 
-    print("\n========================================================\n")
+    print("================================================\n")
 
-    # PRINT ALL ROWS
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', None)
+    print(final_df.head(20).to_string(index=False))
 
-    print(
-        final_df.to_string(index=False)
-    )
+    print(f"\n💾 CSV Saved: {OUTPUT_CSV}")
 
-    print(f"\n💾 CSV Saved      : {OUTPUT_CSV}")
-    print(f"💾 Parquet Saved  : {OUTPUT_PARQUET}")
+    print(f"💾 PARQUET Saved: {OUTPUT_PARQUET}")
 
 # =====================================================================================
 
 if __name__ == "__main__":
+
     main()
