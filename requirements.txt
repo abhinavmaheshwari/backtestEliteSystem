@@ -1,0 +1,6 @@
+pandas
+numpy
+yfinance
+tradingview-screener
+requests
+tqdm
