@@ -1,6 +1,9 @@
 pandas
 numpy
 yfinance
-tradingview-screener
+tradingview_screener
+ta
+pyarrow
 requests
 tqdm
+openpyxl
