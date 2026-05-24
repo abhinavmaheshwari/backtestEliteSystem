@@ -4,8 +4,9 @@
 
 import pandas as pd
 import yfinance as yf
+import time
 
-from datetime import datetime, time
+from datetime import datetime, time as dt_time
 
 from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
@@ -22,23 +23,33 @@ from config import WATCHLIST_PATH
 init_db()
 
 # =====================================================================================
-# MARKET HOURS FILTER
+# WAIT FOR MARKET HOURS
 # =====================================================================================
 
-current_time = datetime.now().time()
+while True:
 
-if not (
+    current_time = datetime.now().time()
 
-    time(9, 15)
+    weekday = datetime.now().weekday()
 
-    <= current_time
+    market_open = (
 
-    <= time(15, 30)
-):
+        dt_time(9, 15)
 
-    print("\n⏰ MARKET CLOSED - LIVE SCANNER EXITED\n")
+        <= current_time
 
-    exit()
+        <= dt_time(15, 30)
+    )
+
+    weekday_open = weekday < 5
+
+    if market_open and weekday_open:
+
+        break
+
+    print("⏰ Market closed. Sleeping for 5 minutes...")
+
+    time.sleep(300)
 
 # =====================================================================================
 # LOAD WATCHLIST
