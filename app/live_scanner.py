@@ -2,6 +2,7 @@
 # app/live_scanner.py
 # =====================================================================================
 
+import os
 import pandas as pd
 import yfinance as yf
 
@@ -27,7 +28,14 @@ init_db()
 
 current_time = datetime.now().time()
 
-if not (time(9, 15) <= current_time <= time(15, 30)):
+if not (
+
+    time(9, 15)
+
+    <= current_time
+
+    <= time(15, 30)
+):
 
     print("⏰ Market Closed")
 
@@ -39,13 +47,29 @@ if not (time(9, 15) <= current_time <= time(15, 30)):
 
 try:
 
-    watchlist = pd.read_parquet(WATCHLIST_PATH)
+    watchlist = pd.read_parquet(
+        WATCHLIST_PATH
+    )
 
 except Exception as e:
 
     print(f"❌ WATCHLIST LOAD ERROR -> {e}")
 
-    exit()
+    print("🚀 RUNNING DAILY BUILDER...")
+
+    result = os.system(
+        "python app/daily_builder.py"
+    )
+
+    if result != 0:
+
+        print("❌ DAILY BUILDER FAILED")
+
+        exit()
+
+    watchlist = pd.read_parquet(
+        WATCHLIST_PATH
+    )
 
 print(f"\n🚀 SCANNING {len(watchlist)} STOCKS...\n")
 
@@ -63,10 +87,6 @@ for _, row in watchlist.iterrows():
 
     try:
 
-        # ============================================================================
-        # STOCK INFO
-        # ============================================================================
-
         symbol = row["Stock"]
 
         category = row["Category"]
@@ -74,7 +94,7 @@ for _, row in watchlist.iterrows():
         print(f"🔍 Checking: {symbol}")
 
         # ============================================================================
-        # DOWNLOAD PRICE DATA
+        # DOWNLOAD DATA
         # ============================================================================
 
         ticker = yf.download(
@@ -92,35 +112,27 @@ for _, row in watchlist.iterrows():
 
         if ticker.empty:
 
-            print(f"❌ No data: {symbol}")
+            print(f"❌ No Data: {symbol}")
 
             continue
-
-        # ============================================================================
-        # RESET INDEX
-        # ============================================================================
 
         ticker.reset_index(inplace=True)
 
         # ============================================================================
-        # APPLY TECHNICAL INDICATORS
+        # TECHNICALS
         # ============================================================================
 
-        ticker = apply_indicators(ticker)
+        ticker = apply_indicators(
+            ticker
+        )
 
-        # ============================================================================
-        # DETECT BREAKOUTS
-        # ============================================================================
-
-        signals = detect_breakouts(ticker)
+        signals = detect_breakouts(
+            ticker
+        )
 
         if len(signals) == 0:
 
             continue
-
-        # ============================================================================
-        # LATEST CANDLE
-        # ============================================================================
 
         latest = ticker.iloc[-1]
 
@@ -133,70 +145,88 @@ for _, row in watchlist.iterrows():
             continue
 
         # ============================================================================
-        # VOLUME ANALYSIS
+        # VOLUME
         # ============================================================================
 
         latest_volume = latest["Volume"]
 
-        avg_volume = ticker["Volume"].tail(10).mean()
+        avg_volume = (
+
+            ticker["Volume"]
+
+            .tail(10)
+
+            .mean()
+        )
 
         if avg_volume <= 0:
 
             continue
 
-        volume_ratio = latest_volume / avg_volume
+        volume_ratio = (
+
+            latest_volume
+
+            / avg_volume
+        )
 
         # ============================================================================
-        # STRONG BREAKOUT CANDLE FILTER
+        # STRONG BREAKOUT CANDLE
         # ============================================================================
 
-        candle_range = latest["High"] - latest["Low"]
+        candle_range = (
+
+            latest["High"]
+
+            - latest["Low"]
+        )
 
         candle_body = abs(
-            latest["Close"] - latest["Open"]
+
+            latest["Close"]
+
+            - latest["Open"]
         )
 
         if candle_range <= 0:
 
             continue
 
-        body_ratio = candle_body / candle_range
+        body_ratio = (
 
-        # WEAK CANDLE REJECTION
+            candle_body
+
+            / candle_range
+        )
+
         if body_ratio < 0.5:
 
             continue
 
         # ============================================================================
-        # FAKE BREAKOUT FILTERS
+        # FILTERS
         # ============================================================================
 
-        # VOLUME EXPANSION REQUIRED
         if volume_ratio < 1.5:
 
             continue
 
-        # HEALTHY RSI
         if latest["RSI"] < 55:
 
             continue
 
-        # AVOID OVEREXTENDED MOVES
         if latest["RSI"] > 85:
 
             continue
 
-        # ABOVE 20 EMA
         if latest["Close"] < latest["EMA20"]:
 
             continue
 
-        # ABOVE 50 DMA
         if latest["Close"] < latest["SMA50"]:
 
             continue
 
-        # BULLISH TREND STRUCTURE
         if latest["SMA50"] < latest["SMA200"]:
 
             continue
@@ -205,20 +235,29 @@ for _, row in watchlist.iterrows():
         # BREAKOUT TYPE
         # ============================================================================
 
-        breakout_type = ", ".join(signals)
+        breakout_type = ", ".join(
+            signals
+        )
 
         # ============================================================================
-        # AVOID DUPLICATE ALERTS
+        # DUPLICATE CHECK
         # ============================================================================
 
-        if alert_exists(symbol, breakout_type):
+        if alert_exists(
 
-            print(f"⚠️ Duplicate skipped: {symbol}")
+            symbol,
+
+            breakout_type
+        ):
+
+            print(
+                f"⚠️ Duplicate skipped: {symbol}"
+            )
 
             continue
 
         # ============================================================================
-        # CALCULATE SCORE
+        # SCORE
         # ============================================================================
 
         score = calculate_score(
@@ -232,21 +271,16 @@ for _, row in watchlist.iterrows():
             volume_ratio=volume_ratio
         )
 
-        # ============================================================================
-        # MINIMUM SCORE FILTER
-        # ============================================================================
-
         if score < 70:
 
             print(
-                f"❌ Weak setup skipped: "
-                f"{symbol} | Score={score}"
+                f"❌ Weak setup: {symbol} | Score={score}"
             )
 
             continue
 
         # ============================================================================
-        # ALERT MESSAGE
+        # MESSAGE
         # ============================================================================
 
         message = f'''
@@ -282,10 +316,12 @@ Time:
 '''
 
         # ============================================================================
-        # SEND TELEGRAM ALERT
+        # TELEGRAM ALERT
         # ============================================================================
 
-        send_telegram_message(message)
+        send_telegram_message(
+            message
+        )
 
         # ============================================================================
         # SAVE ALERT
@@ -306,16 +342,12 @@ Time:
 
         print(f"✅ ALERT SENT: {symbol}")
 
-    # ============================================================================
-    # ERROR HANDLING
-    # ============================================================================
-
     except Exception as e:
 
         print(f"❌ ERROR: {symbol} -> {e}")
 
 # =====================================================================================
-# FINAL SUMMARY
+# SUMMARY
 # =====================================================================================
 
 print(f"\n✅ TOTAL ALERTS SENT: {total_alerts}")
