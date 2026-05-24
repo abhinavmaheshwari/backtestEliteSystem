@@ -120,6 +120,14 @@ for _, row in watchlist.iterrows():
         ticker.reset_index(inplace=True)
 
         # ============================================================================
+        # FIX YFINANCE MULTI-INDEX COLUMNS
+        # ============================================================================
+
+        if isinstance(ticker.columns, pd.MultiIndex):
+
+        ticker.columns = ticker.columns.get_level_values(0)
+
+        # ============================================================================
         # APPLY TECHNICAL INDICATORS
         # ============================================================================
 
