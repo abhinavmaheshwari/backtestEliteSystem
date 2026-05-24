@@ -36,7 +36,7 @@ if not (
     <= time(15, 30)
 ):
 
-    print("⏰ Market Closed")
+    print("\n⏰ MARKET CLOSED - LIVE SCANNER EXITED\n")
 
     exit()
 
@@ -64,7 +64,25 @@ except Exception as e:
         WATCHLIST_PATH
     )
 
-print(f"\n🚀 SCANNING {len(watchlist)} STOCKS...\n")
+# =====================================================================================
+# LIVE SCANNER START BANNER
+# =====================================================================================
+
+print("\n" + "=" * 80)
+
+print("🚀 LIVE BREAKOUT SCANNER STARTED")
+
+print(
+    f"⏰ Scan Time: "
+    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+)
+
+print(
+    f"📊 Total Stocks In Watchlist: "
+    f"{len(watchlist)}"
+)
+
+print("=" * 80 + "\n")
 
 # =====================================================================================
 # ALERT COUNTER
@@ -383,6 +401,15 @@ Time:
 # FINAL SUMMARY
 # =====================================================================================
 
-print(f"\n✅ TOTAL ALERTS SENT: {total_alerts}")
+print("\n" + "=" * 80)
 
-print("\n✅ SCAN COMPLETED\n")
+print(f"✅ TOTAL ALERTS SENT: {total_alerts}")
+
+print(
+    f"🏁 Scan Finished At: "
+    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+)
+
+print("✅ LIVE SCANNER COMPLETED")
+
+print("=" * 80 + "\n")
