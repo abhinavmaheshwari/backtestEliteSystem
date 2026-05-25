@@ -5,6 +5,7 @@
 import pandas as pd
 import yfinance as yf
 import time
+import logging
 
 from datetime import datetime, time as dt_time
 
@@ -17,16 +18,37 @@ from database import init_db, alert_exists, save_alert
 from config import WATCHLIST_PATH
 
 # =====================================================================================
+# LOGGER
+# =====================================================================================
+
+logging.basicConfig(
+
+    level=logging.INFO,
+
+    format="%(asctime)s | %(levelname)s | %(message)s",
+
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+logger = logging.getLogger(__name__)
+
+# =====================================================================================
 # INITIALIZE DATABASE
 # =====================================================================================
 
 init_db()
 
+logger.info("✅ Database Initialized")
+
 # =====================================================================================
-# WAIT FOR MARKET HOURS
+# CONTINUOUS LIVE SCANNER
 # =====================================================================================
 
 while True:
+
+    # ============================================================================
+    # MARKET HOURS CHECK
+    # ============================================================================
 
     current_time = datetime.now().time()
 
@@ -43,384 +65,436 @@ while True:
 
     weekday_open = weekday < 5
 
-    if market_open and weekday_open:
+    if not (market_open and weekday_open):
 
-        break
+        logger.info(
+            "⏰ Market closed. Sleeping for 5 minutes..."
+        )
 
-    print("⏰ Market closed. Sleeping for 5 minutes...")
+        time.sleep(300)
 
-    time.sleep(300)
+        continue
 
-# =====================================================================================
-# LOAD WATCHLIST
-# =====================================================================================
-
-try:
-
-    watchlist = pd.read_parquet(
-        WATCHLIST_PATH
-    )
-
-except Exception as e:
-
-    print(f"❌ WATCHLIST LOAD ERROR -> {e}")
-
-    print("🚀 RUNNING DAILY BUILDER...")
-
-    from daily_builder import main as build_watchlist
-
-    build_watchlist()
-
-    watchlist = pd.read_parquet(
-        WATCHLIST_PATH
-    )
-
-# =====================================================================================
-# LIVE SCANNER START BANNER
-# =====================================================================================
-
-print("\n" + "=" * 80)
-
-print("🚀 LIVE BREAKOUT SCANNER STARTED")
-
-print(
-    f"⏰ Scan Time: "
-    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-)
-
-print(
-    f"📊 Total Stocks In Watchlist: "
-    f"{len(watchlist)}"
-)
-
-print("=" * 80 + "\n")
-
-# =====================================================================================
-# ALERT COUNTER
-# =====================================================================================
-
-total_alerts = 0
-
-# =====================================================================================
-# MAIN LOOP
-# =====================================================================================
-
-for _, row in watchlist.iterrows():
-
-    symbol = "UNKNOWN"
+    # ============================================================================
+    # LOAD WATCHLIST
+    # ============================================================================
 
     try:
 
-        # ============================================================================
-        # STOCK INFO
-        # ============================================================================
-
-        symbol = row["Stock"]
-
-        category = row["Category"]
-
-        print(f"🔍 Checking: {symbol}")
-
-        # ============================================================================
-        # DOWNLOAD PRICE DATA
-        # ============================================================================
-
-        ticker = yf.download(
-
-            f"{symbol}.NS",
-
-            period="1y",
-
-            interval="1d",
-
-            progress=False,
-
-            auto_adjust=True,
-
-            threads=False
+        watchlist = pd.read_parquet(
+            WATCHLIST_PATH
         )
 
-        if ticker.empty:
+    except Exception as e:
 
-            print(f"❌ No data: {symbol}")
+        logger.exception(
+            f"❌ WATCHLIST LOAD ERROR"
+        )
 
-            continue
+        logger.info(
+            "🚀 RUNNING DAILY BUILDER..."
+        )
 
-        # ============================================================================
-        # RESET INDEX
-        # ============================================================================
+        from daily_builder import main as build_watchlist
 
-        ticker.reset_index(inplace=True)
+        build_watchlist()
 
-        ticker = ticker.copy()
+        watchlist = pd.read_parquet(
+            WATCHLIST_PATH
+        )
 
-        # ============================================================================
-        # FIX YFINANCE MULTI-INDEX / DUPLICATE COLUMNS
-        # ============================================================================
+    # ============================================================================
+    # SCAN START
+    # ============================================================================
 
-        if isinstance(ticker.columns, pd.MultiIndex):
+    scan_start = datetime.now()
 
-            ticker.columns = ticker.columns.get_level_values(0)
+    total_alerts = 0
 
-        # remove duplicate columns
-        ticker = ticker.loc[:, ~ticker.columns.duplicated()]
+    logger.info("=" * 80)
 
-        # ============================================================================
-        # FORCE OHLCV TO 1D SERIES
-        # ============================================================================
+    logger.info(
+        f"🚀 NEW SCAN CYCLE STARTED | "
+        f"Stocks={len(watchlist)}"
+    )
 
-        required_cols = [
+    logger.info(
+        f"⏰ Scan Time: "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume"
-        ]
+    logger.info("=" * 80)
 
-        missing_col = False
+    # ============================================================================
+    # MAIN STOCK LOOP
+    # ============================================================================
 
-        for col_name in required_cols:
+    for idx, (_, row) in enumerate(
 
-            if col_name not in ticker.columns:
+        watchlist.iterrows(),
 
-                print(f"❌ Missing column {col_name}: {symbol}")
+        start=1
+    ):
 
-                missing_col = True
+        symbol = "UNKNOWN"
 
-                break
+        try:
 
-            # dataframe -> series
-            if isinstance(ticker[col_name], pd.DataFrame):
+            # ====================================================================
+            # STOCK INFO
+            # ====================================================================
 
-                ticker[col_name] = ticker[col_name].iloc[:, 0]
+            symbol = row["Stock"]
 
-            # ndarray/object -> proper float series
-            ticker[col_name] = pd.Series(
+            category = row["Category"]
 
-                ticker[col_name]
+            logger.info(
+                f"🔍 Checking: {symbol}"
+            )
 
-            ).astype(float)
+            logger.info(
+                f"📊 Progress: "
+                f"{idx}/{len(watchlist)}"
+            )
 
-        if missing_col:
+            # ====================================================================
+            # DOWNLOAD PRICE DATA
+            # ====================================================================
 
-            continue
+            ticker = yf.download(
 
-        # ============================================================================
-        # DROP INVALID ROWS
-        # ============================================================================
+                f"{symbol}.NS",
 
-        ticker = ticker.dropna(
+                period="1y",
 
-            subset=[
+                interval="1d",
+
+                progress=False,
+
+                auto_adjust=True,
+
+                threads=False
+            )
+
+            if ticker.empty:
+
+                logger.warning(
+                    f"❌ No data: {symbol}"
+                )
+
+                continue
+
+            # ====================================================================
+            # RESET INDEX
+            # ====================================================================
+
+            ticker.reset_index(inplace=True)
+
+            ticker = ticker.copy()
+
+            # ====================================================================
+            # FIX YFINANCE MULTI-INDEX / DUPLICATE COLUMNS
+            # ====================================================================
+
+            if isinstance(
+                ticker.columns,
+                pd.MultiIndex
+            ):
+
+                ticker.columns = (
+                    ticker.columns
+                    .get_level_values(0)
+                )
+
+            # remove duplicate columns
+            ticker = ticker.loc[
+                :,
+                ~ticker.columns.duplicated()
+            ]
+
+            # ====================================================================
+            # FORCE OHLCV TO 1D SERIES
+            # ====================================================================
+
+            required_cols = [
+
                 "Open",
                 "High",
                 "Low",
                 "Close",
                 "Volume"
             ]
-        )
 
-        if len(ticker) < 50:
+            missing_col = False
 
-            continue
+            for col_name in required_cols:
 
-        # ============================================================================
-        # APPLY TECHNICAL INDICATORS
-        # ============================================================================
+                if col_name not in ticker.columns:
 
-        ticker = apply_indicators(
-            ticker
-        )
+                    logger.warning(
+                        f"❌ Missing column "
+                        f"{col_name}: {symbol}"
+                    )
 
-        if ticker is None or ticker.empty:
+                    missing_col = True
 
-            continue
+                    break
 
-        # ============================================================================
-        # DETECT BREAKOUTS
-        # ============================================================================
+                # dataframe -> series
+                if isinstance(
 
-        signals = detect_breakouts(
-            ticker
-        )
+                    ticker[col_name],
 
-        if len(signals) == 0:
+                    pd.DataFrame
+                ):
 
-            continue
+                    ticker[col_name] = (
 
-        # ============================================================================
-        # LATEST CANDLE
-        # ============================================================================
+                        ticker[col_name]
 
-        latest = ticker.iloc[-1]
+                        .iloc[:, 0]
+                    )
 
-        # ============================================================================
-        # RSI SAFETY
-        # ============================================================================
+                # ndarray/object -> float series
+                ticker[col_name] = pd.Series(
 
-        if "RSI" not in ticker.columns:
+                    ticker[col_name]
 
-            continue
+                ).astype(float)
 
-        if pd.isna(latest["RSI"]):
+            if missing_col:
 
-            continue
+                continue
 
-        # ============================================================================
-        # VOLUME ANALYSIS
-        # ============================================================================
+            # ====================================================================
+            # DROP INVALID ROWS
+            # ====================================================================
 
-        latest_volume = float(
-            latest["Volume"]
-        )
+            ticker = ticker.dropna(
 
-        avg_volume = float(
+                subset=[
 
-            ticker["Volume"]
-
-            .tail(10)
-
-            .mean()
-        )
-
-        if avg_volume <= 0:
-
-            continue
-
-        volume_ratio = (
-
-            latest_volume
-
-            / avg_volume
-        )
-
-        # ============================================================================
-        # STRONG BREAKOUT CANDLE FILTER
-        # ============================================================================
-
-        candle_range = (
-
-            float(latest["High"])
-
-            - float(latest["Low"])
-        )
-
-        candle_body = abs(
-
-            float(latest["Close"])
-
-            - float(latest["Open"])
-        )
-
-        if candle_range <= 0:
-
-            continue
-
-        body_ratio = (
-
-            candle_body
-
-            / candle_range
-        )
-
-        # WEAK CANDLE REJECTION
-        if body_ratio < 0.5:
-
-            continue
-
-        # ============================================================================
-        # FAKE BREAKOUT FILTERS
-        # ============================================================================
-
-        # VOLUME EXPANSION REQUIRED
-        if volume_ratio < 1.5:
-
-            continue
-
-        # HEALTHY RSI
-        if latest["RSI"] < 55:
-
-            continue
-
-        # AVOID OVEREXTENDED MOVES
-        if latest["RSI"] > 85:
-
-            continue
-
-        # ABOVE 20 EMA
-        if latest["Close"] < latest["EMA20"]:
-
-            continue
-
-        # ABOVE 50 DMA
-        if latest["Close"] < latest["SMA50"]:
-
-            continue
-
-        # BULLISH TREND STRUCTURE
-        if latest["SMA50"] < latest["SMA200"]:
-
-            continue
-
-        # ============================================================================
-        # BREAKOUT TYPE
-        # ============================================================================
-
-        breakout_type = ", ".join(
-            signals
-        )
-
-        # ============================================================================
-        # AVOID DUPLICATE ALERTS
-        # ============================================================================
-
-        if alert_exists(
-
-            symbol,
-
-            breakout_type
-        ):
-
-            print(f"⚠️ Duplicate skipped: {symbol}")
-
-            continue
-
-        # ============================================================================
-        # CALCULATE SCORE
-        # ============================================================================
-
-        score = calculate_score(
-
-            category=category,
-
-            breakout_count=len(signals),
-
-            rsi=float(latest["RSI"]),
-
-            volume_ratio=volume_ratio
-        )
-
-        # ============================================================================
-        # MINIMUM SCORE FILTER
-        # ============================================================================
-
-        if score < 70:
-
-            print(
-
-                f"❌ Weak setup skipped: "
-
-                f"{symbol} | Score={score}"
+                    "Open",
+                    "High",
+                    "Low",
+                    "Close",
+                    "Volume"
+                ]
             )
 
-            continue
+            if len(ticker) < 50:
 
-        # ============================================================================
-        # ALERT MESSAGE
-        # ============================================================================
+                logger.warning(
+                    f"❌ Insufficient candles: "
+                    f"{symbol}"
+                )
 
-        message = f'''
+                continue
+
+            # ====================================================================
+            # APPLY TECHNICAL INDICATORS
+            # ====================================================================
+
+            ticker = apply_indicators(
+                ticker
+            )
+
+            if ticker is None or ticker.empty:
+
+                logger.warning(
+                    f"❌ Indicator failure: "
+                    f"{symbol}"
+                )
+
+                continue
+
+            # ====================================================================
+            # DETECT BREAKOUTS
+            # ====================================================================
+
+            signals = detect_breakouts(
+                ticker
+            )
+
+            if len(signals) == 0:
+
+                continue
+
+            # ====================================================================
+            # LATEST CANDLE
+            # ====================================================================
+
+            latest = ticker.iloc[-1]
+
+            # ====================================================================
+            # RSI SAFETY
+            # ====================================================================
+
+            if "RSI" not in ticker.columns:
+
+                continue
+
+            if pd.isna(latest["RSI"]):
+
+                continue
+
+            # ====================================================================
+            # VOLUME ANALYSIS
+            # ====================================================================
+
+            latest_volume = float(
+                latest["Volume"]
+            )
+
+            avg_volume = float(
+
+                ticker["Volume"]
+
+                .tail(10)
+
+                .mean()
+            )
+
+            if avg_volume <= 0:
+
+                continue
+
+            volume_ratio = (
+
+                latest_volume
+
+                / avg_volume
+            )
+
+            # ====================================================================
+            # STRONG BREAKOUT CANDLE FILTER
+            # ====================================================================
+
+            candle_range = (
+
+                float(latest["High"])
+
+                - float(latest["Low"])
+            )
+
+            candle_body = abs(
+
+                float(latest["Close"])
+
+                - float(latest["Open"])
+            )
+
+            if candle_range <= 0:
+
+                continue
+
+            body_ratio = (
+
+                candle_body
+
+                / candle_range
+            )
+
+            # weak candle rejection
+            if body_ratio < 0.5:
+
+                continue
+
+            # ====================================================================
+            # FAKE BREAKOUT FILTERS
+            # ====================================================================
+
+            # volume expansion required
+            if volume_ratio < 1.5:
+
+                continue
+
+            # healthy RSI
+            if latest["RSI"] < 55:
+
+                continue
+
+            # avoid overextended moves
+            if latest["RSI"] > 85:
+
+                continue
+
+            # above 20 EMA
+            if latest["Close"] < latest["EMA20"]:
+
+                continue
+
+            # above 50 DMA
+            if latest["Close"] < latest["SMA50"]:
+
+                continue
+
+            # bullish trend structure
+            if latest["SMA50"] < latest["SMA200"]:
+
+                continue
+
+            # ====================================================================
+            # BREAKOUT TYPE
+            # ====================================================================
+
+            breakout_type = ", ".join(
+                signals
+            )
+
+            # ====================================================================
+            # AVOID DUPLICATE ALERTS
+            # ====================================================================
+
+            if alert_exists(
+
+                symbol,
+
+                breakout_type
+            ):
+
+                logger.info(
+                    f"⚠️ Duplicate skipped: "
+                    f"{symbol}"
+                )
+
+                continue
+
+            # ====================================================================
+            # CALCULATE SCORE
+            # ====================================================================
+
+            score = calculate_score(
+
+                category=category,
+
+                breakout_count=len(signals),
+
+                rsi=float(latest["RSI"]),
+
+                volume_ratio=volume_ratio
+            )
+
+            # ====================================================================
+            # MINIMUM SCORE FILTER
+            # ====================================================================
+
+            if score < 70:
+
+                logger.info(
+
+                    f"❌ Weak setup skipped: "
+
+                    f"{symbol} | Score={score}"
+                )
+
+                continue
+
+            # ====================================================================
+            # ALERT MESSAGE
+            # ====================================================================
+
+            message = f'''
 🚀 ELITE BREAKOUT ALERT
 
 Stock: {symbol}
@@ -452,54 +526,76 @@ Time:
 {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 '''
 
-        # ============================================================================
-        # SEND TELEGRAM ALERT
-        # ============================================================================
+            # ====================================================================
+            # SEND TELEGRAM ALERT
+            # ====================================================================
 
-        send_telegram_message(
-            message
-        )
-
-        # ============================================================================
-        # SAVE ALERT
-        # ============================================================================
-
-        save_alert(
-
-            symbol,
-
-            breakout_type,
-
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
+            send_telegram_message(
+                message
             )
-        )
 
-        total_alerts += 1
+            # ====================================================================
+            # SAVE ALERT
+            # ====================================================================
 
-        print(f"✅ ALERT SENT: {symbol}")
+            save_alert(
+
+                symbol,
+
+                breakout_type,
+
+                datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            )
+
+            total_alerts += 1
+
+            logger.info(
+                f"✅ ALERT SENT: {symbol}"
+            )
+
+        # ========================================================================
+        # ERROR HANDLING
+        # ========================================================================
+
+        except Exception:
+
+            logger.exception(
+                f"❌ ERROR: {symbol}"
+            )
 
     # ============================================================================
-    # ERROR HANDLING
+    # SCAN END SUMMARY
     # ============================================================================
 
-    except Exception as e:
+    scan_end = datetime.now()
 
-        print(f"❌ ERROR: {symbol} -> {e}")
+    duration = (
 
-# =====================================================================================
-# FINAL SUMMARY
-# =====================================================================================
+        scan_end - scan_start
 
-print("\n" + "=" * 80)
+    ).total_seconds()
 
-print(f"✅ TOTAL ALERTS SENT: {total_alerts}")
+    logger.info("=" * 80)
 
-print(
-    f"🏁 Scan Finished At: "
-    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-)
+    logger.info(
+        f"✅ SCAN COMPLETED | "
+        f"Duration={round(duration, 2)} sec"
+    )
 
-print("✅ LIVE SCANNER COMPLETED")
+    logger.info(
+        f"📨 Alerts Sent={total_alerts}"
+    )
 
-print("=" * 80 + "\n")
+    logger.info(
+        "⏰ Sleeping 5 mins before next cycle..."
+    )
+
+    logger.info("=" * 80)
+
+    # ============================================================================
+    # WAIT BEFORE NEXT SCAN
+    # ============================================================================
+
+    time.sleep(300)
