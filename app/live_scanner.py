@@ -7,6 +7,7 @@ import yfinance as yf
 import time
 import logging
 
+from zoneinfo import ZoneInfo
 from datetime import datetime, time as dt_time
 
 from technical_indicators import apply_indicators
@@ -33,6 +34,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =====================================================================================
+# IST TIMEZONE
+# =====================================================================================
+
+IST = ZoneInfo("Asia/Kolkata")
+
+# =====================================================================================
 # INITIALIZE DATABASE
 # =====================================================================================
 
@@ -47,12 +54,14 @@ logger.info("✅ Database Initialized")
 while True:
 
     # ============================================================================
-    # MARKET HOURS CHECK
+    # MARKET HOURS CHECK (IST)
     # ============================================================================
 
-    current_time = datetime.now().time()
+    ist_now = datetime.now(IST)
 
-    weekday = datetime.now().weekday()
+    current_time = ist_now.time()
+
+    weekday = ist_now.weekday()
 
     market_open = (
 
@@ -68,7 +77,10 @@ while True:
     if not (market_open and weekday_open):
 
         logger.info(
-            "⏰ Market closed. Sleeping for 5 minutes..."
+            f"⏰ Market closed | "
+            f"Current IST Time: "
+            f"{ist_now.strftime('%Y-%m-%d %H:%M:%S')} | "
+            f"Sleeping for 5 minutes..."
         )
 
         time.sleep(300)
@@ -85,10 +97,10 @@ while True:
             WATCHLIST_PATH
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            f"❌ WATCHLIST LOAD ERROR"
+            "❌ WATCHLIST LOAD ERROR"
         )
 
         logger.info(
@@ -107,7 +119,7 @@ while True:
     # SCAN START
     # ============================================================================
 
-    scan_start = datetime.now()
+    scan_start = datetime.now(IST)
 
     total_alerts = 0
 
@@ -119,8 +131,8 @@ while True:
     )
 
     logger.info(
-        f"⏰ Scan Time: "
-        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"⏰ IST Scan Time: "
+        f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
     logger.info("=" * 80)
@@ -523,7 +535,7 @@ Breakout Score:
 {score}/100
 
 Time:
-{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+{datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")}
 '''
 
             # ====================================================================
@@ -544,7 +556,7 @@ Time:
 
                 breakout_type,
 
-                datetime.now().strftime(
+                datetime.now(IST).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
             )
@@ -569,7 +581,7 @@ Time:
     # SCAN END SUMMARY
     # ============================================================================
 
-    scan_end = datetime.now()
+    scan_end = datetime.now(IST)
 
     duration = (
 
