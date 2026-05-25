@@ -116,20 +116,36 @@ def fetch_base_universe():
 
 def analyze_stock(row):
 
+    symbol = "UNKNOWN"
+
     try:
 
         symbol = str(row["name"])
+
+        print(f"🔍 Checking: {symbol}")
 
         ticker = yf.Ticker(f"{symbol}.NS")
 
         q = ticker.quarterly_financials
 
-        if q is None or q.empty or q.shape[1] < 5:
+        # ============================================================================
+        # VALIDATION
+        # ============================================================================
+
+        if q is None or q.empty:
 
             return None
 
+        if q.shape[1] < 5:
+
+            return None
+
+        # ============================================================================
+        # SAFE FINANCIAL EXTRACTION
+        # ============================================================================
+
         revenue_rows = q[
-            q.index.str.contains(
+            q.index.astype(str).str.contains(
                 "Revenue|Sales",
                 case=False,
                 na=False
@@ -137,8 +153,8 @@ def analyze_stock(row):
         ]
 
         profit_rows = q[
-            q.index.str.contains(
-                "Income|Profit",
+            q.index.astype(str).str.contains(
+                "Net Income|Profit|Income",
                 case=False,
                 na=False
             )
@@ -148,9 +164,29 @@ def analyze_stock(row):
 
             return None
 
-        revenue = revenue_rows.iloc[0]
+        # ============================================================================
+        # FORCE 1D SERIES
+        # ============================================================================
 
-        profit = profit_rows.iloc[0]
+        revenue = revenue_rows.iloc[0].squeeze()
+
+        profit = profit_rows.iloc[0].squeeze()
+
+        if not isinstance(revenue, pd.Series):
+
+            revenue = pd.Series(revenue)
+
+        if not isinstance(profit, pd.Series):
+
+            profit = pd.Series(profit)
+
+        if len(revenue) < 5 or len(profit) < 5:
+
+            return None
+
+        # ============================================================================
+        # EXTRACT VALUES
+        # ============================================================================
 
         current_rev = float(revenue.iloc[0])
 
@@ -163,6 +199,10 @@ def analyze_stock(row):
         prev_q_profit = float(profit.iloc[1])
 
         last_year_profit = float(profit.iloc[4])
+
+        # ============================================================================
+        # INVALID DATA CHECK
+        # ============================================================================
 
         if (
 
@@ -480,7 +520,9 @@ def analyze_stock(row):
             )
         }
 
-    except Exception:
+    except Exception as e:
+
+        print(f"❌ ERROR: {symbol} -> {e}")
 
         return None
 
