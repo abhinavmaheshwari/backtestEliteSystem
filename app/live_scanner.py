@@ -107,6 +107,8 @@ total_alerts = 0
 
 for _, row in watchlist.iterrows():
 
+    symbol = "UNKNOWN"
+
     try:
 
         # ============================================================================
@@ -133,7 +135,9 @@ for _, row in watchlist.iterrows():
 
             progress=False,
 
-            auto_adjust=True
+            auto_adjust=True,
+
+            threads=False
         )
 
         if ticker.empty:
@@ -148,13 +152,78 @@ for _, row in watchlist.iterrows():
 
         ticker.reset_index(inplace=True)
 
+        ticker = ticker.copy()
+
         # ============================================================================
-        # FIX YFINANCE MULTI-INDEX COLUMNS
+        # FIX YFINANCE MULTI-INDEX / DUPLICATE COLUMNS
         # ============================================================================
 
         if isinstance(ticker.columns, pd.MultiIndex):
 
             ticker.columns = ticker.columns.get_level_values(0)
+
+        # remove duplicate columns
+        ticker = ticker.loc[:, ~ticker.columns.duplicated()]
+
+        # ============================================================================
+        # FORCE OHLCV TO 1D SERIES
+        # ============================================================================
+
+        required_cols = [
+
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume"
+        ]
+
+        missing_col = False
+
+        for col_name in required_cols:
+
+            if col_name not in ticker.columns:
+
+                print(f"❌ Missing column {col_name}: {symbol}")
+
+                missing_col = True
+
+                break
+
+            # dataframe -> series
+            if isinstance(ticker[col_name], pd.DataFrame):
+
+                ticker[col_name] = ticker[col_name].iloc[:, 0]
+
+            # ndarray/object -> proper float series
+            ticker[col_name] = pd.Series(
+
+                ticker[col_name]
+
+            ).astype(float)
+
+        if missing_col:
+
+            continue
+
+        # ============================================================================
+        # DROP INVALID ROWS
+        # ============================================================================
+
+        ticker = ticker.dropna(
+
+            subset=[
+                "Open",
+                "High",
+                "Low",
+                "Close",
+                "Volume"
+            ]
+        )
+
+        if len(ticker) < 50:
+
+            continue
 
         # ============================================================================
         # APPLY TECHNICAL INDICATORS
@@ -163,6 +232,10 @@ for _, row in watchlist.iterrows():
         ticker = apply_indicators(
             ticker
         )
+
+        if ticker is None or ticker.empty:
+
+            continue
 
         # ============================================================================
         # DETECT BREAKOUTS
@@ -186,6 +259,10 @@ for _, row in watchlist.iterrows():
         # RSI SAFETY
         # ============================================================================
 
+        if "RSI" not in ticker.columns:
+
+            continue
+
         if pd.isna(latest["RSI"]):
 
             continue
@@ -194,9 +271,11 @@ for _, row in watchlist.iterrows():
         # VOLUME ANALYSIS
         # ============================================================================
 
-        latest_volume = latest["Volume"]
+        latest_volume = float(
+            latest["Volume"]
+        )
 
-        avg_volume = (
+        avg_volume = float(
 
             ticker["Volume"]
 
@@ -222,16 +301,16 @@ for _, row in watchlist.iterrows():
 
         candle_range = (
 
-            latest["High"]
+            float(latest["High"])
 
-            - latest["Low"]
+            - float(latest["Low"])
         )
 
         candle_body = abs(
 
-            latest["Close"]
+            float(latest["Close"])
 
-            - latest["Open"]
+            - float(latest["Open"])
         )
 
         if candle_range <= 0:
@@ -317,7 +396,7 @@ for _, row in watchlist.iterrows():
 
             breakout_count=len(signals),
 
-            rsi=latest["RSI"],
+            rsi=float(latest["RSI"]),
 
             volume_ratio=volume_ratio
         )
@@ -353,10 +432,10 @@ Breakouts:
 {breakout_type}
 
 Price:
-₹{round(latest["Close"], 2)}
+₹{round(float(latest["Close"]), 2)}
 
 RSI:
-{round(latest["RSI"], 2)}
+{round(float(latest["RSI"]), 2)}
 
 Volume Expansion:
 {round(volume_ratio, 2)}x
