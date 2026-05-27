@@ -1,34 +1,45 @@
+# =====================================================================================
+# app/breakout_engine.py
+# =====================================================================================
+
 import numpy as np
 
 
 def detect_breakouts(df):
 
-    latest = df.iloc[-1]
+    latest   = df.iloc[-1]
+    signals  = []
 
-    breakout_signals = []
+    # ============================================================================
+    # DAILY BREAKOUT  — close > 20-day high (excluding today)
+    # ============================================================================
 
-    # DAILY BREAKOUT
-    previous_20d_high = df["High"].rolling(20).max().iloc[-2]
+    prev_20d_high = df["High"].rolling(20).max().iloc[-2]
+    if latest["Close"] > prev_20d_high:
+        signals.append("Daily Breakout")
 
-    if latest["Close"] > previous_20d_high:
-        breakout_signals.append("Daily Breakout")
+    # ============================================================================
+    # WEEKLY BREAKOUT — close > 50-day high (excluding today)
+    # ============================================================================
 
-    # WEEKLY BREAKOUT
-    previous_50d_high = df["High"].rolling(50).max().iloc[-2]
+    prev_50d_high = df["High"].rolling(50).max().iloc[-2]
+    if latest["Close"] > prev_50d_high:
+        signals.append("Weekly Breakout")
 
-    if latest["Close"] > previous_50d_high:
-        breakout_signals.append("Weekly Breakout")
+    # ============================================================================
+    # MONTHLY BREAKOUT — close > 100-day high (excluding today)
+    # ============================================================================
 
-    # MONTHLY BREAKOUT
-    previous_100d_high = df["High"].rolling(100).max().iloc[-2]
+    prev_100d_high = df["High"].rolling(100).max().iloc[-2]
+    if latest["Close"] > prev_100d_high:
+        signals.append("Monthly Breakout")
 
-    if latest["Close"] > previous_100d_high:
-        breakout_signals.append("Monthly Breakout")
+    # ============================================================================
+    # 52-WEEK BREAKOUT — close > 252-day high (excluding today)
+    # ============================================================================
 
-    # MULTIYEAR BREAKOUT
-    previous_252d_high = df["High"].rolling(252).max().iloc[-2]
+    prev_252d_high = df["High"].rolling(252).max().iloc[-2]
+    if latest["Close"] > prev_252d_high:
+        signals.append("52W Breakout")
 
-    if latest["Close"] > previous_252d_high:
-        breakout_signals.append("52W Breakout")
-
-    return breakout_signals
+    return signals
