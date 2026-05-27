@@ -167,15 +167,15 @@ logger.info("✅ Database initialized | Stale alerts cleaned (7-day window)")
 
 def seconds_until_eod():
     """
-    Calculate seconds until the next 3:16 PM IST scan window.
+    Calculate seconds until the next 3:45 PM IST scan window.
     Used to sleep efficiently rather than polling every 60 seconds.
     """
     now          = datetime.now(IST)
-    target_today = now.replace(hour=15, minute=16, second=0, microsecond=0)
+    target_today = now.replace(hour=15, minute=45, second=0, microsecond=0)
     if now < target_today:
         delta = target_today - now
     else:
-        # Already past 3:16 PM today — target tomorrow's window
+        # Already past 3:45 PM today — target tomorrow's window
         delta = target_today + timedelta(days=1) - now
     return max(int(delta.total_seconds()), 0)
 
@@ -185,7 +185,7 @@ last_scan_date = None
 
 # =====================================================================================
 # MAIN LOOP
-# Runs continuously. Outside the 3:16–3:30 PM window, sleeps until the next window.
+# Runs continuously. Outside the 3:45–4:00 PM window, sleeps until the next window.
 # Inside the window, runs the full scan exactly once per trading day.
 # =====================================================================================
 
@@ -220,18 +220,18 @@ while True:
         time.sleep(min(sleep_secs, 3600))
         continue
 
-    # ── NOT YET IN EOD WINDOW: sleep in 60-second ticks until 3:16 PM ──────────────
+    # ── NOT YET IN EOD WINDOW: sleep in 60-second ticks until 3:45 PM ──────────────
     if not in_eod_window:
         sleep_secs = seconds_until_eod()
         logger.info(
             f"⏰ Waiting for EOD window | Now={ist_now.strftime('%H:%M:%S')} | "
-            f"Starts 15:16 | {sleep_secs // 60}m {sleep_secs % 60}s remaining"
+            f"Starts 15:45 | {sleep_secs // 60}m {sleep_secs % 60}s remaining"
         )
         time.sleep(min(sleep_secs, 60))   # tick every 60s or until window opens
         continue
 
     # ================================================================================
-    # EOD SCAN WINDOW — 3:16 PM to 3:30 PM IST
+    # EOD SCAN WINDOW — 3:45 PM to 4:00 PM IST
     # We're in the window, haven't scanned today, it's a weekday. Run the full scan.
     # ================================================================================
 
@@ -683,7 +683,7 @@ while True:
     for reason, count in rejection_counts.items():
         if count > 0:
             logger.info(f"   {reason:<24}: {count}")
-    logger.info(f"💤 Next scan: tomorrow at 15:16 IST | sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m")
+    logger.info(f"💤 Next scan: tomorrow at 15:45 IST | sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m")
     logger.info("=" * 80)
 
     time.sleep(min(sleep_secs, 3600))
