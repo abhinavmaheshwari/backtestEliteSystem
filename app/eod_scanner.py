@@ -176,7 +176,8 @@ while True:
                 logger.warning(f"❌ Insufficient candles ({len(ticker)}): {symbol}")
                 continue
 
-            ticker = apply_indicators(ticker)
+            # FIX: pass timeframe so HIGH_52W window is correct for daily data
+            ticker = apply_indicators(ticker, timeframe="1d")
 
             if ticker is None or ticker.empty:
                 logger.warning(f"❌ Indicator failure: {symbol}")
@@ -194,7 +195,9 @@ while True:
                 continue
 
             latest_volume = float(latest["Volume"])
-            avg_volume    = float(ticker["Volume"].tail(10).mean())
+
+            # FIX: use tail(20) consistently — scoring_engine disqualifier #8 also uses tail(20)
+            avg_volume = float(ticker["Volume"].tail(20).mean())
 
             if avg_volume <= 0:
                 continue
@@ -235,12 +238,16 @@ while True:
             breakout_type = ", ".join(signals)
             dedup_key     = f"{breakout_type}|{today_str}|EOD"
 
+            # FIX: pass ticker, latest, symbol so all scoring components run
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
                 rsi=float(latest["RSI"]),
                 volume_ratio=volume_ratio,
-                breakout_signals=signals
+                breakout_signals=signals,
+                ticker=ticker,
+                latest=latest,
+                symbol=symbol,
             )
 
             if score < MIN_SCORE:
