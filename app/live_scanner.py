@@ -32,8 +32,75 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-HEADER     = "🚀 TREND CONFIRMED 1H"
 CHUNK_SIZE = 10
+
+# =====================================================================================
+# STRICT FILTER CONSTANTS — 1H (trend confirmation, between intraday and EOD)
+# =====================================================================================
+
+MIN_SIGNALS      = 2        # require at least 2 breakout signals for 1H
+MIN_BODY_RATIO   = 0.55     # solid candle body
+MIN_VOLUME_RATIO = 1.8      # clear institutional volume
+MIN_RSI          = 55       # established momentum
+MAX_RSI          = 80       # not overbought
+MIN_SCORE        = 80       # high conviction only
+
+# =====================================================================================
+# MESSAGE FORMATTER
+# =====================================================================================
+
+def score_badge(score):
+    if score >= 90: return "🏆"
+    if score >= 80: return "🔥"
+    if score >= 70: return "⚡"
+    return "📌"
+
+def signal_bar(score):
+    filled = round(score / 20)
+    return "█" * filled + "░" * (5 - filled)
+
+def breakout_emoji(signals):
+    if "52W Breakout"     in signals: return "🚀"
+    if "Monthly Breakout" in signals: return "🌕"
+    if "Weekly Breakout"  in signals: return "📈"
+    return "📊"
+
+def format_1h_alert(a):
+    badge = score_badge(a["score"])
+    bar   = signal_bar(a["score"])
+    bem   = breakout_emoji(a["breakout_signals"])
+
+    if a["score"] >= 90:   tier = "ELITE"
+    elif a["score"] >= 80: tier = "STRONG"
+    else:                  tier = "GOOD"
+
+    lines = [
+        f"{badge} <b>{a['symbol']}</b>  [{tier} · {a['score']}/100]",
+        f"   {bar}",
+        f"   ₹{a['price']}   RSI {a['rsi']}   Vol {a['volume_ratio']}x   Body {a['body_ratio']}%",
+        f"   {bem} {a['breakout_type']}",
+    ]
+    return "\n".join(lines)
+
+def build_1h_message(cat, alerts, chunk_num, total_chunks, scan_time):
+
+    suffix = f" — part {chunk_num}/{total_chunks}" if total_chunks > 1 else ""
+
+    lines = [
+        f"🚀 <b>TREND CONFIRMED 1H</b>{suffix}",
+        f"{'─' * 32}",
+        f"<b>{cat}</b>  ·  {len(alerts)} stock{'s' if len(alerts) > 1 else ''}",
+        f"{'─' * 32}",
+        "",
+    ]
+
+    for a in alerts:
+        lines.append(format_1h_alert(a))
+        lines.append("")
+
+    lines.append(f"⏰ <i>{scan_time}</i>")
+
+    return "\n".join(lines)
 
 # =====================================================================================
 # INIT
@@ -174,7 +241,8 @@ while True:
 
             signals = detect_breakouts(ticker)
 
-            if len(signals) == 0:
+            if len(signals) < MIN_SIGNALS:
+                logger.info(f"❌ Weak signals ({len(signals)}): {symbol}")
                 continue
 
             latest = ticker.iloc[-1]
@@ -198,26 +266,30 @@ while True:
 
             body_ratio = candle_body / candle_range
 
-            if body_ratio < 0.55:
+            # ── STRICT FILTERS ────────────────────────────────────────────────────
+            if body_ratio < MIN_BODY_RATIO:
+                logger.info(f"❌ Weak body ({body_ratio:.0%}): {symbol}")
                 continue
             if float(latest["Close"]) <= float(latest["Open"]):
                 continue
-            if volume_ratio < 1.5:
+            if volume_ratio < MIN_VOLUME_RATIO:
+                logger.info(f"❌ Low volume ({volume_ratio:.2f}x): {symbol}")
                 continue
-            if latest["RSI"] < 55:
-                continue
-            if latest["RSI"] > 85:
+            if not (MIN_RSI <= latest["RSI"] <= MAX_RSI):
+                logger.info(f"❌ RSI out of range ({latest['RSI']:.1f}): {symbol}")
                 continue
             if latest["Close"] < latest["EMA20"]:
                 continue
             if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
                 if latest["Close"] < latest["SMA50"]:
                     continue
+            # ── Golden cross required for 1H as well ─────────────────────────────
             if (
                 "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                 not pd.isna(latest["SMA50"]) and not pd.isna(latest["SMA200"])
             ):
                 if latest["SMA50"] < latest["SMA200"]:
+                    logger.info(f"❌ No golden cross: {symbol}")
                     continue
 
             breakout_type = ", ".join(signals)
@@ -228,11 +300,12 @@ while True:
                 category=category,
                 breakout_count=len(signals),
                 rsi=float(latest["RSI"]),
-                volume_ratio=volume_ratio
+                volume_ratio=volume_ratio,
+                breakout_signals=signals
             )
 
-            if score < 75:
-                logger.info(f"❌ Low score: {symbol} | {score}")
+            if score < MIN_SCORE:
+                logger.info(f"❌ Low score {score}: {symbol}")
                 continue
 
             saved = save_alert_if_new(
@@ -246,19 +319,20 @@ while True:
                 continue
 
             alert_data = {
-                "symbol":        symbol,
-                "breakout_type": breakout_type,
-                "price":         round(float(latest["Close"]), 2),
-                "rsi":           round(float(latest["RSI"]), 1),
-                "volume_ratio":  round(volume_ratio, 2),
-                "body_ratio":    round(body_ratio * 100),
-                "score":         score,
+                "symbol":           symbol,
+                "breakout_type":    breakout_type,
+                "breakout_signals": signals,
+                "price":            round(float(latest["Close"]), 2),
+                "rsi":              round(float(latest["RSI"]), 1),
+                "volume_ratio":     round(volume_ratio, 2),
+                "body_ratio":       round(body_ratio * 100),
+                "score":            score,
             }
 
             alerts_by_category.setdefault(category, []).append(alert_data)
             total_alerts += 1
 
-            logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x")
+            logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x | Signals={len(signals)}")
 
         except Exception:
             logger.exception(f"❌ ERROR: {symbol}")
@@ -271,30 +345,18 @@ while True:
 
     for cat in sorted(alerts_by_category.keys()):
 
-        cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-        chunks     = [cat_alerts[i:i+CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
+        cat_alerts = sorted(
+            alerts_by_category[cat],
+            key=lambda x: x["score"],
+            reverse=True
+        )
+        chunks = [
+            cat_alerts[i:i + CHUNK_SIZE]
+            for i in range(0, len(cat_alerts), CHUNK_SIZE)
+        ]
 
         for chunk_num, chunk in enumerate(chunks, start=1):
-
-            suffix = f" ({chunk_num}/{len(chunks)})" if len(chunks) > 1 else ""
-            lines  = []
-
-            for a in chunk:
-                lines.append(
-                    f"▸ {a['symbol']} | ₹{a['price']} | {a['score']}/100\n"
-                    f"  {a['breakout_type']}\n"
-                    f"  RSI {a['rsi']} | Vol {a['volume_ratio']}x | Body {a['body_ratio']}%"
-                )
-
-            message = (
-                f"{HEADER}{suffix}\n"
-                f"{'─' * 30}\n"
-                f"{cat} | {len(cat_alerts)} stock{'s' if len(cat_alerts)>1 else ''}\n"
-                f"{'─' * 30}\n\n"
-                + "\n\n".join(lines)
-                + f"\n\n⏰ {scan_time}"
-            )
-
+            message = build_1h_message(cat, chunk, chunk_num, len(chunks), scan_time)
             send_telegram_message(message)
             logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
