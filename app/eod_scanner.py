@@ -3,7 +3,7 @@
 # EOD BREAKOUT SCANNER — DAILY CANDLES
 #
 # WHAT THIS FILE DOES:
-#   Runs once per trading day in the window 3:16–3:30 PM IST.
+#   Runs once per trading day in the window 3:45 PM IST.
 #   This timing ensures the final daily candle has effectively closed (3:15 PM NSE
 #   close) before we evaluate it — no forming-candle ambiguity on daily bars.
 #   Downloads 1 year of daily OHLCV data for each watchlist stock, applies indicators,
@@ -82,8 +82,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-EOD_START  = dt_time(15, 16)   # Start scanning after NSE close (3:15 PM)
-EOD_END    = dt_time(15, 30)   # End window — must complete scan by 3:30
+EOD_START  = dt_time(15, 45)   # Start scanning after NSE close (3:45 PM)
+EOD_END    = dt_time(16, 00)   # End window — must complete scan by 4:00
 CHUNK_SIZE = 10                 # Max stocks per Telegram message
 
 # =====================================================================================
