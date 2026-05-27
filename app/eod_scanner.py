@@ -1,6 +1,55 @@
 # =====================================================================================
 # app/eod_scanner.py
 # EOD BREAKOUT SCANNER — DAILY CANDLES
+#
+# WHAT THIS FILE DOES:
+#   Runs once per trading day in the window 3:16–3:30 PM IST.
+#   This timing ensures the final daily candle has effectively closed (3:15 PM NSE
+#   close) before we evaluate it — no forming-candle ambiguity on daily bars.
+#   Downloads 1 year of daily OHLCV data for each watchlist stock, applies indicators,
+#   then runs the strictest filter stack of the three scanners.
+#
+#   Daily alerts represent high-conviction multi-day momentum setups.
+#   Every filter is calibrated for the daily timeframe. Do NOT copy these thresholds
+#   to the intraday or 1H scanner — daily bars have different statistical properties.
+#
+# FILTER PIPELINE (in order — a stock must pass ALL of these):
+#   1.  Data quality       — 200 candles minimum, no missing columns
+#   2.  Signal count       — at least 3 breakout signals (strictest confluence)
+#   3.  Candle body        — body ≥ 60% of range (tightest of the three scanners)
+#   4.  Bullish close      — close strictly above open
+#   5.  Close position     — close in top 25% of daily range
+#   6.  Upper wick         — wick ≤ 30% of range
+#   7.  Volume ratio       — current day ≥ 2.0× 20-day average
+#   8.  Avg volume floor   — 20-day avg ≥ 200K shares
+#   9.  Min stock price    — close ≥ ₹50
+#   10. RSI range          — RSI 58–75 (tightest RSI band)
+#   11. RSI direction      — RSI now > RSI 5 days ago (1 week of rising momentum)
+#   12. EMA20              — close above EMA20
+#   13. SMA50              — close above SMA50
+#   14. Golden cross       — SMA50 ≥ SMA200
+#   15. MACD               — MACD line above signal line
+#   16. 52W high proximity — within 15% of 52-week high
+#   17. Single-day move    — day move ≤ 8% from previous close (no gap chases)
+#   18. Score threshold    — composite score ≥ 78
+#
+# CHANGES FROM PREVIOUS VERSION:
+#   + MIN_SIGNALS changed from 2 → 3 (daily breakouts need more confluence)
+#   + MIN_BODY_RATIO kept at 0.60 (already correct)
+#   + MIN_VOLUME_RATIO kept at 2.0 (already correct)
+#   + MIN_RSI changed from 58 → 58 (no change, already correct)
+#   + MAX_RSI changed from 78 → 75 (tighter — avoid overbought daily bars)
+#   + MIN_SCORE changed from 85 → 78 (practical: allows High Growth stocks to qualify)
+#   + NEW: close position check (top 25% of daily range)
+#   + NEW: upper wick ratio check (≤30%)
+#   + NEW: RSI direction check over 5 days (1 week of rising momentum)
+#   + NEW: MACD bullish confirmation
+#   + NEW: 52W high proximity (within 15%)
+#   + NEW: avg volume floor (200K shares)
+#   + NEW: min stock price (₹50)
+#   + NEW: single-day move cap (≤8%)
+#   + IMPROVED: all rejections log the exact reason + value
+#   + IMPROVED: rejection breakdown table printed at end of each scan
 # =====================================================================================
 
 import pandas as pd
@@ -33,20 +82,76 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-EOD_START  = dt_time(15, 16)
-EOD_END    = dt_time(15, 30)
-CHUNK_SIZE = 10
+EOD_START  = dt_time(15, 16)   # Start scanning after NSE close (3:15 PM)
+EOD_END    = dt_time(15, 30)   # End window — must complete scan by 3:30
+CHUNK_SIZE = 10                 # Max stocks per Telegram message
 
 # =====================================================================================
-# STRICT FILTERS — EOD
+# FILTER CONSTANTS — EOD DAILY
+#
+# These are the strictest thresholds across the three scanners.
+# Daily bars carry the most weight — one daily signal = entire day's conviction.
 # =====================================================================================
 
-MIN_SIGNALS      = 2
-MIN_BODY_RATIO   = 0.60
+# Daily breakouts need 3 independent signals — more than intraday or 1H.
+# 3 signals on a daily chart = volume breakout + technical + trend = conviction.
+MIN_SIGNALS = 3
+
+# Body ≥ 60% of the full daily range.
+# A 60% body on a daily bar = buyers dominated the entire session.
+# The extra 5% vs 1H reflects the higher bar for daily signals.
+MIN_BODY_RATIO = 0.60
+
+# Close must be in the top 25% of the daily range.
+# Daily closes at the top of range indicate institutions didn't sell into strength.
+# This is the tightest close-position threshold of the three scanners.
+MIN_CLOSE_POSITION = 0.75
+
+# Upper wick ≤ 30% of the daily range.
+# Daily bars naturally form more wick than 15m bars.
+# >30% upper wick on a daily bar = meaningful institutional selling at highs.
+MAX_UPPER_WICK_RATIO = 0.30
+
+# Volume must be ≥ 2.0× the 20-day average.
+# A full day's volume at 2× baseline = genuine institutional interest, not noise.
+# This is the most reliable single indicator of a true daily breakout.
 MIN_VOLUME_RATIO = 2.0
-MIN_RSI          = 58
-MAX_RSI          = 78
-MIN_SCORE        = 85
+
+# Hard liquidity floor: 20-day avg ≥ 200K shares.
+# Swing trades based on daily signals need exit liquidity over multiple days.
+MIN_AVG_VOLUME_SHARES = 200_000
+
+# Minimum stock price: ₹50. Eliminates penny stocks and micro-caps.
+MIN_STOCK_PRICE = 50.0
+
+# RSI 58–75 on the daily chart.
+# < 58: stock is in base-building, not yet in momentum
+# 58–68: early-to-mid momentum — highest reward:risk on daily timeframe
+# 68–75: mature momentum — still valid, manage position size
+# > 75 on daily: overbought — likely to consolidate for 1–2 weeks before resuming
+MIN_RSI = 58
+MAX_RSI = 75
+
+# RSI must be higher than it was 5 trading days ago.
+# 5 bars on daily = 1 full week of improving momentum.
+# Confirms the rally is sustained over multiple sessions, not a 1-day spike.
+RSI_LOOKBACK_BARS = 5
+
+# Stock must be within 15% of its 52-week high.
+# Stocks making or approaching new highs have no overhead supply.
+# Stocks >15% below 52W high are in recovery mode — not momentum mode.
+MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
+
+# Maximum single-day move: 8% from previous close.
+# An 8%+ daily move = major catalyst (earnings surprise, buyout, index addition).
+# These have already moved dramatically — the setup is gone, chasing is dangerous.
+MAX_SINGLE_DAY_MOVE_PCT = 8.0
+
+# Minimum composite score for an EOD alert.
+# Lowered from 85 to 78 to allow High Growth category stocks to qualify.
+# At 78: 22 (High Growth) + 24 (3 signals) + 15 (RSI sweet spot) + 17 (3× vol) = 78
+# This is the minimum passing bar — every component must be performing.
+MIN_SCORE = 78
 
 # =====================================================================================
 # INIT
@@ -54,74 +159,131 @@ MIN_SCORE        = 85
 
 init_db()
 cleanup_old_alerts(days=7)
-logger.info("✅ Database Initialized")
+logger.info("✅ Database initialized | Stale alerts cleaned (7-day window)")
 
 # =====================================================================================
-# HELPER
+# HELPERS
 # =====================================================================================
 
 def seconds_until_eod():
+    """
+    Calculate seconds until the next 3:16 PM IST scan window.
+    Used to sleep efficiently rather than polling every 60 seconds.
+    """
     now          = datetime.now(IST)
     target_today = now.replace(hour=15, minute=16, second=0, microsecond=0)
-    delta        = target_today - now if now < target_today else target_today + timedelta(days=1) - now
+    if now < target_today:
+        delta = target_today - now
+    else:
+        # Already past 3:16 PM today — target tomorrow's window
+        delta = target_today + timedelta(days=1) - now
     return max(int(delta.total_seconds()), 0)
 
+
+# Tracks the last date a scan completed — prevents double-scanning on the same day
 last_scan_date = None
 
 # =====================================================================================
 # MAIN LOOP
+# Runs continuously. Outside the 3:16–3:30 PM window, sleeps until the next window.
+# Inside the window, runs the full scan exactly once per trading day.
 # =====================================================================================
 
 while True:
 
     ist_now      = datetime.now(IST)
     current_time = ist_now.time()
-    weekday      = ist_now.weekday()
+    weekday      = ist_now.weekday()   # 0=Mon … 6=Sun
     today_str    = ist_now.strftime("%Y-%m-%d")
 
     in_eod_window = EOD_START <= current_time <= EOD_END
     is_weekday    = weekday < 5
     already_ran   = (last_scan_date == today_str)
 
+    # ── WEEKEND: sleep until next Monday 3:16 PM ────────────────────────────────────
     if not is_weekday:
         sleep_secs = seconds_until_eod()
-        logger.info(f"📅 Weekend | next scan in {sleep_secs//3600}h {(sleep_secs%3600)//60}m")
+        logger.info(
+            f"📅 Weekend ({ist_now.strftime('%A')}) | "
+            f"Next scan in {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
+        )
         time.sleep(min(sleep_secs, 3600))
         continue
 
+    # ── ALREADY SCANNED TODAY: sleep until tomorrow's window ────────────────────────
     if already_ran:
         sleep_secs = seconds_until_eod()
-        logger.info(f"✅ EOD done for {today_str} | next in {sleep_secs//3600}h {(sleep_secs%3600)//60}m")
+        logger.info(
+            f"✅ EOD already completed for {today_str} | "
+            f"Next scan in {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
+        )
         time.sleep(min(sleep_secs, 3600))
         continue
 
+    # ── NOT YET IN EOD WINDOW: sleep in 60-second ticks until 3:16 PM ──────────────
     if not in_eod_window:
         sleep_secs = seconds_until_eod()
-        logger.info(f"⏰ Waiting 3:16 PM | now {ist_now.strftime('%H:%M:%S')} | {sleep_secs//60}m {sleep_secs%60}s")
-        time.sleep(min(sleep_secs, 60))
+        logger.info(
+            f"⏰ Waiting for EOD window | Now={ist_now.strftime('%H:%M:%S')} | "
+            f"Starts 15:16 | {sleep_secs // 60}m {sleep_secs % 60}s remaining"
+        )
+        time.sleep(min(sleep_secs, 60))   # tick every 60s or until window opens
         continue
 
-    # ============================================================================
-    # EOD WINDOW — RUN SCAN
-    # ============================================================================
+    # ================================================================================
+    # EOD SCAN WINDOW — 3:16 PM to 3:30 PM IST
+    # We're in the window, haven't scanned today, it's a weekday. Run the full scan.
+    # ================================================================================
 
     logger.info("=" * 80)
-    logger.info(f"📊 EOD SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"📊 EOD SCAN STARTED | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
     logger.info("=" * 80)
 
+    # ── LOAD WATCHLIST ───────────────────────────────────────────────────────────────
     try:
         watchlist = pd.read_parquet(WATCHLIST_PATH)
+        logger.info(f"📋 Watchlist loaded | {len(watchlist)} stocks")
     except Exception:
-        logger.exception("❌ WATCHLIST LOAD ERROR")
+        logger.exception("❌ Watchlist load failed — rebuilding from daily_builder")
         from daily_builder import main as build_watchlist
         build_watchlist()
         watchlist = pd.read_parquet(WATCHLIST_PATH)
+        logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
 
     scan_start         = datetime.now(IST)
     total_alerts       = 0
     alerts_by_category = {}
 
-    logger.info(f"🚀 EOD SCAN STARTED | Stocks={len(watchlist)}")
+    # Per-scan rejection counters.
+    # Print these at the end of every scan to understand which filter eliminates most.
+    # If "low_score" is the biggest bucket, lower MIN_SCORE or fix scoring weights.
+    # If "no_golden_cross" is biggest, the market is broadly in a downtrend.
+    rejection_counts = {
+        "no_data":              0,
+        "missing_col":          0,
+        "insufficient_bars":    0,
+        "indicator_fail":       0,
+        "weak_signals":         0,
+        "weak_body":            0,
+        "bearish_candle":       0,
+        "weak_close_pos":       0,
+        "upper_wick":           0,
+        "low_volume":           0,
+        "low_avg_volume":       0,
+        "penny_stock":          0,
+        "rsi_range":            0,
+        "rsi_not_rising":       0,
+        "below_ema20":          0,
+        "below_sma50":          0,
+        "no_golden_cross":      0,
+        "macd_bearish":         0,
+        "far_from_52w_high":    0,
+        "gap_day":              0,
+        "low_score":            0,
+        "duplicate":            0,
+    }
+
+    logger.info(f"🚀 Processing {len(watchlist)} stocks...")
 
     for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
@@ -132,8 +294,12 @@ while True:
             symbol   = row["Stock"]
             category = row["Category"]
 
-            logger.info(f"🔍 [{idx}/{len(watchlist)}] {symbol}")
+            logger.info(f"🔍 [{idx}/{len(watchlist)}] {symbol} | Category={category}")
 
+            # ── DOWNLOAD DATA ────────────────────────────────────────────────────────
+            # 1 year of daily data = ~252 bars.
+            # Need 200 bars minimum for SMA200, ADX(14), RSI(14) to be reliable.
+            # daily interval: auto_adjust=True applies corporate actions (splits, dividends).
             ticker = yf.download(
                 f"{symbol}.NS",
                 period="1y",
@@ -144,23 +310,26 @@ while True:
             )
 
             if ticker.empty:
-                logger.warning(f"❌ No data: {symbol}")
+                logger.warning(f"  ❌ No data returned from yfinance: {symbol}")
+                rejection_counts["no_data"] += 1
                 continue
 
             ticker.reset_index(inplace=True)
             ticker = ticker.copy()
 
+            # Flatten MultiIndex columns (yfinance quirk with single tickers)
             if isinstance(ticker.columns, pd.MultiIndex):
                 ticker.columns = ticker.columns.get_level_values(0)
 
             ticker = ticker.loc[:, ~ticker.columns.duplicated()]
 
+            # ── COLUMN VALIDATION ─────────────────────────────────────────────────────
             required_cols = ["Open", "High", "Low", "Close", "Volume"]
             missing_col   = False
 
             for col_name in required_cols:
                 if col_name not in ticker.columns:
-                    logger.warning(f"❌ Missing {col_name}: {symbol}")
+                    logger.warning(f"  ❌ Missing column '{col_name}': {symbol}")
                     missing_col = True
                     break
                 if isinstance(ticker[col_name], pd.DataFrame):
@@ -168,81 +337,256 @@ while True:
                 ticker[col_name] = pd.Series(ticker[col_name]).astype(float)
 
             if missing_col:
+                rejection_counts["missing_col"] += 1
                 continue
 
             ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
+            # ── MINIMUM BAR COUNT ─────────────────────────────────────────────────────
+            # 200 bars needed for reliable SMA200 calculation.
+            # A SMA200 computed on fewer bars is meaningless.
             if len(ticker) < 200:
-                logger.warning(f"❌ Insufficient candles ({len(ticker)}): {symbol}")
+                logger.warning(f"  ❌ Insufficient history ({len(ticker)} < 200 bars): {symbol}")
+                rejection_counts["insufficient_bars"] += 1
                 continue
 
-            # FIX: pass timeframe so HIGH_52W window is correct for daily data
+            # ── INDICATORS ───────────────────────────────────────────────────────────
+            # timeframe="1d" tells apply_indicators to use a 252-bar window for HIGH_52W
             ticker = apply_indicators(ticker, timeframe="1d")
 
             if ticker is None or ticker.empty:
-                logger.warning(f"❌ Indicator failure: {symbol}")
+                logger.warning(f"  ❌ Indicator calculation failed: {symbol}")
+                rejection_counts["indicator_fail"] += 1
                 continue
 
+            # ── BREAKOUT SIGNALS ──────────────────────────────────────────────────────
             signals = detect_breakouts(ticker)
 
             if len(signals) < MIN_SIGNALS:
-                logger.info(f"❌ Weak signals ({len(signals)}): {symbol}")
+                logger.info(f"  ❌ Weak signals ({len(signals)} < {MIN_SIGNALS}): {symbol}")
+                rejection_counts["weak_signals"] += 1
                 continue
+
+            logger.info(f"  ✔ Signals ({len(signals)}): {', '.join(signals)}")
 
             latest = ticker.iloc[-1]
 
             if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
+                logger.warning(f"  ❌ RSI unavailable: {symbol}")
                 continue
 
+            # ── VOLUME ───────────────────────────────────────────────────────────────
             latest_volume = float(latest["Volume"])
-
-            # FIX: use tail(20) consistently — scoring_engine disqualifier #8 also uses tail(20)
-            avg_volume = float(ticker["Volume"].tail(20).mean())
+            # Use tail(20) consistently — same window as scoring_engine disqualifier #8
+            avg_volume    = float(ticker["Volume"].tail(20).mean())
 
             if avg_volume <= 0:
+                logger.warning(f"  ❌ Zero average volume: {symbol}")
                 continue
 
             volume_ratio = latest_volume / avg_volume
-            candle_range = float(latest["High"]) - float(latest["Low"])
-            candle_body  = abs(float(latest["Close"]) - float(latest["Open"]))
+
+            # ── CANDLE GEOMETRY ───────────────────────────────────────────────────────
+            candle_high  = float(latest["High"])
+            candle_low   = float(latest["Low"])
+            candle_open  = float(latest["Open"])
+            candle_close = float(latest["Close"])
+            candle_range = candle_high - candle_low
+            candle_body  = abs(candle_close - candle_open)
+            upper_wick   = candle_high - candle_close
 
             if candle_range <= 0:
+                logger.warning(f"  ❌ Zero candle range: {symbol}")
                 continue
 
-            body_ratio = candle_body / candle_range
+            body_ratio     = candle_body / candle_range
+            close_position = (candle_close - candle_low) / candle_range
+            wick_ratio     = upper_wick / candle_range
+            rsi_val        = float(latest["RSI"])
 
+            # ── FILTER 1: CANDLE BODY ─────────────────────────────────────────────────
+            # 60% body on a daily bar = buyers dominated the entire session.
             if body_ratio < MIN_BODY_RATIO:
-                logger.info(f"❌ Weak body ({body_ratio:.0%}): {symbol}")
+                logger.info(
+                    f"  ❌ Weak body ({body_ratio:.0%} < {MIN_BODY_RATIO:.0%}): {symbol}"
+                )
+                rejection_counts["weak_body"] += 1
                 continue
-            if float(latest["Close"]) <= float(latest["Open"]):
+
+            # ── FILTER 2: BULLISH CANDLE ──────────────────────────────────────────────
+            if candle_close <= candle_open:
+                logger.info(
+                    f"  ❌ Bearish/doji candle (C={candle_close:.2f} ≤ O={candle_open:.2f}): {symbol}"
+                )
+                rejection_counts["bearish_candle"] += 1
                 continue
+
+            # ── FILTER 3: CLOSE POSITION ──────────────────────────────────────────────
+            # Must close in the top 25% of the day's range.
+            # Institutions settle books near close — a strong daily close = genuine demand.
+            if close_position < MIN_CLOSE_POSITION:
+                logger.info(
+                    f"  ❌ Weak close position ({close_position:.0%} in range, need ≥{MIN_CLOSE_POSITION:.0%}): {symbol}"
+                )
+                rejection_counts["weak_close_pos"] += 1
+                continue
+
+            # ── FILTER 4: UPPER WICK ──────────────────────────────────────────────────
+            if wick_ratio > MAX_UPPER_WICK_RATIO:
+                logger.info(
+                    f"  ❌ Upper wick ({wick_ratio:.0%} > {MAX_UPPER_WICK_RATIO:.0%}): {symbol}"
+                )
+                rejection_counts["upper_wick"] += 1
+                continue
+
+            # ── FILTER 5: VOLUME RATIO ────────────────────────────────────────────────
+            # The most important single daily filter.
+            # 2× daily volume = institutional conviction, not retail noise.
             if volume_ratio < MIN_VOLUME_RATIO:
-                logger.info(f"❌ Low volume ({volume_ratio:.2f}x): {symbol}")
+                logger.info(
+                    f"  ❌ Low volume ({volume_ratio:.2f}x < {MIN_VOLUME_RATIO}x 20-day avg): {symbol}"
+                )
+                rejection_counts["low_volume"] += 1
                 continue
-            if not (MIN_RSI <= latest["RSI"] <= MAX_RSI):
-                logger.info(f"❌ RSI out of range ({latest['RSI']:.1f}): {symbol}")
+
+            # ── FILTER 6: AVG VOLUME FLOOR ────────────────────────────────────────────
+            if avg_volume < MIN_AVG_VOLUME_SHARES:
+                logger.info(
+                    f"  ❌ Illiquid (avg vol {avg_volume:,.0f} < {MIN_AVG_VOLUME_SHARES:,}): {symbol}"
+                )
+                rejection_counts["low_avg_volume"] += 1
                 continue
-            if latest["Close"] < latest["EMA20"]:
+
+            # ── FILTER 7: MINIMUM PRICE ───────────────────────────────────────────────
+            if candle_close < MIN_STOCK_PRICE:
+                logger.info(f"  ❌ Penny stock (₹{candle_close:.2f} < ₹{MIN_STOCK_PRICE}): {symbol}")
+                rejection_counts["penny_stock"] += 1
                 continue
-            if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
-                if latest["Close"] < latest["SMA50"]:
+
+            # ── FILTER 8: RSI RANGE ───────────────────────────────────────────────────
+            if not (MIN_RSI <= rsi_val <= MAX_RSI):
+                logger.info(
+                    f"  ❌ RSI out of range ({rsi_val:.1f}, need {MIN_RSI}–{MAX_RSI}): {symbol}"
+                )
+                rejection_counts["rsi_range"] += 1
+                continue
+
+            # ── FILTER 9: RSI DIRECTION ───────────────────────────────────────────────
+            # RSI must be higher than 5 trading days ago (1 full week of rising momentum).
+            # This is the strictest RSI direction check of the three scanners.
+            if len(ticker) > RSI_LOOKBACK_BARS:
+                rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
+                if rsi_val <= rsi_prev:
+                    logger.info(
+                        f"  ❌ RSI not rising ({rsi_val:.1f} ≤ {rsi_prev:.1f} "
+                        f"from {RSI_LOOKBACK_BARS} days ago): {symbol}"
+                    )
+                    rejection_counts["rsi_not_rising"] += 1
                     continue
+                logger.info(f"  ✔ RSI rising over {RSI_LOOKBACK_BARS} days: {rsi_prev:.1f} → {rsi_val:.1f}")
+
+            # ── FILTER 10: EMA20 ──────────────────────────────────────────────────────
+            if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
+                ema20_val = float(latest["EMA20"])
+                if candle_close < ema20_val:
+                    logger.info(
+                        f"  ❌ Below EMA20 (C={candle_close:.2f} < EMA20={ema20_val:.2f}): {symbol}"
+                    )
+                    rejection_counts["below_ema20"] += 1
+                    continue
+
+            # ── FILTER 11: SMA50 ──────────────────────────────────────────────────────
+            if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
+                sma50_val = float(latest["SMA50"])
+                if candle_close < sma50_val:
+                    logger.info(
+                        f"  ❌ Below SMA50 (C={candle_close:.2f} < SMA50={sma50_val:.2f}): {symbol}"
+                    )
+                    rejection_counts["below_sma50"] += 1
+                    continue
+
+            # ── FILTER 12: GOLDEN CROSS ───────────────────────────────────────────────
+            # SMA50 ≥ SMA200 eliminates all stocks in long-term structural downtrends.
+            # This is a non-negotiable filter for daily momentum setups.
             if (
                 "SMA50" in ticker.columns and "SMA200" in ticker.columns and
-                not pd.isna(latest["SMA50"]) and not pd.isna(latest["SMA200"])
+                not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
             ):
-                if latest["SMA50"] < latest["SMA200"]:
-                    logger.info(f"❌ No golden cross: {symbol}")
+                sma50_val  = float(latest["SMA50"])
+                sma200_val = float(latest["SMA200"])
+                if sma50_val < sma200_val:
+                    logger.info(
+                        f"  ❌ No golden cross (SMA50={sma50_val:.2f} < SMA200={sma200_val:.2f}): {symbol}"
+                    )
+                    rejection_counts["no_golden_cross"] += 1
                     continue
 
+            # ── FILTER 13: MACD ───────────────────────────────────────────────────────
+            # On daily timeframe, a MACD cross requires sustained multi-session buying.
+            # MACD below signal on daily = momentum weakening despite price strength.
+            if (
+                "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
+                not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
+            ):
+                macd_val = float(latest["MACD"])
+                macd_sig = float(latest["MACD_SIGNAL"])
+                if macd_val < macd_sig:
+                    logger.info(
+                        f"  ❌ MACD bearish (MACD={macd_val:.4f} < Signal={macd_sig:.4f}): {symbol}"
+                    )
+                    rejection_counts["macd_bearish"] += 1
+                    continue
+                logger.info(f"  ✔ MACD bullish: {macd_val:.4f} > {macd_sig:.4f}")
+
+            # ── FILTER 14: 52-WEEK HIGH PROXIMITY ────────────────────────────────────
+            # Stocks within 15% of their 52W high are approaching or at breakout territory.
+            # >15% below = the stock has a significant overhead supply of trapped buyers.
+            if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
+                high_52w = float(latest["HIGH_52W"])
+                if high_52w > 0:
+                    pct_from_high = (high_52w - candle_close) / high_52w * 100
+                    if pct_from_high > MAX_DISTANCE_FROM_52W_HIGH_PCT:
+                        logger.info(
+                            f"  ❌ Too far from 52W high "
+                            f"({pct_from_high:.1f}% below ₹{high_52w:.2f}, max {MAX_DISTANCE_FROM_52W_HIGH_PCT}%): {symbol}"
+                        )
+                        rejection_counts["far_from_52w_high"] += 1
+                        continue
+                    logger.info(f"  ✔ Near 52W high: {pct_from_high:.1f}% below ₹{high_52w:.2f}")
+
+            # ── FILTER 15: SINGLE-DAY MOVE CAP ───────────────────────────────────────
+            # An 8%+ single daily move = major catalyst already priced in.
+            # Chasing these setups after such a move has very poor reward:risk.
+            if len(ticker) >= 2:
+                prev_close = float(ticker["Close"].iloc[-2])
+                if prev_close > 0:
+                    single_move_pct = abs(candle_close - prev_close) / prev_close * 100
+                    if single_move_pct > MAX_SINGLE_DAY_MOVE_PCT:
+                        logger.info(
+                            f"  ❌ Gap day ({single_move_pct:.1f}% move > {MAX_SINGLE_DAY_MOVE_PCT}%): {symbol}"
+                        )
+                        rejection_counts["gap_day"] += 1
+                        continue
+
+            # ── ALL FILTERS PASSED — LOG SUMMARY ─────────────────────────────────────
+            logger.info(
+                f"  ✔ Daily candle OK | Body={body_ratio:.0%} | ClosePos={close_position:.0%} "
+                f"| Wick={wick_ratio:.0%} | Vol={volume_ratio:.2f}x | RSI={rsi_val:.1f} "
+                f"| Price=₹{candle_close:.2f}"
+            )
+
+            # ── DEDUP KEY ─────────────────────────────────────────────────────────────
             breakout_type = ", ".join(signals)
             dedup_key     = f"{breakout_type}|{today_str}|EOD"
 
-            # FIX: pass ticker, latest, symbol so all scoring components run
+            # ── SCORE ─────────────────────────────────────────────────────────────────
+            # scoring_engine.py returns 0 immediately if any hard disqualifier fires.
+            # Hard disqualifiers include: avg vol <50K, distribution candle,
+            # wick >40%, ADX <22, RSI divergence, BB overextension, exhaustion doji.
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
-                rsi=float(latest["RSI"]),
+                rsi=rsi_val,
                 volume_ratio=volume_ratio,
                 breakout_signals=signals,
                 ticker=ticker,
@@ -250,10 +594,14 @@ while True:
                 symbol=symbol,
             )
 
+            logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
+
             if score < MIN_SCORE:
-                logger.info(f"❌ Low score {score}: {symbol}")
+                logger.info(f"  ❌ Score too low ({score} < {MIN_SCORE}): {symbol}")
+                rejection_counts["low_score"] += 1
                 continue
 
+            # ── DEDUP CHECK ───────────────────────────────────────────────────────────
             saved = save_alert_if_new(
                 symbol,
                 dedup_key,
@@ -261,16 +609,18 @@ while True:
             )
 
             if not saved:
-                logger.info(f"⚠️ Duplicate: {symbol}")
+                logger.info(f"  ⚠️ Duplicate suppressed (already alerted today): {symbol}")
+                rejection_counts["duplicate"] += 1
                 continue
 
+            # ── BUILD ALERT PAYLOAD ───────────────────────────────────────────────────
             above_sma50 = (
-                bool(latest["Close"] >= latest["SMA50"])
+                bool(candle_close >= float(latest["SMA50"]))
                 if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50"))
                 else None
             )
             golden_cross = (
-                bool(latest["SMA50"] >= latest["SMA200"])
+                bool(float(latest["SMA50"]) >= float(latest["SMA200"]))
                 if (
                     "SMA50" in ticker.columns and "SMA200" in ticker.columns
                     and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
@@ -282,52 +632,58 @@ while True:
                 "symbol":           symbol,
                 "category":         category,
                 "breakout_signals": signals,
-                "price":            round(float(latest["Close"]), 2),
-                "open":             round(float(latest["Open"]), 2),
-                "day_high":         round(float(latest["High"]), 2),
-                "day_low":          round(float(latest["Low"]), 2),
-                "rsi":              round(float(latest["RSI"]), 1),
+                "price":            round(candle_close, 2),
+                "open":             round(candle_open, 2),
+                "day_high":         round(candle_high, 2),
+                "day_low":          round(candle_low, 2),
+                "rsi":              round(rsi_val, 1),
                 "volume_ratio":     round(volume_ratio, 2),
                 "body_ratio":       round(body_ratio * 100),
+                "close_position":   round(close_position * 100),
                 "score":            score,
-                "above_ema20":      bool(latest["Close"] >= latest["EMA20"]),
+                "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns else None,
                 "above_sma50":      above_sma50,
                 "golden_cross":     golden_cross,
             })
             total_alerts += 1
 
-            logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x | Signals={len(signals)}")
+            logger.info(
+                f"  ✅ ALERT COLLECTED | {symbol} | Score={score} | "
+                f"Vol={volume_ratio:.2f}x | RSI={rsi_val:.1f} | Signals={len(signals)}"
+            )
 
         except Exception:
-            logger.exception(f"❌ ERROR: {symbol}")
+            logger.exception(f"❌ UNHANDLED ERROR processing {symbol}")
 
-    # ============================================================================
-    # SEND
-    # ============================================================================
-
+    # ── SEND ALERTS ──────────────────────────────────────────────────────────────────
     scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-    for cat in sorted(alerts_by_category.keys()):
+    if total_alerts == 0:
+        logger.info("📭 No EOD alerts today")
+    else:
+        for cat in sorted(alerts_by_category.keys()):
+            cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
+            chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
-        cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-        chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
+            for chunk_num, chunk in enumerate(chunks, start=1):
+                msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
+                send_telegram_message(msg, scan_type="EOD")
+                logger.info(
+                    f"📨 Telegram sent | Category={cat} | Chunk={chunk_num}/{len(chunks)} | Stocks={len(chunk)}"
+                )
 
-        for chunk_num, chunk in enumerate(chunks, start=1):
-            msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
-            send_telegram_message(msg, scan_type="EOD")
-            logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
-
-    # ============================================================================
-    # DONE
-    # ============================================================================
-
+    # ── SCAN SUMMARY ──────────────────────────────────────────────────────────────────
     duration       = (datetime.now(IST) - scan_start).total_seconds()
-    last_scan_date = today_str
+    last_scan_date = today_str   # Mark as done for today
     sleep_secs     = seconds_until_eod()
 
     logger.info("=" * 80)
-    logger.info(f"✅ EOD DONE | {round(duration,2)}s | Alerts={total_alerts}")
-    logger.info(f"💤 Next scan in {sleep_secs//3600}h {(sleep_secs%3600)//60}m")
+    logger.info(f"✅ EOD SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")
+    logger.info("── Rejection breakdown ──────────────────────────────────────────────────")
+    for reason, count in rejection_counts.items():
+        if count > 0:
+            logger.info(f"   {reason:<24}: {count}")
+    logger.info(f"💤 Next scan: tomorrow at 15:16 IST | sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m")
     logger.info("=" * 80)
 
     time.sleep(min(sleep_secs, 3600))
