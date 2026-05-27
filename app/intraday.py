@@ -293,7 +293,7 @@ while True:
 
         for chunk_num, chunk in enumerate(chunks, start=1):
             msg = build_message("INTRADAY", cat, chunk, chunk_num, len(chunks), scan_time)
-            send_telegram_message(msg)
+            send_telegram_message(msg, scan_type="INTRADAY")
             logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
     duration = (datetime.now(IST) - scan_start).total_seconds()
