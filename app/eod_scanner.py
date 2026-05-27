@@ -492,7 +492,7 @@ while True:
             # Stricter threshold for EOD daily confirmation
             # ====================================================================
 
-            if score < 70:
+            if score < 80:
 
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
