@@ -9,8 +9,6 @@ import logging
 
 # =====================================================================================
 # PATH FIX
-# Add the app directory to sys.path so all sibling modules can be imported
-# regardless of where Railway runs the process from
 # =====================================================================================
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,8 +25,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 logger.info(f"📁 APP_DIR resolved to: {APP_DIR}")
-logger.info(f"🐍 sys.path: {sys.path}")
 
+# =====================================================================================
+# PRE-FLIGHT — build watchlist ONCE before any thread starts
+# Prevents 3 simultaneous daily_builder runs corrupting the parquet file
+# =====================================================================================
+
+WATCHLIST_PATH = "/app/data/elite_fundamental_watchlist.parquet"
+
+if not os.path.exists(WATCHLIST_PATH):
+
+    logger.info("📋 Watchlist not found — running daily builder...")
+
+    try:
+
+        from daily_builder import main as build_watchlist
+
+        build_watchlist()
+
+        logger.info("✅ Watchlist built successfully")
+
+    except Exception as e:
+
+        logger.exception("❌ Daily builder failed — scanners may error on load")
+
+else:
+
+    logger.info(f"✅ Watchlist already exists: {WATCHLIST_PATH}")
+
+# =====================================================================================
+# SCANNER THREADS
+# =====================================================================================
 
 def run_intraday_scanner():
     logger.info("⚡ Starting INTRADAY SCANNER (15m bars, from 9:31 AM)...")
