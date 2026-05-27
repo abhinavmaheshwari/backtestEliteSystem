@@ -158,7 +158,8 @@ while True:
                 logger.warning(f"❌ Insufficient candles ({len(ticker)}): {symbol}")
                 continue
 
-            ticker = apply_indicators(ticker)
+            # FIX: pass timeframe="1h" so HIGH_52W uses all available bars
+            ticker = apply_indicators(ticker, timeframe="1h")
 
             if ticker is None or ticker.empty:
                 logger.warning(f"❌ Indicator failure: {symbol}")
@@ -215,12 +216,16 @@ while True:
             today_str     = datetime.now(IST).strftime("%Y-%m-%d")
             dedup_key     = f"{breakout_type}|{today_str}|1H"
 
+            # FIX: pass ticker, latest, symbol so all scoring components run
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
                 rsi=float(latest["RSI"]),
                 volume_ratio=volume_ratio,
-                breakout_signals=signals
+                breakout_signals=signals,
+                ticker=ticker,
+                latest=latest,
+                symbol=symbol,
             )
 
             if score < MIN_SCORE:
