@@ -1,17 +1,22 @@
 # =====================================================================================
 # app/main.py  — launches all scanners in parallel threads
 # =====================================================================================
-#
-# SCANNER SCHEDULE:
-#
-#   intraday.py      — 15m bars  | runs 9:31 AM → 3:30 PM  | every 5 min
-#   live_scanner.py  — 1h bars   | runs 10:16 AM → 3:30 PM | every 5 min
-#   eod_scanner.py   — daily     | runs once at 3:15 PM     | once per day
-#
-# =====================================================================================
 
+import sys
+import os
 import threading
 import logging
+
+# =====================================================================================
+# PATH FIX
+# Add the app directory to sys.path so all sibling modules can be imported
+# regardless of where Railway runs the process from
+# =====================================================================================
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +25,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+logger.info(f"📁 APP_DIR resolved to: {APP_DIR}")
+logger.info(f"🐍 sys.path: {sys.path}")
 
 
 def run_intraday_scanner():
