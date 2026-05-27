@@ -35,7 +35,7 @@ while True:
     current_time = ist_now.time()
     weekday = ist_now.weekday()
 
-    market_open = dt_time(8, 15) <= current_time <= dt_time(15, 30)
+    market_open = dt_time(9, 15) <= current_time <= dt_time(15, 30)
     weekday_open = weekday < 5
 
     if not (market_open and weekday_open):
