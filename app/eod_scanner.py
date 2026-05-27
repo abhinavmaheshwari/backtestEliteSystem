@@ -4,14 +4,13 @@
 # =====================================================================================
 #
 # DESIGN INTENT:
-#   Runs once per day at 3:15 PM IST — 15 minutes before market close.
-#   At this point the daily candle is ~98% complete and reliable for analysis.
-#   This is the "end of day confirmation" scanner — by 3:15 PM the candle body,
+#   Runs once per day at 3:16 PM IST — daily candle is fully settled.
+#   This is the "end of day confirmation" scanner — by 3:16 PM the candle body,
 #   volume, and RSI are settled enough to trust as a daily signal.
 #
 # CANDLE BASIS:
 #   Uses interval="1d", period="1y" — full year of daily candles.
-#   The latest (today's) candle is INCLUDED intentionally since we run at 3:15 PM
+#   The latest (today's) candle is INCLUDED intentionally since we run at 3:16 PM
 #   — it is near-complete and reflects the full day's price action.
 #
 # DEDUP:
@@ -19,8 +18,13 @@
 #   on a different day if it sets up again.
 #
 # ALERT WINDOW:
-#   Fires only between 3:15 PM and 3:30 PM IST — a tight 15-min window.
+#   Fires only between 3:16 PM and 3:30 PM IST — a tight 14-min window.
 #   Outside this window the scanner sleeps and waits for the next trading day.
+#
+# CONSOLIDATED ALERTS:
+#   Collects all alerts during the scan cycle.
+#   Sends one Telegram message per category at the end (sorted by score desc).
+#   Large categories are chunked at 10 stocks per message.
 #
 # =====================================================================================
 
@@ -62,8 +66,20 @@ IST = ZoneInfo("Asia/Kolkata")
 # EOD WINDOW
 # =====================================================================================
 
-EOD_START = dt_time(15, 15)   # 3:15 PM — daily candle near-complete
+EOD_START = dt_time(15, 16)   # 3:16 PM — daily candle fully settled
 EOD_END   = dt_time(15, 30)   # 3:30 PM — market close
+
+# =====================================================================================
+# SCANNER HEADER
+# =====================================================================================
+
+HEADER = "📊 EOD BREAKOUT — DAILY"
+
+# =====================================================================================
+# CHUNK SIZE — max stocks per Telegram message (4096 char limit safety)
+# =====================================================================================
+
+CHUNK_SIZE = 10
 
 # =====================================================================================
 # INITIALIZE DATABASE
@@ -79,19 +95,18 @@ logger.info("✅ Database Initialized")
 
 def seconds_until_eod():
     """
-    Returns how many seconds to sleep until the next 3:15 PM IST window.
-    If already past today's window, calculates time to tomorrow's 3:15 PM.
+    Returns how many seconds to sleep until the next 3:16 PM IST window.
+    If already past today's window, calculates time to tomorrow's 3:16 PM.
     """
     now = datetime.now(IST)
 
     target_today = now.replace(
-        hour=15, minute=15, second=0, microsecond=0
+        hour=15, minute=16, second=0, microsecond=0
     )
 
     if now < target_today:
         delta = target_today - now
     else:
-        # Already past today's window — sleep until tomorrow 3:15 PM
         target_tomorrow = target_today + timedelta(days=1)
         delta = target_tomorrow - now
 
@@ -119,14 +134,11 @@ while True:
     # ============================================================================
 
     in_eod_window = EOD_START <= current_time <= EOD_END
-
     is_weekday    = weekday < 5
-
     already_ran   = (last_scan_date == today_str)
 
     if not is_weekday:
 
-        # Weekend — sleep until Monday 3:15 PM
         sleep_secs = seconds_until_eod()
 
         logger.info(
@@ -134,13 +146,12 @@ while True:
             f"{sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
         )
 
-        time.sleep(min(sleep_secs, 3600))   # wake up every hour to recheck
+        time.sleep(min(sleep_secs, 3600))
 
         continue
 
     if already_ran:
 
-        # Already scanned today — sleep until tomorrow's EOD window
         sleep_secs = seconds_until_eod()
 
         logger.info(
@@ -158,12 +169,11 @@ while True:
         sleep_secs = seconds_until_eod()
 
         logger.info(
-            f"⏰ Waiting for EOD window (3:15 PM IST) | "
+            f"⏰ Waiting for EOD window (3:16 PM IST) | "
             f"Current: {ist_now.strftime('%H:%M:%S')} | "
             f"Sleeping {sleep_secs // 60}m {sleep_secs % 60}s"
         )
 
-        # Sleep in 60s chunks so we don't overshoot the window
         time.sleep(min(sleep_secs, 60))
 
         continue
@@ -173,12 +183,10 @@ while True:
     # ============================================================================
 
     logger.info("=" * 80)
-
     logger.info(
         f"📊 EOD SCAN TRIGGERED | "
         f"IST: {ist_now.strftime('%Y-%m-%d %H:%M:%S')}"
     )
-
     logger.info("=" * 80)
 
     # ============================================================================
@@ -205,8 +213,9 @@ while True:
     # SCAN START
     # ============================================================================
 
-    scan_start   = datetime.now(IST)
-    total_alerts = 0
+    scan_start         = datetime.now(IST)
+    total_alerts       = 0
+    alerts_by_category = {}   # { category: [ alert_dict, ... ] }
 
     logger.info(
         f"🚀 EOD SCAN STARTED | "
@@ -217,20 +226,11 @@ while True:
     # MAIN STOCK LOOP
     # ============================================================================
 
-    for idx, (_, row) in enumerate(
-
-        watchlist.iterrows(),
-
-        start=1
-    ):
+    for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
         symbol = "UNKNOWN"
 
         try:
-
-            # ====================================================================
-            # STOCK INFO
-            # ====================================================================
 
             symbol   = row["Stock"]
             category = row["Category"]
@@ -252,25 +252,13 @@ while True:
             )
 
             if ticker.empty:
-
                 logger.warning(f"❌ No data: {symbol}")
-
                 continue
 
-            # ====================================================================
-            # RESET INDEX
-            # ====================================================================
-
             ticker.reset_index(inplace=True)
-
             ticker = ticker.copy()
 
-            # ====================================================================
-            # FIX YFINANCE MULTI-INDEX / DUPLICATE COLUMNS
-            # ====================================================================
-
             if isinstance(ticker.columns, pd.MultiIndex):
-
                 ticker.columns = ticker.columns.get_level_values(0)
 
             ticker = ticker.loc[:, ~ticker.columns.duplicated()]
@@ -280,36 +268,22 @@ while True:
             # ====================================================================
 
             required_cols = ["Open", "High", "Low", "Close", "Volume"]
-
-            missing_col = False
+            missing_col   = False
 
             for col_name in required_cols:
 
                 if col_name not in ticker.columns:
-
-                    logger.warning(
-                        f"❌ Missing column {col_name}: {symbol}"
-                    )
-
+                    logger.warning(f"❌ Missing column {col_name}: {symbol}")
                     missing_col = True
-
                     break
 
                 if isinstance(ticker[col_name], pd.DataFrame):
-
                     ticker[col_name] = ticker[col_name].iloc[:, 0]
 
-                ticker[col_name] = pd.Series(
-                    ticker[col_name]
-                ).astype(float)
+                ticker[col_name] = pd.Series(ticker[col_name]).astype(float)
 
             if missing_col:
-
                 continue
-
-            # ====================================================================
-            # DROP INVALID ROWS
-            # ====================================================================
 
             ticker = ticker.dropna(
                 subset=["Open", "High", "Low", "Close", "Volume"]
@@ -321,12 +295,10 @@ while True:
             # ====================================================================
 
             if len(ticker) < 200:
-
                 logger.warning(
                     f"❌ Insufficient daily candles "
                     f"({len(ticker)}): {symbol}"
                 )
-
                 continue
 
             # ====================================================================
@@ -336,9 +308,7 @@ while True:
             ticker = apply_indicators(ticker)
 
             if ticker is None or ticker.empty:
-
                 logger.warning(f"❌ Indicator failure: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -348,11 +318,10 @@ while True:
             signals = detect_breakouts(ticker)
 
             if len(signals) == 0:
-
                 continue
 
             # ====================================================================
-            # LATEST DAILY CANDLE (near-complete at 3:15 PM)
+            # LATEST DAILY CANDLE (near-complete at 3:16 PM)
             # ====================================================================
 
             latest = ticker.iloc[-1]
@@ -362,11 +331,9 @@ while True:
             # ====================================================================
 
             if "RSI" not in ticker.columns:
-
                 continue
 
             if pd.isna(latest["RSI"]):
-
                 continue
 
             # ====================================================================
@@ -375,13 +342,9 @@ while True:
             # ====================================================================
 
             latest_volume = float(latest["Volume"])
-
-            avg_volume = float(
-                ticker["Volume"].tail(10).mean()
-            )
+            avg_volume    = float(ticker["Volume"].tail(10).mean())
 
             if avg_volume <= 0:
-
                 continue
 
             volume_ratio = latest_volume / avg_volume
@@ -390,72 +353,47 @@ while True:
             # CANDLE QUALITY FILTER
             # ====================================================================
 
-            candle_range = (
-                float(latest["High"]) - float(latest["Low"])
-            )
-
-            candle_body = abs(
-                float(latest["Close"]) - float(latest["Open"])
-            )
+            candle_range = float(latest["High"]) - float(latest["Low"])
+            candle_body  = abs(float(latest["Close"]) - float(latest["Open"]))
 
             if candle_range <= 0:
-
                 continue
 
             body_ratio = candle_body / candle_range
 
-            # reject weak / indecision candles
             if body_ratio < 0.5:
-
                 continue
 
-            # must be a green (bullish) candle
             if float(latest["Close"]) <= float(latest["Open"]):
-
                 continue
 
             # ====================================================================
             # EOD CONFIRMATION FILTERS
-            # Stricter than intraday since this is end-of-day confirmation
             # ====================================================================
 
-            # solid volume expansion on daily
             if volume_ratio < 1.5:
-
                 continue
 
-            # RSI in healthy momentum zone
             if latest["RSI"] < 55:
-
                 continue
 
-            # avoid overextended / parabolic moves
             if latest["RSI"] > 85:
-
                 continue
 
-            # above 20 EMA
             if latest["Close"] < latest["EMA20"]:
-
                 continue
 
-            # above 50 DMA
             if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
-
                 if latest["Close"] < latest["SMA50"]:
-
                     continue
 
-            # bullish trend structure — 50 DMA above 200 DMA
             if (
                 "SMA50"  in ticker.columns and
                 "SMA200" in ticker.columns and
                 not pd.isna(latest["SMA50"]) and
                 not pd.isna(latest["SMA200"])
             ):
-
                 if latest["SMA50"] < latest["SMA200"]:
-
                     continue
 
             # ====================================================================
@@ -471,9 +409,7 @@ while True:
             dedup_key = f"{breakout_type}|{today_str}|EOD"
 
             if alert_exists(symbol, dedup_key):
-
                 logger.info(f"⚠️ Duplicate skipped: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -487,67 +423,33 @@ while True:
                 volume_ratio=volume_ratio
             )
 
-            # ====================================================================
-            # MINIMUM SCORE FILTER
-            # Stricter threshold for EOD daily confirmation
-            # ====================================================================
-
             if score < 80:
-
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
                 )
-
                 continue
 
             # ====================================================================
-            # ALERT MESSAGE
+            # COLLECT ALERT — do NOT send individually
             # ====================================================================
 
-            message = f'''
-📊 EOD BREAKOUT ALERT — DAILY
+            alert_data = {
+                "symbol":        symbol,
+                "breakout_type": breakout_type,
+                "price":         round(float(latest["Close"]), 2),
+                "rsi":           round(float(latest["RSI"]), 2),
+                "volume_ratio":  round(volume_ratio, 2),
+                "body_ratio":    round(body_ratio * 100),
+                "score":         score,
+            }
 
-Stock: {symbol}
+            if category not in alerts_by_category:
+                alerts_by_category[category] = []
 
-Category:
-{category}
-
-Breakouts:
-{breakout_type}
-
-Price:
-₹{round(float(latest["Close"]), 2)}
-
-RSI:
-{round(float(latest["RSI"]), 2)}
-
-Volume Expansion:
-{round(volume_ratio, 2)}x
-
-Candle:
-🟢 Bullish | Body {round(body_ratio * 100)}%
-
-Trend Structure:
-✅ Above EMA20
-✅ Above 50 DMA
-✅ Bullish 50/200 DMA
-
-Breakout Score:
-{score}/100
-
-Bar: Daily (EOD — 3:15 PM)
-Time:
-{datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")}
-'''
+            alerts_by_category[category].append(alert_data)
 
             # ====================================================================
-            # SEND TELEGRAM ALERT
-            # ====================================================================
-
-            send_telegram_message(message)
-
-            # ====================================================================
-            # SAVE ALERT
+            # SAVE DEDUP
             # ====================================================================
 
             save_alert(
@@ -559,36 +461,86 @@ Time:
             total_alerts += 1
 
             logger.info(
-                f"✅ EOD ALERT SENT: {symbol} | "
+                f"✅ EOD ALERT COLLECTED: {symbol} | "
                 f"Score={score} | "
                 f"Vol={round(volume_ratio, 2)}x"
             )
 
-        # ========================================================================
-        # ERROR HANDLING
-        # ========================================================================
-
         except Exception:
-
             logger.exception(f"❌ ERROR: {symbol}")
+
+    # ============================================================================
+    # SEND CONSOLIDATED MESSAGES — one per category, chunked if large
+    # ============================================================================
+
+    scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+    for cat in sorted(alerts_by_category.keys()):
+
+        cat_alerts = sorted(
+            alerts_by_category[cat],
+            key=lambda x: x["score"],
+            reverse=True
+        )
+
+        chunks = [
+            cat_alerts[i:i + CHUNK_SIZE]
+            for i in range(0, len(cat_alerts), CHUNK_SIZE)
+        ]
+
+        for chunk_num, chunk in enumerate(chunks, start=1):
+
+            suffix = (
+                f" ({chunk_num}/{len(chunks)})"
+                if len(chunks) > 1
+                else ""
+            )
+
+            lines = []
+
+            for a in chunk:
+                lines.append(
+                    f"📌 {a['symbol']}\n"
+                    f"   Breakout : {a['breakout_type']}\n"
+                    f"   Price    : ₹{a['price']}\n"
+                    f"   RSI      : {a['rsi']}\n"
+                    f"   Volume   : {a['volume_ratio']}x\n"
+                    f"   Candle   : 🟢 Body {a['body_ratio']}%\n"
+                    f"   Score    : {a['score']}/100\n"
+                )
+
+            message = (
+                f"{HEADER}{suffix}\n"
+                f"{'=' * 35}\n"
+                f"Category : {cat}\n"
+                f"Stocks   : {len(cat_alerts)}\n"
+                f"{'=' * 35}\n\n"
+                + "\n".join(lines)
+                + f"\n⏰ {scan_time}"
+            )
+
+            send_telegram_message(message)
+
+            logger.info(
+                f"📨 Consolidated alert sent | "
+                f"Category={cat} | "
+                f"Chunk={chunk_num}/{len(chunks)} | "
+                f"Stocks={len(chunk)}"
+            )
 
     # ============================================================================
     # SCAN COMPLETE
     # ============================================================================
 
     scan_end = datetime.now(IST)
-
     duration = (scan_end - scan_start).total_seconds()
 
     logger.info("=" * 80)
-
     logger.info(
         f"✅ EOD SCAN COMPLETED | "
         f"Duration={round(duration, 2)} sec"
     )
-
     logger.info(f"📨 EOD Alerts Sent={total_alerts}")
-
     logger.info("=" * 80)
 
     # ============================================================================
