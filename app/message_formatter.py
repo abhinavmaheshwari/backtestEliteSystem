@@ -21,7 +21,6 @@ def score_badge(score):
     return             "📌"
 
 def score_bar(score):
-    # 10 green circles filled, grey unfilled — renders cleanly on all Telegram clients
     filled = round(score / 10)
     return "🟢" * filled + "⚫" * (10 - filled)
 
@@ -41,14 +40,13 @@ def category_icons(category):
         for c in category.split("+")
     )
 
-def category_short(category):
+def category_label(category):
     parts = []
     for c in category.split("+"):
         c = c.strip()
         icon = _CAT_ICON.get(c, "")
-        label = c.replace("Elite Compounder","Elite").replace("High Growth","Growth").replace("Mature Quality","Quality")
-        parts.append(f"{icon} {label}")
-    return "  |  ".join(parts)
+        parts.append(f"{icon} {c}")
+    return "\n".join(parts)
 
 # =====================================================================================
 # BREAKOUT SIGNALS — one per line with emoji
@@ -63,64 +61,150 @@ _BK_ICON = {
 
 def breakout_lines(signals):
     return "\n".join(
-        f"  {_BK_ICON.get(s, '•')} {s}"
+        f"{_BK_ICON.get(s, '•')} {s}"
         for s in signals
     )
 
 # =====================================================================================
-# SINGLE ALERT BLOCK
-#
-# Example output:
-#
-# - - - - - - - - - - - - - - - -
-# 🏆 HINDZINC  |  100/100  ELITE ★★★
-# 🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
-# ₹656.1  |  RSI 70.7  |  Vol 1.9x  |  Body 65%
-# 💎 Elite  |  📈 Growth
-#   🌕 Monthly Breakout
-#   📊 Weekly Breakout
+# TREND STRUCTURE BLOCK
 # =====================================================================================
 
-_DIV = "- " * 16      # "- - - - - - - - - - - - - - - - "
+def trend_structure_lines(alert):
+    lines = []
 
-def format_alert(a):
-    badge = score_badge(a["score"])
-    tier  = score_tier(a["score"])
-    bar   = score_bar(a["score"])
-    cat   = category_short(a["category"])
-    bk    = breakout_lines(a["breakout_signals"])
+    above_ema20  = alert.get("above_ema20")
+    above_sma50  = alert.get("above_sma50")
+    golden_cross = alert.get("golden_cross")
+
+    if above_ema20 is not None:
+        icon = "✅" if above_ema20 else "❌"
+        lines.append(f"{icon} Above EMA20")
+    if above_sma50 is not None:
+        icon = "✅" if above_sma50 else "❌"
+        lines.append(f"{icon} Above SMA50")
+    if golden_cross is not None:
+        icon = "✅" if golden_cross else "❌"
+        lines.append(f"{icon} Bullish 50/200 DMA (Golden Cross)")
+
+    return "\n".join(lines) if lines else "—"
+
+# =====================================================================================
+# SINGLE ALERT BLOCK — new format
+#
+# = = = = = = = = = = = = = = = = =
+# 🚀 TREND CONFIRMED ALERT — 1H
+# = = = = = = = = = = = = = = = = =
+#
+# Stock: TECHM
+#
+# Category:
+# 📈 High Growth
+# 💎 Elite Compounder
+#
+# Breakouts:
+# 📉 Daily Breakout
+#
+# Price:   ₹1472.7
+# Open:    ₹1450.0
+# Day High: ₹1480.0
+# Day Low:  ₹1445.0
+#
+# RSI:              73.64
+# Volume Expansion: 4.61x
+# Candle:           🟢 Bullish | Body 97%
+#
+# Trend Structure:
+# ✅ Above EMA20
+# ✅ Above SMA50
+# ✅ Bullish 50/200 DMA (Golden Cross)
+#
+# Breakout Score:
+# 80/100  SOLID ★
+# 🟢🟢🟢🟢🟢🟢🟢🟢⚫⚫
+#
+# Bar: 1H (completed)
+# Time: 2026-05-27 10:26:38
+# =====================================================================================
+
+_TOP = "= = = = = = = = = = = = = = = = ="
+_DIV = "- " * 16
+
+_SCANNER_LABEL = {
+    "EOD":      "📊 EOD BREAKOUT ALERT",
+    "1H":       "🚀 TREND CONFIRMED ALERT — 1H",
+    "INTRADAY": "⚡ EARLY MOMENTUM ALERT — 15M",
+}
+
+_BAR_LABEL = {
+    "EOD":      "Daily (EOD)",
+    "1H":       "1H (completed)",
+    "INTRADAY": "15M (completed)",
+}
+
+def format_alert(a, scanner="1H"):
+    badge    = score_badge(a["score"])
+    tier     = score_tier(a["score"])
+    bar      = score_bar(a["score"])
+    cat      = category_label(a["category"])
+    bk       = breakout_lines(a["breakout_signals"])
+    trend    = trend_structure_lines(a)
+    bar_type = _BAR_LABEL.get(scanner, scanner)
+
+    open_price = a.get("open")
+    day_high   = a.get("day_high")
+    day_low    = a.get("day_low")
+
+    price_block_lines = [f"Price:    ₹{a['price']}"]
+    if open_price is not None:
+        price_block_lines.append(f"Open:     ₹{open_price}")
+    if day_high is not None:
+        price_block_lines.append(f"Day High: ₹{day_high}")
+    if day_low is not None:
+        price_block_lines.append(f"Day Low:  ₹{day_low}")
+    price_block = "\n".join(price_block_lines)
 
     return "\n".join([
         _DIV,
-        f"{badge} {a['symbol']}  |  {a['score']}/100  {tier}",
-        bar,
-        f"₹{a['price']}  |  RSI {a['rsi']}  |  Vol {a['volume_ratio']}x  |  Body {a['body_ratio']}%",
+        f"Stock: {a['symbol']}",
+        "",
+        "Category:",
         cat,
+        "",
+        "Breakouts:",
         bk,
+        "",
+        price_block,
+        "",
+        f"RSI:              {a['rsi']}",
+        f"Volume Expansion: {a['volume_ratio']}x",
+        f"Candle:           🟢 Bullish | Body {a['body_ratio']}%",
+        "",
+        "Trend Structure:",
+        trend,
+        "",
+        "Breakout Score:",
+        f"{a['score']}/100  {tier}",
+        bar,
+        "",
+        f"Bar: {bar_type}",
     ])
 
 # =====================================================================================
 # FULL MESSAGE
 # =====================================================================================
 
-_HEADER = {
-    "EOD":      "📊 EOD DAILY SCAN",
-    "1H":       "🚀 TREND SCAN 1H",
-    "INTRADAY": "⚡ INTRADAY 15M",
-}
-
-_TOP = "= = = = = = = = = = = = = = = = ="
-
 def build_message(scanner, cat, alerts, chunk_num, total_chunks, scan_time):
     suffix    = f"  [{chunk_num}/{total_chunks}]" if total_chunks > 1 else ""
     cat_icons = category_icons(cat)
-    header    = "\n".join([
+    label     = _SCANNER_LABEL.get(scanner, scanner)
+
+    header = "\n".join([
         _TOP,
-        f"{_HEADER.get(scanner, scanner)}{suffix}",
+        f"{label}{suffix}",
         f"{cat_icons}  |  {len(alerts)} alert{'s' if len(alerts) != 1 else ''}",
         _TOP,
     ])
 
-    body = "\n\n".join(format_alert(a) for a in alerts)
+    body = "\n\n".join(format_alert(a, scanner) for a in alerts)
 
     return f"{header}\n\n{body}\n\n⏰ {scan_time}"
