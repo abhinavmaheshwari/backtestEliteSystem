@@ -5,8 +5,8 @@
 #
 # CANDLE SAFETY:
 #   Uses interval="15m". Only analyses COMPLETED candles by dropping the latest
-#   bar if it is still within its 15-minute window (candle_age_minutes < 15).
-#   Scanner waits until 9:31 IST so the first full 15m candle (9:15–9:30) is
+#   bar if its candle end time (start + 15min) has not yet passed.
+#   Scanner waits until 9:32 IST so the first full 15m candle (9:15–9:30) is
 #   available before any stock is checked.
 #
 # INDICATOR BASIS:
@@ -14,8 +14,13 @@
 #
 # DESIGN INTENT:
 #   Fires EARLIER than live_scanner.py by catching the first 15m momentum surge.
-#   Looser filters (RSI > 45, vol > 1.2x) vs live scanner (RSI > 45, vol > 1.2x
-#   on 1h bars) mean this alerts sooner in the move.
+#   Looser filters (RSI > 45, vol > 1.2x) vs live scanner mean this alerts
+#   sooner in the move.
+#
+# CONSOLIDATED ALERTS:
+#   Collects all alerts during the scan cycle.
+#   Sends one Telegram message per category at the end (sorted by score desc).
+#   Large categories are chunked at 10 stocks per message.
 #
 # =====================================================================================
 
@@ -54,6 +59,18 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 # =====================================================================================
+# SCANNER HEADER
+# =====================================================================================
+
+HEADER = "⚡ INTRADAY — 15M EARLY MOMENTUM"
+
+# =====================================================================================
+# CHUNK SIZE — max stocks per Telegram message (4096 char limit safety)
+# =====================================================================================
+
+CHUNK_SIZE = 10
+
+# =====================================================================================
 # INITIALIZE DATABASE
 # =====================================================================================
 
@@ -71,15 +88,13 @@ while True:
     # MARKET HOURS CHECK (IST)
     # ============================================================================
 
-    ist_now = datetime.now(IST)
-
+    ist_now      = datetime.now(IST)
     current_time = ist_now.time()
+    weekday      = ist_now.weekday()
 
-    weekday = ist_now.weekday()
-
-    # Wait until 9:31 so the first full 15m candle (9:15–9:30) is complete
+    # Wait until 9:32 — first full 15m candle (9:15–9:30) complete + 2min buffer
     market_open = (
-        dt_time(9, 31)
+        dt_time(9, 32)
         <= current_time
         <= dt_time(15, 30)
     )
@@ -89,7 +104,7 @@ while True:
     if not (market_open and weekday_open):
 
         logger.info(
-            f"⏰ Market closed or pre-9:31 | "
+            f"⏰ Market closed or pre-9:32 | "
             f"Current IST Time: "
             f"{ist_now.strftime('%Y-%m-%d %H:%M:%S')} | "
             f"Sleeping for 5 minutes..."
@@ -123,34 +138,26 @@ while True:
     # SCAN START
     # ============================================================================
 
-    scan_start = datetime.now(IST)
-
-    total_alerts = 0
+    scan_start        = datetime.now(IST)
+    total_alerts      = 0
+    alerts_by_category = {}   # { category: [ alert_dict, ... ] }
 
     logger.info("=" * 80)
-
     logger.info(
         f"⚡ NEW INTRADAY SCAN CYCLE STARTED | "
         f"Stocks={len(watchlist)}"
     )
-
     logger.info(
         f"⏰ IST Scan Time: "
         f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
     )
-
     logger.info("=" * 80)
 
     # ============================================================================
     # MAIN STOCK LOOP
     # ============================================================================
 
-    for idx, (_, row) in enumerate(
-
-        watchlist.iterrows(),
-
-        start=1
-    ):
+    for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
         symbol = "UNKNOWN"
 
@@ -181,9 +188,7 @@ while True:
             )
 
             if ticker.empty:
-
                 logger.warning(f"❌ No data: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -191,7 +196,6 @@ while True:
             # ====================================================================
 
             ticker.reset_index(inplace=True)
-
             ticker = ticker.copy()
 
             # ====================================================================
@@ -199,7 +203,6 @@ while True:
             # ====================================================================
 
             if isinstance(ticker.columns, pd.MultiIndex):
-
                 ticker.columns = ticker.columns.get_level_values(0)
 
             ticker = ticker.loc[:, ~ticker.columns.duplicated()]
@@ -209,31 +212,21 @@ while True:
             # ====================================================================
 
             required_cols = ["Open", "High", "Low", "Close", "Volume"]
-
-            missing_col = False
+            missing_col   = False
 
             for col_name in required_cols:
 
                 if col_name not in ticker.columns:
-
-                    logger.warning(
-                        f"❌ Missing column {col_name}: {symbol}"
-                    )
-
+                    logger.warning(f"❌ Missing column {col_name}: {symbol}")
                     missing_col = True
-
                     break
 
                 if isinstance(ticker[col_name], pd.DataFrame):
-
                     ticker[col_name] = ticker[col_name].iloc[:, 0]
 
-                ticker[col_name] = pd.Series(
-                    ticker[col_name]
-                ).astype(float)
+                ticker[col_name] = pd.Series(ticker[col_name]).astype(float)
 
             if missing_col:
-
                 continue
 
             # ====================================================================
@@ -246,47 +239,41 @@ while True:
 
             # ====================================================================
             # COMPLETED CANDLE GUARD
-            # Detect the datetime column (yfinance uses "Datetime" for intraday)
-            # Drop the latest bar if it is still within its 15-min window.
+            # yfinance timestamps candles at their START time.
+            # A 15m candle starting at T is complete only when now >= T + 15min.
+            # Drop the latest bar if its end time has not yet passed.
             # ====================================================================
 
             datetime_col = None
 
             for col in ["Datetime", "Date", "index"]:
-
                 if col in ticker.columns:
-
                     datetime_col = col
-
                     break
 
             if datetime_col is not None:
 
                 try:
 
-                    latest_candle_time = pd.Timestamp(
+                    latest_candle_start = pd.Timestamp(
                         ticker.iloc[-1][datetime_col]
                     ).replace(tzinfo=None)
 
+                    candle_end = latest_candle_start + pd.Timedelta(minutes=15)
+
                     now_naive = datetime.now(IST).replace(tzinfo=None)
 
-                    candle_age_minutes = (
-                        now_naive - latest_candle_time
-                    ).total_seconds() / 60
-
-                    if candle_age_minutes < 15:
+                    if now_naive < candle_end:
 
                         logger.warning(
-                            f"⚠️ Latest 15m candle still forming "
-                            f"({candle_age_minutes:.0f} min old) — "
-                            f"dropping it: {symbol}"
+                            f"⚠️ 15m candle still forming — "
+                            f"ends at {candle_end.strftime('%H:%M')} — "
+                            f"dropped latest, using previous: {symbol}"
                         )
 
-                        # Drop the incomplete latest candle
                         ticker = ticker.iloc[:-1].copy()
 
                 except Exception:
-
                     logger.warning(
                         f"⚠️ Could not check candle age for {symbol}"
                     )
@@ -297,11 +284,9 @@ while True:
             # ====================================================================
 
             if len(ticker) < 50:
-
                 logger.warning(
                     f"❌ Insufficient candles ({len(ticker)}): {symbol}"
                 )
-
                 continue
 
             # ====================================================================
@@ -311,9 +296,7 @@ while True:
             ticker = apply_indicators(ticker)
 
             if ticker is None or ticker.empty:
-
                 logger.warning(f"❌ Indicator failure: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -323,7 +306,6 @@ while True:
             signals = detect_breakouts(ticker)
 
             if len(signals) == 0:
-
                 continue
 
             # ====================================================================
@@ -337,11 +319,9 @@ while True:
             # ====================================================================
 
             if "RSI" not in ticker.columns:
-
                 continue
 
             if pd.isna(latest["RSI"]):
-
                 continue
 
             # ====================================================================
@@ -350,43 +330,31 @@ while True:
             # ====================================================================
 
             latest_volume = float(latest["Volume"])
-
-            avg_volume = float(
-                ticker["Volume"].tail(20).mean()
-            )
+            avg_volume    = float(ticker["Volume"].tail(20).mean())
 
             if avg_volume <= 0:
-
                 continue
 
             volume_ratio = latest_volume / avg_volume
 
             # ====================================================================
-            # STRONG BREAKOUT CANDLE FILTER
+            # CANDLE QUALITY FILTER
             # ====================================================================
 
-            candle_range = (
-                float(latest["High"]) - float(latest["Low"])
-            )
-
-            candle_body = abs(
-                float(latest["Close"]) - float(latest["Open"])
-            )
+            candle_range = float(latest["High"]) - float(latest["Low"])
+            candle_body  = abs(float(latest["Close"]) - float(latest["Open"]))
 
             if candle_range <= 0:
-
                 continue
 
             body_ratio = candle_body / candle_range
 
             # weak candle rejection — looser than live scanner to catch early moves
             if body_ratio < 0.4:
-
                 continue
 
             # must be a green (bullish) candle
             if float(latest["Close"]) <= float(latest["Open"]):
-
                 continue
 
             # ====================================================================
@@ -395,29 +363,23 @@ while True:
 
             # first volume surge — lower than live scanner
             if volume_ratio < 1.2:
-
                 continue
 
             # RSI rising — catching momentum as it starts
             if latest["RSI"] < 45:
-
                 continue
 
             # avoid overextended moves
             if latest["RSI"] > 80:
-
                 continue
 
             # above 20 EMA — near-term trend confirmation only
             if latest["Close"] < latest["EMA20"]:
-
                 continue
 
             # above 50 SMA if available
             if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
-
                 if latest["Close"] < latest["SMA50"]:
-
                     continue
 
             # ====================================================================
@@ -428,17 +390,13 @@ while True:
 
             # ====================================================================
             # AVOID DUPLICATE ALERTS (per symbol + type + day)
-            # Resets each day so next-day signals are not blocked
             # ====================================================================
 
             today_str = datetime.now(IST).strftime("%Y-%m-%d")
-
             dedup_key = f"{breakout_type}|{today_str}"
 
             if alert_exists(symbol, dedup_key):
-
                 logger.info(f"⚠️ Duplicate skipped: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -457,59 +415,32 @@ while True:
             # ====================================================================
 
             if score < 70:
-
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
                 )
-
                 continue
 
             # ====================================================================
-            # ALERT MESSAGE
+            # COLLECT ALERT — do NOT send individually
             # ====================================================================
 
-            message = f'''
-⚡ INTRADAY SCANNER — 15M EARLY MOMENTUM
+            alert_data = {
+                "symbol":        symbol,
+                "breakout_type": breakout_type,
+                "price":         round(float(latest["Close"]), 2),
+                "rsi":           round(float(latest["RSI"]), 2),
+                "volume_ratio":  round(volume_ratio, 2),
+                "body_ratio":    round(body_ratio * 100),
+                "score":         score,
+            }
 
-Stock: {symbol}
+            if category not in alerts_by_category:
+                alerts_by_category[category] = []
 
-Category:
-{category}
-
-Breakouts:
-{breakout_type}
-
-Price:
-₹{round(float(latest["Close"]), 2)}
-
-RSI:
-{round(float(latest["RSI"]), 2)}
-
-Volume Expansion:
-{round(volume_ratio, 2)}x
-
-Candle:
-🟢 Bullish | Body {round(body_ratio * 100)}%
-
-Trend:
-✅ Above EMA20
-
-Breakout Score:
-{score}/100
-
-Bar: 15M (completed)
-Time:
-{datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")}
-'''
+            alerts_by_category[category].append(alert_data)
 
             # ====================================================================
-            # SEND TELEGRAM ALERT
-            # ====================================================================
-
-            send_telegram_message(message)
-
-            # ====================================================================
-            # SAVE ALERT
+            # SAVE DEDUP
             # ====================================================================
 
             save_alert(
@@ -521,42 +452,87 @@ Time:
             total_alerts += 1
 
             logger.info(
-                f"✅ ALERT SENT: {symbol} | "
+                f"✅ ALERT COLLECTED: {symbol} | "
                 f"Score={score} | "
                 f"Vol={round(volume_ratio, 2)}x"
             )
 
-        # ========================================================================
-        # ERROR HANDLING
-        # ========================================================================
-
         except Exception:
-
             logger.exception(f"❌ ERROR: {symbol}")
+
+    # ============================================================================
+    # SEND CONSOLIDATED MESSAGES — one per category, chunked if large
+    # ============================================================================
+
+    scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+    for cat in sorted(alerts_by_category.keys()):
+
+        cat_alerts = sorted(
+            alerts_by_category[cat],
+            key=lambda x: x["score"],
+            reverse=True
+        )
+
+        chunks = [
+            cat_alerts[i:i + CHUNK_SIZE]
+            for i in range(0, len(cat_alerts), CHUNK_SIZE)
+        ]
+
+        for chunk_num, chunk in enumerate(chunks, start=1):
+
+            suffix = (
+                f" ({chunk_num}/{len(chunks)})"
+                if len(chunks) > 1
+                else ""
+            )
+
+            lines = []
+
+            for a in chunk:
+                lines.append(
+                    f"📌 {a['symbol']}\n"
+                    f"   Breakout : {a['breakout_type']}\n"
+                    f"   Price    : ₹{a['price']}\n"
+                    f"   RSI      : {a['rsi']}\n"
+                    f"   Volume   : {a['volume_ratio']}x\n"
+                    f"   Candle   : 🟢 Body {a['body_ratio']}%\n"
+                    f"   Score    : {a['score']}/100\n"
+                )
+
+            message = (
+                f"{HEADER}{suffix}\n"
+                f"{'=' * 35}\n"
+                f"Category : {cat}\n"
+                f"Stocks   : {len(cat_alerts)}\n"
+                f"{'=' * 35}\n\n"
+                + "\n".join(lines)
+                + f"\n⏰ {scan_time}"
+            )
+
+            send_telegram_message(message)
+
+            logger.info(
+                f"📨 Consolidated alert sent | "
+                f"Category={cat} | "
+                f"Chunk={chunk_num}/{len(chunks)} | "
+                f"Stocks={len(chunk)}"
+            )
 
     # ============================================================================
     # SCAN END SUMMARY
     # ============================================================================
 
     scan_end = datetime.now(IST)
-
     duration = (scan_end - scan_start).total_seconds()
 
     logger.info("=" * 80)
-
     logger.info(
         f"✅ INTRADAY SCAN COMPLETED | "
         f"Duration={round(duration, 2)} sec"
     )
-
-    logger.info(f"📨 Alerts Sent={total_alerts}")
-
+    logger.info(f"📨 Total Alerts={total_alerts}")
     logger.info("⏰ Sleeping 5 mins before next cycle...")
-
     logger.info("=" * 80)
-
-    # ============================================================================
-    # WAIT BEFORE NEXT SCAN
-    # ============================================================================
 
     time.sleep(300)
