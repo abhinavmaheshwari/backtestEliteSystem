@@ -1,5 +1,17 @@
 # =====================================================================================
 # app/live_scanner.py
+# ELITE BREAKOUT SCANNER — 1H BARS
+# =====================================================================================
+#
+# CANDLE SAFETY:
+#   Uses interval="1h". Only analyses COMPLETED candles by dropping the latest
+#   bar if it is still within its 60-minute window (candle_age_minutes < 60).
+#   Scanner waits until 10:16 IST so the first full 1h candle (9:15–10:15) is
+#   available before any stock is checked.
+#
+# INDICATOR BASIS:
+#   period="60d" gives ~360 1h bars — enough for EMA20, SMA50, SMA200 on hourly.
+#
 # =====================================================================================
 
 import pandas as pd
@@ -23,11 +35,8 @@ from config import WATCHLIST_PATH
 # =====================================================================================
 
 logging.basicConfig(
-
     level=logging.INFO,
-
     format="%(asctime)s | %(levelname)s | %(message)s",
-
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
@@ -63,12 +72,10 @@ while True:
 
     weekday = ist_now.weekday()
 
+    # Wait until 10:16 so the first full 1h candle (9:15–10:15) is complete
     market_open = (
-
-        dt_time(9, 15)
-
+        dt_time(10, 16)
         <= current_time
-
         <= dt_time(15, 30)
     )
 
@@ -77,7 +84,7 @@ while True:
     if not (market_open and weekday_open):
 
         logger.info(
-            f"⏰ Market closed | "
+            f"⏰ Market closed or pre-10:16 | "
             f"Current IST Time: "
             f"{ist_now.strftime('%Y-%m-%d %H:%M:%S')} | "
             f"Sleeping for 5 minutes..."
@@ -93,27 +100,19 @@ while True:
 
     try:
 
-        watchlist = pd.read_parquet(
-            WATCHLIST_PATH
-        )
+        watchlist = pd.read_parquet(WATCHLIST_PATH)
 
     except Exception:
 
-        logger.exception(
-            "❌ WATCHLIST LOAD ERROR"
-        )
+        logger.exception("❌ WATCHLIST LOAD ERROR")
 
-        logger.info(
-            "🚀 RUNNING DAILY BUILDER..."
-        )
+        logger.info("🚀 RUNNING DAILY BUILDER...")
 
         from daily_builder import main as build_watchlist
 
         build_watchlist()
 
-        watchlist = pd.read_parquet(
-            WATCHLIST_PATH
-        )
+        watchlist = pd.read_parquet(WATCHLIST_PATH)
 
     # ============================================================================
     # SCAN START
@@ -156,43 +155,29 @@ while True:
             # STOCK INFO
             # ====================================================================
 
-            symbol = row["Stock"]
-
+            symbol   = row["Stock"]
             category = row["Category"]
 
-            logger.info(
-                f"🔍 Checking: {symbol}"
-            )
-
-            logger.info(
-                f"📊 Progress: "
-                f"{idx}/{len(watchlist)}"
-            )
+            logger.info(f"🔍 Checking: {symbol}")
+            logger.info(f"📊 Progress: {idx}/{len(watchlist)}")
 
             # ====================================================================
-            # DOWNLOAD PRICE DATA
+            # DOWNLOAD PRICE DATA — 1H BARS
+            # 60 days × ~6 bars/day = ~360 bars (enough for SMA200 on 1h)
             # ====================================================================
 
             ticker = yf.download(
-
                 f"{symbol}.NS",
-
-                period="1y",
-
-                interval="1d",
-
+                period="60d",
+                interval="1h",
                 progress=False,
-
                 auto_adjust=True,
-
                 threads=False
             )
 
             if ticker.empty:
 
-                logger.warning(
-                    f"❌ No data: {symbol}"
-                )
+                logger.warning(f"❌ No data: {symbol}")
 
                 continue
 
@@ -208,34 +193,17 @@ while True:
             # FIX YFINANCE MULTI-INDEX / DUPLICATE COLUMNS
             # ====================================================================
 
-            if isinstance(
-                ticker.columns,
-                pd.MultiIndex
-            ):
+            if isinstance(ticker.columns, pd.MultiIndex):
 
-                ticker.columns = (
-                    ticker.columns
-                    .get_level_values(0)
-                )
+                ticker.columns = ticker.columns.get_level_values(0)
 
-            # remove duplicate columns
-            ticker = ticker.loc[
-                :,
-                ~ticker.columns.duplicated()
-            ]
+            ticker = ticker.loc[:, ~ticker.columns.duplicated()]
 
             # ====================================================================
             # FORCE OHLCV TO 1D SERIES
             # ====================================================================
 
-            required_cols = [
-
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume"
-            ]
+            required_cols = ["Open", "High", "Low", "Close", "Volume"]
 
             missing_col = False
 
@@ -244,34 +212,19 @@ while True:
                 if col_name not in ticker.columns:
 
                     logger.warning(
-                        f"❌ Missing column "
-                        f"{col_name}: {symbol}"
+                        f"❌ Missing column {col_name}: {symbol}"
                     )
 
                     missing_col = True
 
                     break
 
-                # dataframe -> series
-                if isinstance(
+                if isinstance(ticker[col_name], pd.DataFrame):
 
-                    ticker[col_name],
+                    ticker[col_name] = ticker[col_name].iloc[:, 0]
 
-                    pd.DataFrame
-                ):
-
-                    ticker[col_name] = (
-
-                        ticker[col_name]
-
-                        .iloc[:, 0]
-                    )
-
-                # ndarray/object -> float series
                 ticker[col_name] = pd.Series(
-
                     ticker[col_name]
-
                 ).astype(float)
 
             if missing_col:
@@ -283,22 +236,65 @@ while True:
             # ====================================================================
 
             ticker = ticker.dropna(
-
-                subset=[
-
-                    "Open",
-                    "High",
-                    "Low",
-                    "Close",
-                    "Volume"
-                ]
+                subset=["Open", "High", "Low", "Close", "Volume"]
             )
 
-            if len(ticker) < 50:
+            # ====================================================================
+            # COMPLETED CANDLE GUARD
+            # Detect the datetime column (yfinance uses "Datetime" for intraday)
+            # Drop the latest bar if it is still within its 60-min window.
+            # ====================================================================
+
+            datetime_col = None
+
+            for col in ["Datetime", "Date", "index"]:
+
+                if col in ticker.columns:
+
+                    datetime_col = col
+
+                    break
+
+            if datetime_col is not None:
+
+                try:
+
+                    latest_candle_time = pd.Timestamp(
+                        ticker.iloc[-1][datetime_col]
+                    ).replace(tzinfo=None)
+
+                    now_naive = datetime.now(IST).replace(tzinfo=None)
+
+                    candle_age_minutes = (
+                        now_naive - latest_candle_time
+                    ).total_seconds() / 60
+
+                    if candle_age_minutes < 60:
+
+                        logger.warning(
+                            f"⚠️ Latest 1h candle still forming "
+                            f"({candle_age_minutes:.0f} min old) — "
+                            f"dropping it: {symbol}"
+                        )
+
+                        # Drop the incomplete latest candle
+                        ticker = ticker.iloc[:-1].copy()
+
+                except Exception:
+
+                    logger.warning(
+                        f"⚠️ Could not check candle age for {symbol}"
+                    )
+
+            # ====================================================================
+            # MINIMUM CANDLE CHECK
+            # 100 bars minimum — ensures indicators are reliable
+            # ====================================================================
+
+            if len(ticker) < 100:
 
                 logger.warning(
-                    f"❌ Insufficient candles: "
-                    f"{symbol}"
+                    f"❌ Insufficient candles ({len(ticker)}): {symbol}"
                 )
 
                 continue
@@ -307,16 +303,11 @@ while True:
             # APPLY TECHNICAL INDICATORS
             # ====================================================================
 
-            ticker = apply_indicators(
-                ticker
-            )
+            ticker = apply_indicators(ticker)
 
             if ticker is None or ticker.empty:
 
-                logger.warning(
-                    f"❌ Indicator failure: "
-                    f"{symbol}"
-                )
+                logger.warning(f"❌ Indicator failure: {symbol}")
 
                 continue
 
@@ -324,16 +315,14 @@ while True:
             # DETECT BREAKOUTS
             # ====================================================================
 
-            signals = detect_breakouts(
-                ticker
-            )
+            signals = detect_breakouts(ticker)
 
             if len(signals) == 0:
 
                 continue
 
             # ====================================================================
-            # LATEST CANDLE
+            # LATEST COMPLETED CANDLE
             # ====================================================================
 
             latest = ticker.iloc[-1]
@@ -354,61 +343,43 @@ while True:
             # VOLUME ANALYSIS
             # ====================================================================
 
-            latest_volume = float(
-                latest["Volume"]
-            )
+            latest_volume = float(latest["Volume"])
 
             avg_volume = float(
-
-                ticker["Volume"]
-
-                .tail(10)
-
-                .mean()
+                ticker["Volume"].tail(20).mean()
             )
 
             if avg_volume <= 0:
 
                 continue
 
-            volume_ratio = (
-
-                latest_volume
-
-                / avg_volume
-            )
+            volume_ratio = latest_volume / avg_volume
 
             # ====================================================================
             # STRONG BREAKOUT CANDLE FILTER
             # ====================================================================
 
             candle_range = (
-
-                float(latest["High"])
-
-                - float(latest["Low"])
+                float(latest["High"]) - float(latest["Low"])
             )
 
             candle_body = abs(
-
-                float(latest["Close"])
-
-                - float(latest["Open"])
+                float(latest["Close"]) - float(latest["Open"])
             )
 
             if candle_range <= 0:
 
                 continue
 
-            body_ratio = (
-
-                candle_body
-
-                / candle_range
-            )
+            body_ratio = candle_body / candle_range
 
             # weak candle rejection
-            if body_ratio < 0.5:
+            if body_ratio < 0.4:
+
+                continue
+
+            # must be a green (bullish) candle
+            if float(latest["Close"]) <= float(latest["Open"]):
 
                 continue
 
@@ -417,17 +388,17 @@ while True:
             # ====================================================================
 
             # volume expansion required
-            if volume_ratio < 1.5:
+            if volume_ratio < 1.2:
 
                 continue
 
-            # healthy RSI
-            if latest["RSI"] < 55:
+            # healthy RSI — catching momentum early
+            if latest["RSI"] < 45:
 
                 continue
 
             # avoid overextended moves
-            if latest["RSI"] > 85:
+            if latest["RSI"] > 80:
 
                 continue
 
@@ -436,39 +407,30 @@ while True:
 
                 continue
 
-            # above 50 DMA
-            if latest["Close"] < latest["SMA50"]:
+            # above 50 SMA
+            if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
 
-                continue
+                if latest["Close"] < latest["SMA50"]:
 
-            # bullish trend structure
-            if latest["SMA50"] < latest["SMA200"]:
-
-                continue
+                    continue
 
             # ====================================================================
             # BREAKOUT TYPE
             # ====================================================================
 
-            breakout_type = ", ".join(
-                signals
-            )
+            breakout_type = ", ".join(signals)
 
             # ====================================================================
-            # AVOID DUPLICATE ALERTS
+            # AVOID DUPLICATE ALERTS (per symbol + type + day)
             # ====================================================================
 
-            if alert_exists(
+            today_str = datetime.now(IST).strftime("%Y-%m-%d")
 
-                symbol,
+            dedup_key = f"{breakout_type}|{today_str}"
 
-                breakout_type
-            ):
+            if alert_exists(symbol, dedup_key):
 
-                logger.info(
-                    f"⚠️ Duplicate skipped: "
-                    f"{symbol}"
-                )
+                logger.info(f"⚠️ Duplicate skipped: {symbol}")
 
                 continue
 
@@ -477,13 +439,9 @@ while True:
             # ====================================================================
 
             score = calculate_score(
-
                 category=category,
-
                 breakout_count=len(signals),
-
                 rsi=float(latest["RSI"]),
-
                 volume_ratio=volume_ratio
             )
 
@@ -491,13 +449,10 @@ while True:
             # MINIMUM SCORE FILTER
             # ====================================================================
 
-            if score < 70:
+            if score < 60:
 
                 logger.info(
-
-                    f"❌ Weak setup skipped: "
-
-                    f"{symbol} | Score={score}"
+                    f"❌ Weak setup skipped: {symbol} | Score={score}"
                 )
 
                 continue
@@ -507,7 +462,7 @@ while True:
             # ====================================================================
 
             message = f'''
-🚀 ELITE BREAKOUT ALERT
+🚀 ELITE BREAKOUT ALERT — 1H
 
 Stock: {symbol}
 
@@ -526,14 +481,17 @@ RSI:
 Volume Expansion:
 {round(volume_ratio, 2)}x
 
-Trend Structure:
-✅ Above 20 EMA
-✅ Above 50 DMA
-✅ Bullish 50/200 DMA
+Candle:
+🟢 Bullish | Body {round(body_ratio * 100)}%
+
+Trend:
+✅ Above EMA20
+✅ Above SMA50
 
 Breakout Score:
 {score}/100
 
+Bar: 1H (completed)
 Time:
 {datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")}
 '''
@@ -542,29 +500,24 @@ Time:
             # SEND TELEGRAM ALERT
             # ====================================================================
 
-            send_telegram_message(
-                message
-            )
+            send_telegram_message(message)
 
             # ====================================================================
             # SAVE ALERT
             # ====================================================================
 
             save_alert(
-
                 symbol,
-
-                breakout_type,
-
-                datetime.now(IST).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+                dedup_key,
+                datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             )
 
             total_alerts += 1
 
             logger.info(
-                f"✅ ALERT SENT: {symbol}"
+                f"✅ ALERT SENT: {symbol} | "
+                f"Score={score} | "
+                f"Vol={round(volume_ratio, 2)}x"
             )
 
         # ========================================================================
@@ -573,9 +526,7 @@ Time:
 
         except Exception:
 
-            logger.exception(
-                f"❌ ERROR: {symbol}"
-            )
+            logger.exception(f"❌ ERROR: {symbol}")
 
     # ============================================================================
     # SCAN END SUMMARY
@@ -583,11 +534,7 @@ Time:
 
     scan_end = datetime.now(IST)
 
-    duration = (
-
-        scan_end - scan_start
-
-    ).total_seconds()
+    duration = (scan_end - scan_start).total_seconds()
 
     logger.info("=" * 80)
 
@@ -596,13 +543,9 @@ Time:
         f"Duration={round(duration, 2)} sec"
     )
 
-    logger.info(
-        f"📨 Alerts Sent={total_alerts}"
-    )
+    logger.info(f"📨 Alerts Sent={total_alerts}")
 
-    logger.info(
-        "⏰ Sleeping 5 mins before next cycle..."
-    )
+    logger.info("⏰ Sleeping 5 mins before next cycle...")
 
     logger.info("=" * 80)
 
