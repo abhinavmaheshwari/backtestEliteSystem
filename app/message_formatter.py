@@ -1,7 +1,7 @@
 # =====================================================================================
 # app/message_formatter.py
-# TELEGRAM MESSAGE FORMATTER — Pure Unicode, zero HTML tags
-# Works in all parse modes (HTML / Markdown / none)
+# TELEGRAM MESSAGE FORMATTER
+# Rules: no box-drawing chars, no block chars — emoji + hyphens only
 # =====================================================================================
 
 # =====================================================================================
@@ -21,115 +21,106 @@ def score_badge(score):
     return             "📌"
 
 def score_bar(score):
-    # 10-block bar — more granular than 5
+    # 10 green circles filled, grey unfilled — renders cleanly on all Telegram clients
     filled = round(score / 10)
-    return "▓" * filled + "░" * (10 - filled)
+    return "🟢" * filled + "⚫" * (10 - filled)
 
 # =====================================================================================
-# BREAKOUT COSMETICS
+# CATEGORY — compact
 # =====================================================================================
 
-def breakout_label(signals):
-    """Shorten signal names and pick the strongest emoji."""
-    SHORT = {
-        "52W Breakout":     "52W 🚀",
-        "Monthly Breakout": "Monthly 🌕",
-        "Weekly Breakout":  "Weekly 📈",
-        "Daily Breakout":   "Daily  📊",
-    }
-    return "  ".join(SHORT.get(s, s) for s in signals)
-
-# =====================================================================================
-# CATEGORY — compact single-line
-# =====================================================================================
-
-_CAT_SHORT = {
-    "Elite Compounder": "💎 Elite",
-    "High Growth":      "🚀 Growth",
-    "Mature Quality":   "🏛 Quality",
+_CAT_ICON = {
+    "Elite Compounder": "💎",
+    "High Growth":      "📈",
+    "Mature Quality":   "🏛",
 }
 
+def category_icons(category):
+    return "  ".join(
+        _CAT_ICON.get(c.strip(), c.strip())
+        for c in category.split("+")
+    )
+
 def category_short(category):
-    parts = [_CAT_SHORT.get(c.strip(), c.strip()) for c in category.split("+")]
-    return "  ·  ".join(parts)
+    parts = []
+    for c in category.split("+"):
+        c = c.strip()
+        icon = _CAT_ICON.get(c, "")
+        label = c.replace("Elite Compounder","Elite").replace("High Growth","Growth").replace("Mature Quality","Quality")
+        parts.append(f"{icon} {label}")
+    return "  |  ".join(parts)
+
+# =====================================================================================
+# BREAKOUT SIGNALS — one per line with emoji
+# =====================================================================================
+
+_BK_ICON = {
+    "52W Breakout":     "🚀",
+    "Monthly Breakout": "🌕",
+    "Weekly Breakout":  "📊",
+    "Daily Breakout":   "📉",
+}
+
+def breakout_lines(signals):
+    return "\n".join(
+        f"  {_BK_ICON.get(s, '•')} {s}"
+        for s in signals
+    )
 
 # =====================================================================================
 # SINGLE ALERT BLOCK
-# Rendered example (no HTML):
 #
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🏆  HINDZINC              100
-#     ▓▓▓▓▓▓▓▓▓▓  ELITE ★★★
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  ₹656.1   RSI 70.7   Vol 1.9x
-#  Body 65%   💎 Elite
+# Example output:
 #
-#  📈 Weekly  📊 Daily
+# - - - - - - - - - - - - - - - -
+# 🏆 HINDZINC  |  100/100  ELITE ★★★
+# 🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
+# ₹656.1  |  RSI 70.7  |  Vol 1.9x  |  Body 65%
+# 💎 Elite  |  📈 Growth
+#   🌕 Monthly Breakout
+#   📊 Weekly Breakout
 # =====================================================================================
 
-_THIN  = "┄" * 32
-_THICK = "━" * 32
+_DIV = "- " * 16      # "- - - - - - - - - - - - - - - - "
 
 def format_alert(a):
     badge = score_badge(a["score"])
-    bar   = score_bar(a["score"])
     tier  = score_tier(a["score"])
+    bar   = score_bar(a["score"])
     cat   = category_short(a["category"])
-    bk    = breakout_label(a["breakout_signals"])
+    bk    = breakout_lines(a["breakout_signals"])
 
-    # right-align score in header line (symbol + padding + score)
-    sym_field = a["symbol"].ljust(18)
-
-    lines = [
-        _THICK,
-        f"{badge}  {sym_field}{a['score']:>3}/100",
-        f"    {bar}  {tier}",
-        _THIN,
-        f"  ₹{a['price']}   RSI {a['rsi']}   Vol {a['volume_ratio']}x",
-        f"  Body {a['body_ratio']}%   {cat}",
-        "",
-        f"  {bk}",
-    ]
-    return "\n".join(lines)
+    return "\n".join([
+        _DIV,
+        f"{badge} {a['symbol']}  |  {a['score']}/100  {tier}",
+        bar,
+        f"₹{a['price']}  |  RSI {a['rsi']}  |  Vol {a['volume_ratio']}x  |  Body {a['body_ratio']}%",
+        cat,
+        bk,
+    ])
 
 # =====================================================================================
 # FULL MESSAGE
 # =====================================================================================
 
-_SCANNER_ICON = {
-    "EOD":      "📊",
-    "1H":       "🚀",
-    "INTRADAY": "⚡",
+_HEADER = {
+    "EOD":      "📊 EOD DAILY SCAN",
+    "1H":       "🚀 TREND SCAN 1H",
+    "INTRADAY": "⚡ INTRADAY 15M",
 }
 
-_SCANNER_LABEL = {
-    "EOD":      "EOD DAILY SCAN",
-    "1H":       "TREND SCAN 1H",
-    "INTRADAY": "INTRADAY 15M",
-}
+_TOP = "= = = = = = = = = = = = = = = = ="
 
 def build_message(scanner, cat, alerts, chunk_num, total_chunks, scan_time):
-    """
-    scanner : "EOD" | "1H" | "INTRADAY"
-    alerts  : list of dicts with keys:
-                symbol, price, rsi, volume_ratio, body_ratio,
-                score, category, breakout_signals
-    """
-    icon  = _SCANNER_ICON.get(scanner, "📡")
-    label = _SCANNER_LABEL.get(scanner, scanner)
-    suffix = f"  [{chunk_num}/{total_chunks}]" if total_chunks > 1 else ""
-
-    cat_line = category_short(cat)
-
-    header = "\n".join([
-        f"{icon}  {label}{suffix}",
-        "═" * 32,
-        f"{cat_line}   ·   {len(alerts)} alert{'s' if len(alerts) != 1 else ''}",
-        "═" * 32,
+    suffix    = f"  [{chunk_num}/{total_chunks}]" if total_chunks > 1 else ""
+    cat_icons = category_icons(cat)
+    header    = "\n".join([
+        _TOP,
+        f"{_HEADER.get(scanner, scanner)}{suffix}",
+        f"{cat_icons}  |  {len(alerts)} alert{'s' if len(alerts) != 1 else ''}",
+        _TOP,
     ])
 
-    body_parts = [format_alert(a) for a in alerts]
+    body = "\n\n".join(format_alert(a) for a in alerts)
 
-    footer = f"\n⏰  {scan_time}"
-
-    return header + "\n\n" + "\n\n".join(body_parts) + "\n" + footer
+    return f"{header}\n\n{body}\n\n⏰ {scan_time}"
