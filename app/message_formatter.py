@@ -1,6 +1,7 @@
 # =====================================================================================
 # app/message_formatter.py
 # TELEGRAM MESSAGE FORMATTER
+# parse_mode: HTML  — uses <b>, <i>, <code> tags (safer than Markdown)
 # Rules: no box-drawing chars, no block chars — emoji + hyphens only
 # =====================================================================================
 
@@ -89,41 +90,8 @@ def trend_structure_lines(alert):
     return "\n".join(lines) if lines else "—"
 
 # =====================================================================================
-# SINGLE ALERT BLOCK — new format
-#
-# = = = = = = = = = = = = = = = = =
-# 🚀 TREND CONFIRMED ALERT — 1H
-# = = = = = = = = = = = = = = = = =
-#
-# Stock: TECHM
-#
-# Category:
-# 📈 High Growth
-# 💎 Elite Compounder
-#
-# Breakouts:
-# 📉 Daily Breakout
-#
-# Price:   ₹1472.7
-# Open:    ₹1450.0
-# Day High: ₹1480.0
-# Day Low:  ₹1445.0
-#
-# RSI:              73.64
-# Volume Expansion: 4.61x
-# Candle:           🟢 Bullish | Body 97%
-#
-# Trend Structure:
-# ✅ Above EMA20
-# ✅ Above SMA50
-# ✅ Bullish 50/200 DMA (Golden Cross)
-#
-# Breakout Score:
-# 80/100  SOLID ★
-# 🟢🟢🟢🟢🟢🟢🟢🟢⚫⚫
-#
-# Bar: 1H (completed)
-# Time: 2026-05-27 10:26:38
+# SINGLE ALERT BLOCK
+# Symbol is wrapped in <b> for bold; rest is plain text (HTML-safe)
 # =====================================================================================
 
 _TOP = "= = = = = = = = = = = = = = = = ="
@@ -142,7 +110,6 @@ _BAR_LABEL = {
 }
 
 def format_alert(a, scanner="1H"):
-    badge    = score_badge(a["score"])
     tier     = score_tier(a["score"])
     bar      = score_bar(a["score"])
     cat      = category_label(a["category"])
@@ -154,18 +121,19 @@ def format_alert(a, scanner="1H"):
     day_high   = a.get("day_high")
     day_low    = a.get("day_low")
 
-    price_block_lines = [f"Price:    ₹{a['price']}"]
+    price_lines = [f"Price:    ₹{a['price']}"]
     if open_price is not None:
-        price_block_lines.append(f"Open:     ₹{open_price}")
+        price_lines.append(f"Open:     ₹{open_price}")
     if day_high is not None:
-        price_block_lines.append(f"Day High: ₹{day_high}")
+        price_lines.append(f"Day High: ₹{day_high}")
     if day_low is not None:
-        price_block_lines.append(f"Day Low:  ₹{day_low}")
-    price_block = "\n".join(price_block_lines)
+        price_lines.append(f"Day Low:  ₹{day_low}")
+    price_block = "\n".join(price_lines)
 
+    # <b> tag for bold symbol — HTML parse_mode
     return "\n".join([
         _DIV,
-        f"Stock: {a['symbol']}",
+        f"Stock: <b>{a['symbol']}</b>",
         "",
         "Category:",
         cat,
