@@ -237,15 +237,35 @@ while True:
                 logger.info(f"⚠️ Duplicate: {symbol}")
                 continue
 
+            above_sma50 = (
+                bool(latest["Close"] >= latest["SMA50"])
+                if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50"))
+                else None
+            )
+            golden_cross = (
+                bool(latest["SMA50"] >= latest["SMA200"])
+                if (
+                    "SMA50" in ticker.columns and "SMA200" in ticker.columns
+                    and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
+                )
+                else None
+            )
+
             alerts_by_category.setdefault(category, []).append({
                 "symbol":           symbol,
                 "category":         category,
                 "breakout_signals": signals,
                 "price":            round(float(latest["Close"]), 2),
+                "open":             round(float(latest["Open"]), 2),
+                "day_high":         round(float(latest["High"]), 2),
+                "day_low":          round(float(latest["Low"]), 2),
                 "rsi":              round(float(latest["RSI"]), 1),
                 "volume_ratio":     round(volume_ratio, 2),
                 "body_ratio":       round(body_ratio * 100),
                 "score":            score,
+                "above_ema20":      bool(latest["Close"] >= latest["EMA20"]),
+                "above_sma50":      above_sma50,
+                "golden_cross":     golden_cross,
             })
             total_alerts += 1
 
