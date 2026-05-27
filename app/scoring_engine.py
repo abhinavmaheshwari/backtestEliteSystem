@@ -16,7 +16,7 @@ def calculate_score(category, breakout_count, rsi, volume_ratio):
 
     # ============================================================================
     # CATEGORY — 25 pts max
-    # Best single match only — not additive
+    # Best single match only — not additive to prevent stacking
     # ============================================================================
 
     if "Elite Compounder" in category:
@@ -62,8 +62,7 @@ def calculate_score(category, breakout_count, rsi, volume_ratio):
         score += 6        # mild expansion
 
     # ============================================================================
-    # HARD CAP
-    # Safety net — score never exceeds 100
+    # HARD CAP — score never exceeds 100
     # ============================================================================
 
     return min(score, 100)
