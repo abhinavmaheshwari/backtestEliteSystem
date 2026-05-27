@@ -18,54 +18,93 @@ logger = logging.getLogger(__name__)
 _db_lock = threading.Lock()
 
 # =====================================================================================
+# SQLITE CONNECTION HELPER
+# =====================================================================================
+
+def get_connection():
+
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=30,
+        check_same_thread=False
+    )
+
+    conn.execute("PRAGMA busy_timeout = 30000")
+
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
+
+    return conn
+
+# =====================================================================================
 # INITIALIZE DATABASE
 # =====================================================================================
 
 def init_db():
 
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(
+        os.path.dirname(DB_PATH),
+        exist_ok=True
+    )
 
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+    with get_connection() as conn:
 
-        conn.execute("PRAGMA journal_mode=WAL")
-
-        conn.execute('''
+        conn.execute(
+            '''
             CREATE TABLE IF NOT EXISTS alerts (
+
                 symbol        TEXT NOT NULL,
                 breakout_type TEXT NOT NULL,
                 alert_time    TEXT NOT NULL,
-                UNIQUE (symbol, breakout_type)
+
+                UNIQUE (
+                    symbol,
+                    breakout_type
+                )
             )
-        ''')
+            '''
+        )
 
         conn.commit()
 
-    logger.info(f"✅ Database ready: {DB_PATH}")
+    logger.info(
+        f"✅ Database ready: {DB_PATH}"
+    )
 
 # =====================================================================================
 # ATOMIC CHECK + SAVE
-# INSERT OR IGNORE — if row exists, silently skips (no race condition)
-# Returns True  → new alert saved
-# Returns False → duplicate, skipped
+# INSERT OR IGNORE — race-condition safe
 # =====================================================================================
 
-def save_alert_if_new(symbol, breakout_type, alert_time):
+def save_alert_if_new(
+    symbol,
+    breakout_type,
+    alert_time
+):
 
     with _db_lock:
 
         try:
 
-            with sqlite3.connect(DB_PATH, timeout=30) as conn:
-
-                conn.execute("PRAGMA journal_mode=WAL")
+            with get_connection() as conn:
 
                 cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO alerts
-                        (symbol, breakout_type, alert_time)
+                        (
+                            symbol,
+                            breakout_type,
+                            alert_time
+                        )
                     VALUES (?, ?, ?)
                     """,
-                    (symbol, breakout_type, alert_time)
+                    (
+                        symbol,
+                        breakout_type,
+                        alert_time
+                    )
                 )
 
                 conn.commit()
@@ -73,11 +112,16 @@ def save_alert_if_new(symbol, breakout_type, alert_time):
                 return cursor.rowcount == 1
 
         except Exception:
-            logger.exception(f"❌ DB error: {symbol} | {breakout_type}")
+
+            logger.exception(
+                f"❌ DB error: "
+                f"{symbol} | {breakout_type}"
+            )
+
             return False
 
 # =====================================================================================
-# CLEANUP — remove alerts older than N days
+# CLEANUP
 # =====================================================================================
 
 def cleanup_old_alerts(days=7):
@@ -86,24 +130,30 @@ def cleanup_old_alerts(days=7):
 
         try:
 
-            with sqlite3.connect(DB_PATH, timeout=30) as conn:
-
-                conn.execute("PRAGMA journal_mode=WAL")
+            with get_connection() as conn:
 
                 conn.execute(
-                    "DELETE FROM alerts WHERE alert_time < datetime('now', ?)",
+                    """
+                    DELETE FROM alerts
+                    WHERE alert_time < datetime('now', ?)
+                    """,
                     (f"-{days} days",)
                 )
 
                 conn.commit()
 
-            logger.info(f"🧹 Cleaned alerts older than {days} days")
+            logger.info(
+                f"🧹 Cleaned alerts older than {days} days"
+            )
 
         except Exception:
-            logger.exception("❌ Cleanup error")
+
+            logger.exception(
+                "❌ Cleanup error"
+            )
 
 # =====================================================================================
-# LEGACY WRAPPERS — backwards compatible
+# LEGACY WRAPPERS
 # =====================================================================================
 
 def alert_exists(symbol, breakout_type):
@@ -112,20 +162,43 @@ def alert_exists(symbol, breakout_type):
 
         try:
 
-            with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            with get_connection() as conn:
 
                 cursor = conn.execute(
-                    "SELECT 1 FROM alerts WHERE symbol=? AND breakout_type=?",
-                    (symbol, breakout_type)
+                    """
+                    SELECT 1
+                    FROM alerts
+                    WHERE symbol=?
+                    AND breakout_type=?
+                    """,
+                    (
+                        symbol,
+                        breakout_type
+                    )
                 )
 
                 return cursor.fetchone() is not None
 
         except Exception:
-            logger.exception(f"❌ alert_exists error: {symbol}")
+
+            logger.exception(
+                f"❌ alert_exists error: {symbol}"
+            )
+
             return False
 
+# =====================================================================================
+# LEGACY SAVE WRAPPER
+# =====================================================================================
 
-def save_alert(symbol, breakout_type, alert_time):
+def save_alert(
+    symbol,
+    breakout_type,
+    alert_time
+):
 
-    save_alert_if_new(symbol, breakout_type, alert_time)
+    save_alert_if_new(
+        symbol,
+        breakout_type,
+        alert_time
+    )
