@@ -314,7 +314,7 @@ while True:
 
         for chunk_num, chunk in enumerate(chunks, start=1):
             msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
-            send_telegram_message(msg)
+            send_telegram_message(msg, scan_type="EOD")
             logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
     # ============================================================================
