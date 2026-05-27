@@ -39,7 +39,7 @@ IST = ZoneInfo("Asia/Kolkata")
 WINDOWS = {
     "intraday":   (dt_time(9,  32), dt_time(15, 30)),  # 15m | first candle closes 9:30
     "live":       (dt_time(10, 17), dt_time(15, 30)),  # 1h  | first candle closes 10:15
-    "eod":        (dt_time(15, 45), dt_time(16, 15)),,  # 1d  | daily candle settled
+    "eod":        (dt_time(15, 45), dt_time(16, 15)),  # 1d  | daily candle settled
 }
 
 # =====================================================================================
