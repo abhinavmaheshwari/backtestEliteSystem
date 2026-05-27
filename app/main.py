@@ -39,7 +39,7 @@ IST = ZoneInfo("Asia/Kolkata")
 WINDOWS = {
     "intraday":   (dt_time(9,  32), dt_time(15, 30)),  # 15m | first candle closes 9:30
     "live":       (dt_time(10, 17), dt_time(15, 30)),  # 1h  | first candle closes 10:15
-    "eod":        (dt_time(15, 16), dt_time(15, 30)),  # 1d  | daily candle settled
+    "eod":        (dt_time(15, 45), dt_time(16, 15)),,  # 1d  | daily candle settled
 }
 
 # =====================================================================================
@@ -131,7 +131,7 @@ if __name__ == "__main__":
     logger.info("✅ All scanner threads started — waiting for windows")
     logger.info("   ⚡ intraday.py     — 15m | opens 9:32 AM")
     logger.info("   🚀 live_scanner.py — 1h  | opens 10:17 AM")
-    logger.info("   📊 eod_scanner.py  — 1d  | opens 3:16 PM")
+    logger.info("   📊 eod_scanner.py  — 1d  | opens 3:45 PM")
     logger.info("=" * 60)
 
     for t in threads:
