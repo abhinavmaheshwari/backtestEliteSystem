@@ -1,16 +1,27 @@
 # =====================================================================================
 # app/live_scanner.py
-# ELITE BREAKOUT SCANNER — 1H BARS
+# TREND CONFIRMATION SCANNER — 1H BARS
 # =====================================================================================
 #
-# CANDLE SAFETY:
-#   Uses interval="1h". Only analyses COMPLETED candles by dropping the latest
-#   bar if it is still within its 60-minute window (candle_age_minutes < 60).
-#   Scanner waits until 10:16 IST so the first full 1h candle (9:15–10:15) is
-#   available before any stock is checked.
+# PURPOSE:
+#   Second layer after intraday.py (15m early momentum).
+#   By the time this fires, the stock has held its move for at least one full
+#   hour — confirming the breakout is real and not a fake morning spike.
 #
-# INDICATOR BASIS:
-#   period="60d" gives ~360 1h bars — enough for EMA20, SMA50, SMA200 on hourly.
+# FILTERS ARE INTENTIONALLY STRICTER THAN intraday.py:
+#   RSI      > 55   (vs 45 in intraday)  — momentum confirmed, not just starting
+#   Vol      > 1.5x (vs 1.2x in intraday) — sustained expansion, not one-candle spike
+#   Body     > 55%  (vs 40% in intraday)  — strong decisive candle
+#   SMA50    required                      — medium-term trend aligned
+#   Golden cross check (SMA50 > SMA200)   — macro trend bullish
+#
+# CANDLE SAFETY:
+#   Drops the latest bar if it is still within its 60-minute window.
+#   Scanner starts at 10:16 AM so the first full 1h candle (9:15–10:15) is ready.
+#
+# DEDUP:
+#   Per symbol + breakout type + date, with |1H suffix to avoid clash with
+#   intraday.py alerts for the same stock on the same day.
 #
 # =====================================================================================
 
@@ -64,15 +75,13 @@ while True:
 
     # ============================================================================
     # MARKET HOURS CHECK (IST)
+    # Start at 10:16 AM — first full 1h candle (9:15–10:15) is complete
     # ============================================================================
 
-    ist_now = datetime.now(IST)
-
+    ist_now      = datetime.now(IST)
     current_time = ist_now.time()
+    weekday      = ist_now.weekday()
 
-    weekday = ist_now.weekday()
-
-    # Wait until 10:16 so the first full 1h candle (9:15–10:15) is complete
     market_open = (
         dt_time(10, 16)
         <= current_time
@@ -84,10 +93,9 @@ while True:
     if not (market_open and weekday_open):
 
         logger.info(
-            f"⏰ Market closed or pre-10:16 | "
-            f"Current IST Time: "
-            f"{ist_now.strftime('%Y-%m-%d %H:%M:%S')} | "
-            f"Sleeping for 5 minutes..."
+            f"⏰ Outside window (10:16–15:30) | "
+            f"IST: {ist_now.strftime('%Y-%m-%d %H:%M:%S')} | "
+            f"Sleeping 5 mins..."
         )
 
         time.sleep(300)
@@ -118,52 +126,32 @@ while True:
     # SCAN START
     # ============================================================================
 
-    scan_start = datetime.now(IST)
-
+    scan_start   = datetime.now(IST)
     total_alerts = 0
 
     logger.info("=" * 80)
-
-    logger.info(
-        f"🚀 NEW SCAN CYCLE STARTED | "
-        f"Stocks={len(watchlist)}"
-    )
-
-    logger.info(
-        f"⏰ IST Scan Time: "
-        f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
+    logger.info(f"🚀 1H SCAN STARTED | Stocks={len(watchlist)}")
+    logger.info(f"⏰ IST: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 80)
 
     # ============================================================================
     # MAIN STOCK LOOP
     # ============================================================================
 
-    for idx, (_, row) in enumerate(
-
-        watchlist.iterrows(),
-
-        start=1
-    ):
+    for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
         symbol = "UNKNOWN"
 
         try:
 
-            # ====================================================================
-            # STOCK INFO
-            # ====================================================================
-
             symbol   = row["Stock"]
             category = row["Category"]
 
-            logger.info(f"🔍 Checking: {symbol}")
-            logger.info(f"📊 Progress: {idx}/{len(watchlist)}")
+            logger.info(f"🔍 [{idx}/{len(watchlist)}] {symbol}")
 
             # ====================================================================
-            # DOWNLOAD PRICE DATA — 1H BARS
-            # 60 days × ~6 bars/day = ~360 bars (enough for SMA200 on 1h)
+            # DOWNLOAD — 1H BARS, 60 DAYS
+            # ~360 bars — enough for EMA20, SMA50, SMA200 on hourly
             # ====================================================================
 
             ticker = yf.download(
@@ -176,25 +164,13 @@ while True:
             )
 
             if ticker.empty:
-
                 logger.warning(f"❌ No data: {symbol}")
-
                 continue
 
-            # ====================================================================
-            # RESET INDEX
-            # ====================================================================
-
             ticker.reset_index(inplace=True)
-
             ticker = ticker.copy()
 
-            # ====================================================================
-            # FIX YFINANCE MULTI-INDEX / DUPLICATE COLUMNS
-            # ====================================================================
-
             if isinstance(ticker.columns, pd.MultiIndex):
-
                 ticker.columns = ticker.columns.get_level_values(0)
 
             ticker = ticker.loc[:, ~ticker.columns.duplicated()]
@@ -204,36 +180,22 @@ while True:
             # ====================================================================
 
             required_cols = ["Open", "High", "Low", "Close", "Volume"]
-
-            missing_col = False
+            missing_col   = False
 
             for col_name in required_cols:
 
                 if col_name not in ticker.columns:
-
-                    logger.warning(
-                        f"❌ Missing column {col_name}: {symbol}"
-                    )
-
+                    logger.warning(f"❌ Missing column {col_name}: {symbol}")
                     missing_col = True
-
                     break
 
                 if isinstance(ticker[col_name], pd.DataFrame):
-
                     ticker[col_name] = ticker[col_name].iloc[:, 0]
 
-                ticker[col_name] = pd.Series(
-                    ticker[col_name]
-                ).astype(float)
+                ticker[col_name] = pd.Series(ticker[col_name]).astype(float)
 
             if missing_col:
-
                 continue
-
-            # ====================================================================
-            # DROP INVALID ROWS
-            # ====================================================================
 
             ticker = ticker.dropna(
                 subset=["Open", "High", "Low", "Close", "Volume"]
@@ -241,18 +203,14 @@ while True:
 
             # ====================================================================
             # COMPLETED CANDLE GUARD
-            # Detect the datetime column (yfinance uses "Datetime" for intraday)
-            # Drop the latest bar if it is still within its 60-min window.
+            # Drop latest bar if still within its 60-min window
             # ====================================================================
 
             datetime_col = None
 
             for col in ["Datetime", "Date", "index"]:
-
                 if col in ticker.columns:
-
                     datetime_col = col
-
                     break
 
             if datetime_col is not None:
@@ -272,31 +230,25 @@ while True:
                     if candle_age_minutes < 60:
 
                         logger.warning(
-                            f"⚠️ Latest 1h candle still forming "
+                            f"⚠️ 1h candle still forming "
                             f"({candle_age_minutes:.0f} min old) — "
-                            f"dropping it: {symbol}"
+                            f"dropping: {symbol}"
                         )
 
-                        # Drop the incomplete latest candle
                         ticker = ticker.iloc[:-1].copy()
 
                 except Exception:
-
-                    logger.warning(
-                        f"⚠️ Could not check candle age for {symbol}"
-                    )
+                    logger.warning(f"⚠️ Could not check candle age: {symbol}")
 
             # ====================================================================
             # MINIMUM CANDLE CHECK
-            # 100 bars minimum — ensures indicators are reliable
+            # 100 bars — ensures SMA50 and EMA20 are reliable on 1h
             # ====================================================================
 
             if len(ticker) < 100:
-
                 logger.warning(
                     f"❌ Insufficient candles ({len(ticker)}): {symbol}"
                 )
-
                 continue
 
             # ====================================================================
@@ -306,9 +258,7 @@ while True:
             ticker = apply_indicators(ticker)
 
             if ticker is None or ticker.empty:
-
                 logger.warning(f"❌ Indicator failure: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -318,12 +268,7 @@ while True:
             signals = detect_breakouts(ticker)
 
             if len(signals) == 0:
-
                 continue
-
-            # ====================================================================
-            # LATEST COMPLETED CANDLE
-            # ====================================================================
 
             latest = ticker.iloc[-1]
 
@@ -331,87 +276,78 @@ while True:
             # RSI SAFETY
             # ====================================================================
 
-            if "RSI" not in ticker.columns:
-
-                continue
-
-            if pd.isna(latest["RSI"]):
-
+            if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
                 continue
 
             # ====================================================================
             # VOLUME ANALYSIS
+            # 20-bar avg on 1h = ~3.5 trading days baseline
             # ====================================================================
 
             latest_volume = float(latest["Volume"])
-
-            avg_volume = float(
-                ticker["Volume"].tail(20).mean()
-            )
+            avg_volume    = float(ticker["Volume"].tail(20).mean())
 
             if avg_volume <= 0:
-
                 continue
 
             volume_ratio = latest_volume / avg_volume
 
             # ====================================================================
-            # STRONG BREAKOUT CANDLE FILTER
+            # CANDLE QUALITY
             # ====================================================================
 
-            candle_range = (
-                float(latest["High"]) - float(latest["Low"])
-            )
-
-            candle_body = abs(
-                float(latest["Close"]) - float(latest["Open"])
-            )
+            candle_range = float(latest["High"]) - float(latest["Low"])
+            candle_body  = abs(float(latest["Close"]) - float(latest["Open"]))
 
             if candle_range <= 0:
-
                 continue
 
             body_ratio = candle_body / candle_range
 
-            # weak candle rejection
-            if body_ratio < 0.4:
-
+            # STRICTER than intraday (0.4) — need a decisive 1h candle
+            if body_ratio < 0.55:
                 continue
 
-            # must be a green (bullish) candle
+            # must be bullish
             if float(latest["Close"]) <= float(latest["Open"]):
-
                 continue
 
             # ====================================================================
-            # FAKE BREAKOUT FILTERS
+            # CONFIRMATION FILTERS — STRICTER THAN intraday.py
             # ====================================================================
 
-            # volume expansion required
-            if volume_ratio < 1.2:
-
+            # Sustained volume expansion (not a one-candle spike)
+            # intraday uses 1.2x — here we need 1.5x to confirm
+            if volume_ratio < 1.5:
                 continue
 
-            # healthy RSI — catching momentum early
-            if latest["RSI"] < 45:
-
+            # RSI confirms momentum is established, not just starting
+            # intraday uses 45 — here we need 55
+            if latest["RSI"] < 55:
                 continue
 
-            # avoid overextended moves
-            if latest["RSI"] > 80:
-
+            # Avoid overextended / parabolic
+            if latest["RSI"] > 85:
                 continue
 
-            # above 20 EMA
+            # Above 20 EMA
             if latest["Close"] < latest["EMA20"]:
-
                 continue
 
-            # above 50 SMA
+            # Above 50 SMA — medium-term trend aligned
             if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
-
                 if latest["Close"] < latest["SMA50"]:
+                    continue
 
+            # Golden cross — macro trend bullish
+            # intraday does NOT check this; 1h scanner does
+            if (
+                "SMA50"  in ticker.columns and
+                "SMA200" in ticker.columns and
+                not pd.isna(latest["SMA50"]) and
+                not pd.isna(latest["SMA200"])
+            ):
+                if latest["SMA50"] < latest["SMA200"]:
                     continue
 
             # ====================================================================
@@ -421,17 +357,14 @@ while True:
             breakout_type = ", ".join(signals)
 
             # ====================================================================
-            # AVOID DUPLICATE ALERTS (per symbol + type + day)
+            # DEDUP — |1H suffix prevents clash with intraday alerts
             # ====================================================================
 
             today_str = datetime.now(IST).strftime("%Y-%m-%d")
-
-            dedup_key = f"{breakout_type}|{today_str}"
+            dedup_key = f"{breakout_type}|{today_str}|1H"
 
             if alert_exists(symbol, dedup_key):
-
                 logger.info(f"⚠️ Duplicate skipped: {symbol}")
-
                 continue
 
             # ====================================================================
@@ -445,16 +378,11 @@ while True:
                 volume_ratio=volume_ratio
             )
 
-            # ====================================================================
-            # MINIMUM SCORE FILTER
-            # ====================================================================
-
-            if score < 60:
-
+            # STRICTER minimum score than intraday (60)
+            if score < 65:
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
                 )
-
                 continue
 
             # ====================================================================
@@ -462,7 +390,7 @@ while True:
             # ====================================================================
 
             message = f'''
-🚀 ELITE BREAKOUT ALERT — 1H
+🚀 TREND CONFIRMED ALERT — 1H
 
 Stock: {symbol}
 
@@ -484,9 +412,10 @@ Volume Expansion:
 Candle:
 🟢 Bullish | Body {round(body_ratio * 100)}%
 
-Trend:
+Trend Structure:
 ✅ Above EMA20
 ✅ Above SMA50
+✅ Bullish 50/200 DMA (Golden Cross)
 
 Breakout Score:
 {score}/100
@@ -496,15 +425,7 @@ Time:
 {datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")}
 '''
 
-            # ====================================================================
-            # SEND TELEGRAM ALERT
-            # ====================================================================
-
             send_telegram_message(message)
-
-            # ====================================================================
-            # SAVE ALERT
-            # ====================================================================
 
             save_alert(
                 symbol,
@@ -515,17 +436,14 @@ Time:
             total_alerts += 1
 
             logger.info(
-                f"✅ ALERT SENT: {symbol} | "
+                f"✅ 1H ALERT SENT: {symbol} | "
                 f"Score={score} | "
-                f"Vol={round(volume_ratio, 2)}x"
+                f"RSI={round(float(latest['RSI']), 1)} | "
+                f"Vol={round(volume_ratio, 2)}x | "
+                f"Body={round(body_ratio * 100)}%"
             )
 
-        # ========================================================================
-        # ERROR HANDLING
-        # ========================================================================
-
         except Exception:
-
             logger.exception(f"❌ ERROR: {symbol}")
 
     # ============================================================================
@@ -533,24 +451,12 @@ Time:
     # ============================================================================
 
     scan_end = datetime.now(IST)
-
     duration = (scan_end - scan_start).total_seconds()
 
     logger.info("=" * 80)
-
-    logger.info(
-        f"✅ SCAN COMPLETED | "
-        f"Duration={round(duration, 2)} sec"
-    )
-
+    logger.info(f"✅ 1H SCAN COMPLETED | Duration={round(duration, 2)} sec")
     logger.info(f"📨 Alerts Sent={total_alerts}")
-
     logger.info("⏰ Sleeping 5 mins before next cycle...")
-
     logger.info("=" * 80)
-
-    # ============================================================================
-    # WAIT BEFORE NEXT SCAN
-    # ============================================================================
 
     time.sleep(300)
