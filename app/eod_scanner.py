@@ -15,6 +15,7 @@ from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
+from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 
 from config import WATCHLIST_PATH
@@ -37,81 +38,15 @@ EOD_END    = dt_time(15, 30)
 CHUNK_SIZE = 10
 
 # =====================================================================================
-# STRICT FILTER CONSTANTS — EOD (Daily candle, highest conviction)
+# STRICT FILTERS — EOD
 # =====================================================================================
 
-MIN_SIGNALS      = 2        # require at least 2 breakout signals
-MIN_BODY_RATIO   = 0.60     # strong bullish candle body
-MIN_VOLUME_RATIO = 2.0      # meaningful volume surge
-MIN_RSI          = 58       # confirmed momentum
-MAX_RSI          = 78       # not overbought
-MIN_SCORE        = 85       # only A-grade setups
-
-# =====================================================================================
-# MESSAGE FORMATTER
-# =====================================================================================
-
-def score_badge(score):
-    if score >= 90:
-        return "🏆"
-    elif score >= 80:
-        return "🔥"
-    elif score >= 70:
-        return "⚡"
-    else:
-        return "📌"
-
-def signal_bar(score):
-    filled = round(score / 20)   # 0–5 blocks
-    return "█" * filled + "░" * (5 - filled)
-
-def breakout_emoji(signals):
-    if "52W Breakout"     in signals: return "🚀"
-    if "Monthly Breakout" in signals: return "🌕"
-    if "Weekly Breakout"  in signals: return "📈"
-    return "📊"
-
-def format_eod_alert(a):
-    badge = score_badge(a["score"])
-    bar   = signal_bar(a["score"])
-    bem   = breakout_emoji(a["breakout_signals"])
-
-    # score tier label
-    if a["score"] >= 90:
-        tier = "ELITE"
-    elif a["score"] >= 80:
-        tier = "STRONG"
-    else:
-        tier = "GOOD"
-
-    lines = [
-        f"{badge} <b>{a['symbol']}</b>  [{tier} · {a['score']}/100]",
-        f"   {bar}",
-        f"   ₹{a['price']}   RSI {a['rsi']}   Vol {a['volume_ratio']}x   Body {a['body_ratio']}%",
-        f"   {bem} {a['breakout_type']}",
-    ]
-    return "\n".join(lines)
-
-def build_eod_message(cat, alerts, chunk_num, total_chunks, scan_time):
-
-    suffix = f" — part {chunk_num}/{total_chunks}" if total_chunks > 1 else ""
-
-    # header
-    lines = [
-        f"📊 <b>EOD BREAKOUT DAILY</b>{suffix}",
-        f"{'─' * 32}",
-        f"<b>{cat}</b>  ·  {len(alerts)} stock{'s' if len(alerts) > 1 else ''}",
-        f"{'─' * 32}",
-        "",
-    ]
-
-    for a in alerts:
-        lines.append(format_eod_alert(a))
-        lines.append("")
-
-    lines.append(f"⏰ <i>{scan_time}</i>")
-
-    return "\n".join(lines)
+MIN_SIGNALS      = 2
+MIN_BODY_RATIO   = 0.60
+MIN_VOLUME_RATIO = 2.0
+MIN_RSI          = 58
+MAX_RSI          = 78
+MIN_SCORE        = 85
 
 # =====================================================================================
 # INIT
@@ -128,10 +63,7 @@ logger.info("✅ Database Initialized")
 def seconds_until_eod():
     now          = datetime.now(IST)
     target_today = now.replace(hour=15, minute=16, second=0, microsecond=0)
-    if now < target_today:
-        delta = target_today - now
-    else:
-        delta = target_today + timedelta(days=1) - now
+    delta        = target_today - now if now < target_today else target_today + timedelta(days=1) - now
     return max(int(delta.total_seconds()), 0)
 
 last_scan_date = None
@@ -190,10 +122,6 @@ while True:
     alerts_by_category = {}
 
     logger.info(f"🚀 EOD SCAN STARTED | Stocks={len(watchlist)}")
-
-    # ============================================================================
-    # STOCK LOOP
-    # ============================================================================
 
     for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
@@ -256,7 +184,6 @@ while True:
 
             signals = detect_breakouts(ticker)
 
-            # ── STRICT: minimum 2 breakout signals ──────────────────────────────
             if len(signals) < MIN_SIGNALS:
                 logger.info(f"❌ Weak signals ({len(signals)}): {symbol}")
                 continue
@@ -273,7 +200,6 @@ while True:
                 continue
 
             volume_ratio = latest_volume / avg_volume
-
             candle_range = float(latest["High"]) - float(latest["Low"])
             candle_body  = abs(float(latest["Close"]) - float(latest["Open"]))
 
@@ -282,7 +208,6 @@ while True:
 
             body_ratio = candle_body / candle_range
 
-            # ── STRICT FILTERS ────────────────────────────────────────────────────
             if body_ratio < MIN_BODY_RATIO:
                 logger.info(f"❌ Weak body ({body_ratio:.0%}): {symbol}")
                 continue
@@ -299,7 +224,6 @@ while True:
             if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
                 if latest["Close"] < latest["SMA50"]:
                     continue
-            # ── Golden cross mandatory for EOD ───────────────────────────────────
             if (
                 "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                 not pd.isna(latest["SMA50"]) and not pd.isna(latest["SMA200"])
@@ -333,18 +257,16 @@ while True:
                 logger.info(f"⚠️ Duplicate: {symbol}")
                 continue
 
-            alert_data = {
+            alerts_by_category.setdefault(category, []).append({
                 "symbol":           symbol,
-                "breakout_type":    breakout_type,
+                "category":         category,
                 "breakout_signals": signals,
                 "price":            round(float(latest["Close"]), 2),
                 "rsi":              round(float(latest["RSI"]), 1),
                 "volume_ratio":     round(volume_ratio, 2),
                 "body_ratio":       round(body_ratio * 100),
                 "score":            score,
-            }
-
-            alerts_by_category.setdefault(category, []).append(alert_data)
+            })
             total_alerts += 1
 
             logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x | Signals={len(signals)}")
@@ -353,26 +275,19 @@ while True:
             logger.exception(f"❌ ERROR: {symbol}")
 
     # ============================================================================
-    # SEND CONSOLIDATED MESSAGES
+    # SEND
     # ============================================================================
 
     scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
     for cat in sorted(alerts_by_category.keys()):
 
-        cat_alerts = sorted(
-            alerts_by_category[cat],
-            key=lambda x: x["score"],
-            reverse=True
-        )
-        chunks = [
-            cat_alerts[i:i + CHUNK_SIZE]
-            for i in range(0, len(cat_alerts), CHUNK_SIZE)
-        ]
+        cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
+        chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
         for chunk_num, chunk in enumerate(chunks, start=1):
-            message = build_eod_message(cat, chunk, chunk_num, len(chunks), scan_time)
-            send_telegram_message(message)
+            msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
+            send_telegram_message(msg)
             logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
     # ============================================================================
