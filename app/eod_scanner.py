@@ -4,7 +4,7 @@
 #
 # WHAT THIS FILE DOES:
 #   Runs once per trading day in the window 3:45 PM IST.
-#   This timing ensures the final daily candle has effectively closed (3:15 PM NSE
+#   This timing ensures the final daily candle has effectively closed (3:30 PM NSE
 #   close) before we evaluate it — no forming-candle ambiguity on daily bars.
 #   Downloads 1 year of daily OHLCV data for each watchlist stock, applies indicators,
 #   then runs the strictest filter stack of the three scanners.
@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
 EOD_START  = dt_time(15, 45)   # Start scanning after NSE close (3:45 PM)
-EOD_END    = dt_time(16, 00)   # End window — must complete scan by 4:00
+EOD_END    = dt_time(16, 30)   # End window — must complete scan by 4:00
 CHUNK_SIZE = 10                 # Max stocks per Telegram message
 
 # =====================================================================================
@@ -200,7 +200,7 @@ while True:
     is_weekday    = weekday < 5
     already_ran   = (last_scan_date == today_str)
 
-    # ── WEEKEND: sleep until next Monday 3:16 PM ────────────────────────────────────
+    # ── WEEKEND: sleep until next Monday 3:45 PM ────────────────────────────────────
     if not is_weekday:
         sleep_secs = seconds_until_eod()
         logger.info(
