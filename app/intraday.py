@@ -36,6 +36,74 @@ HEADER     = "⚡ INTRADAY 15M"
 CHUNK_SIZE = 10
 
 # =====================================================================================
+# STRICT FILTER CONSTANTS — 15M (intraday momentum, slightly looser than EOD)
+# =====================================================================================
+
+MIN_SIGNALS      = 1        # single strong breakout acceptable intraday
+MIN_BODY_RATIO   = 0.50     # decent candle body
+MIN_VOLUME_RATIO = 1.5      # clear volume confirmation
+MIN_RSI          = 52       # momentum starting to build
+MAX_RSI          = 78       # not overbought
+MIN_SCORE        = 75       # good but not perfect setups
+
+# =====================================================================================
+# MESSAGE FORMATTER
+# =====================================================================================
+
+def score_badge(score):
+    if score >= 90: return "🏆"
+    if score >= 80: return "🔥"
+    if score >= 70: return "⚡"
+    return "📌"
+
+def signal_bar(score):
+    filled = round(score / 20)
+    return "█" * filled + "░" * (5 - filled)
+
+def breakout_emoji(signals):
+    if "52W Breakout"     in signals: return "🚀"
+    if "Monthly Breakout" in signals: return "🌕"
+    if "Weekly Breakout"  in signals: return "📈"
+    return "📊"
+
+def format_intraday_alert(a):
+    badge = score_badge(a["score"])
+    bar   = signal_bar(a["score"])
+    bem   = breakout_emoji(a["breakout_signals"])
+
+    if a["score"] >= 90:   tier = "ELITE"
+    elif a["score"] >= 80: tier = "STRONG"
+    else:                  tier = "GOOD"
+
+    lines = [
+        f"{badge} <b>{a['symbol']}</b>  [{tier} · {a['score']}/100]",
+        f"   {bar}",
+        f"   ₹{a['price']}   RSI {a['rsi']}   Vol {a['volume_ratio']}x   Body {a['body_ratio']}%",
+        f"   {bem} {a['breakout_type']}",
+    ]
+    return "\n".join(lines)
+
+def build_intraday_message(cat, alerts, chunk_num, total_chunks, scan_time):
+
+    suffix = f" — part {chunk_num}/{total_chunks}" if total_chunks > 1 else ""
+
+    lines = [
+        f"⚡ <b>INTRADAY 15M</b>{suffix}",
+        f"{'─' * 32}",
+        f"<b>{cat}</b>  ·  {len(alerts)} stock{'s' if len(alerts) > 1 else ''}",
+        f"{'─' * 32}",
+        "",
+    ]
+
+    for a in alerts:
+        lines.append(format_intraday_alert(a))
+        lines.append("")
+
+    lines.append(f"⏰ <i>{scan_time}</i>")
+
+    return "\n".join(lines)
+
+# =====================================================================================
 # INIT
 # =====================================================================================
 
@@ -174,7 +242,7 @@ while True:
 
             signals = detect_breakouts(ticker)
 
-            if len(signals) == 0:
+            if len(signals) < MIN_SIGNALS:
                 continue
 
             latest = ticker.iloc[-1]
@@ -198,15 +266,17 @@ while True:
 
             body_ratio = candle_body / candle_range
 
-            if body_ratio < 0.4:
+            # ── STRICT FILTERS ────────────────────────────────────────────────────
+            if body_ratio < MIN_BODY_RATIO:
+                logger.info(f"❌ Weak body ({body_ratio:.0%}): {symbol}")
                 continue
             if float(latest["Close"]) <= float(latest["Open"]):
                 continue
-            if volume_ratio < 1.2:
+            if volume_ratio < MIN_VOLUME_RATIO:
+                logger.info(f"❌ Low volume ({volume_ratio:.2f}x): {symbol}")
                 continue
-            if latest["RSI"] < 45:
-                continue
-            if latest["RSI"] > 80:
+            if not (MIN_RSI <= latest["RSI"] <= MAX_RSI):
+                logger.info(f"❌ RSI out of range ({latest['RSI']:.1f}): {symbol}")
                 continue
             if latest["Close"] < latest["EMA20"]:
                 continue
@@ -222,11 +292,12 @@ while True:
                 category=category,
                 breakout_count=len(signals),
                 rsi=float(latest["RSI"]),
-                volume_ratio=volume_ratio
+                volume_ratio=volume_ratio,
+                breakout_signals=signals
             )
 
-            if score < 70:
-                logger.info(f"❌ Low score: {symbol} | {score}")
+            if score < MIN_SCORE:
+                logger.info(f"❌ Low score {score}: {symbol}")
                 continue
 
             saved = save_alert_if_new(
@@ -240,19 +311,20 @@ while True:
                 continue
 
             alert_data = {
-                "symbol":        symbol,
-                "breakout_type": breakout_type,
-                "price":         round(float(latest["Close"]), 2),
-                "rsi":           round(float(latest["RSI"]), 1),
-                "volume_ratio":  round(volume_ratio, 2),
-                "body_ratio":    round(body_ratio * 100),
-                "score":         score,
+                "symbol":           symbol,
+                "breakout_type":    breakout_type,
+                "breakout_signals": signals,
+                "price":            round(float(latest["Close"]), 2),
+                "rsi":              round(float(latest["RSI"]), 1),
+                "volume_ratio":     round(volume_ratio, 2),
+                "body_ratio":       round(body_ratio * 100),
+                "score":            score,
             }
 
             alerts_by_category.setdefault(category, []).append(alert_data)
             total_alerts += 1
 
-            logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x")
+            logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x | Signals={len(signals)}")
 
         except Exception:
             logger.exception(f"❌ ERROR: {symbol}")
@@ -265,30 +337,18 @@ while True:
 
     for cat in sorted(alerts_by_category.keys()):
 
-        cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-        chunks     = [cat_alerts[i:i+CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
+        cat_alerts = sorted(
+            alerts_by_category[cat],
+            key=lambda x: x["score"],
+            reverse=True
+        )
+        chunks = [
+            cat_alerts[i:i + CHUNK_SIZE]
+            for i in range(0, len(cat_alerts), CHUNK_SIZE)
+        ]
 
         for chunk_num, chunk in enumerate(chunks, start=1):
-
-            suffix = f" ({chunk_num}/{len(chunks)})" if len(chunks) > 1 else ""
-            lines  = []
-
-            for a in chunk:
-                lines.append(
-                    f"▸ {a['symbol']} | ₹{a['price']} | {a['score']}/100\n"
-                    f"  {a['breakout_type']}\n"
-                    f"  RSI {a['rsi']} | Vol {a['volume_ratio']}x | Body {a['body_ratio']}%"
-                )
-
-            message = (
-                f"{HEADER}{suffix}\n"
-                f"{'─' * 30}\n"
-                f"{cat} | {len(cat_alerts)} stock{'s' if len(cat_alerts)>1 else ''}\n"
-                f"{'─' * 30}\n\n"
-                + "\n\n".join(lines)
-                + f"\n\n⏰ {scan_time}"
-            )
-
+            message = build_intraday_message(cat, chunk, chunk_num, len(chunks), scan_time)
             send_telegram_message(message)
             logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
