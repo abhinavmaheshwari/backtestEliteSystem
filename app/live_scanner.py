@@ -379,7 +379,7 @@ while True:
             )
 
             # STRICTER minimum score than intraday (60)
-            if score < 65:
+            if score < 75:
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
                 )
