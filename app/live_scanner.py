@@ -65,7 +65,7 @@ while True:
 
     market_open = (
 
-        dt_time(9, 15)
+        dt_time(8, 15)
 
         <= current_time
 
