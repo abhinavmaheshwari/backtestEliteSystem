@@ -9,15 +9,20 @@
 #   hour — confirming the breakout is real and not a fake morning spike.
 #
 # FILTERS ARE INTENTIONALLY STRICTER THAN intraday.py:
-#   RSI      > 55   (vs 45 in intraday)  — momentum confirmed, not just starting
+#   RSI      > 55   (vs 45 in intraday)   — momentum confirmed, not just starting
 #   Vol      > 1.5x (vs 1.2x in intraday) — sustained expansion, not one-candle spike
 #   Body     > 55%  (vs 40% in intraday)  — strong decisive candle
 #   SMA50    required                      — medium-term trend aligned
 #   Golden cross check (SMA50 > SMA200)   — macro trend bullish
 #
 # CANDLE SAFETY:
-#   Drops the latest bar if it is still within its 60-minute window.
-#   Scanner starts at 10:16 AM so the first full 1h candle (9:15–10:15) is ready.
+#   Drops the latest bar if its candle end time (start + 60min) has not passed.
+#   Scanner starts at 10:17 AM so the first full 1h candle (9:15–10:15) is ready.
+#
+# CONSOLIDATED ALERTS:
+#   Collects all alerts during the scan cycle.
+#   Sends one Telegram message per category at the end (sorted by score desc).
+#   Large categories are chunked at 10 stocks per message.
 #
 # DEDUP:
 #   Per symbol + breakout type + date, with |1H suffix to avoid clash with
@@ -60,6 +65,18 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 # =====================================================================================
+# SCANNER HEADER
+# =====================================================================================
+
+HEADER = "🚀 TREND CONFIRMED — 1H"
+
+# =====================================================================================
+# CHUNK SIZE — max stocks per Telegram message (4096 char limit safety)
+# =====================================================================================
+
+CHUNK_SIZE = 10
+
+# =====================================================================================
 # INITIALIZE DATABASE
 # =====================================================================================
 
@@ -75,7 +92,7 @@ while True:
 
     # ============================================================================
     # MARKET HOURS CHECK (IST)
-    # Start at 10:16 AM — first full 1h candle (9:15–10:15) is complete
+    # Start at 10:17 AM — first full 1h candle (9:15–10:15) complete + 2min buffer
     # ============================================================================
 
     ist_now      = datetime.now(IST)
@@ -83,7 +100,7 @@ while True:
     weekday      = ist_now.weekday()
 
     market_open = (
-        dt_time(10, 16)
+        dt_time(10, 17)
         <= current_time
         <= dt_time(15, 30)
     )
@@ -93,7 +110,7 @@ while True:
     if not (market_open and weekday_open):
 
         logger.info(
-            f"⏰ Outside window (10:16–15:30) | "
+            f"⏰ Outside window (10:17–15:30) | "
             f"IST: {ist_now.strftime('%Y-%m-%d %H:%M:%S')} | "
             f"Sleeping 5 mins..."
         )
@@ -126,8 +143,9 @@ while True:
     # SCAN START
     # ============================================================================
 
-    scan_start   = datetime.now(IST)
-    total_alerts = 0
+    scan_start         = datetime.now(IST)
+    total_alerts       = 0
+    alerts_by_category = {}   # { category: [ alert_dict, ... ] }
 
     logger.info("=" * 80)
     logger.info(f"🚀 1H SCAN STARTED | Stocks={len(watchlist)}")
@@ -203,7 +221,9 @@ while True:
 
             # ====================================================================
             # COMPLETED CANDLE GUARD
-            # Drop latest bar if still within its 60-min window
+            # yfinance timestamps candles at their START time.
+            # A 1h candle starting at T is complete only when now >= T + 60min.
+            # Drop the latest bar if its end time has not yet passed.
             # ====================================================================
 
             datetime_col = None
@@ -217,22 +237,20 @@ while True:
 
                 try:
 
-                    latest_candle_time = pd.Timestamp(
+                    latest_candle_start = pd.Timestamp(
                         ticker.iloc[-1][datetime_col]
                     ).replace(tzinfo=None)
 
+                    candle_end = latest_candle_start + pd.Timedelta(minutes=60)
+
                     now_naive = datetime.now(IST).replace(tzinfo=None)
 
-                    candle_age_minutes = (
-                        now_naive - latest_candle_time
-                    ).total_seconds() / 60
-
-                    if candle_age_minutes < 60:
+                    if now_naive < candle_end:
 
                         logger.warning(
-                            f"⚠️ 1h candle still forming "
-                            f"({candle_age_minutes:.0f} min old) — "
-                            f"dropping: {symbol}"
+                            f"⚠️ 1h candle still forming — "
+                            f"ends at {candle_end.strftime('%H:%M')} — "
+                            f"dropped latest, using previous: {symbol}"
                         )
 
                         ticker = ticker.iloc[:-1].copy()
@@ -316,13 +334,11 @@ while True:
             # CONFIRMATION FILTERS — STRICTER THAN intraday.py
             # ====================================================================
 
-            # Sustained volume expansion (not a one-candle spike)
-            # intraday uses 1.2x — here we need 1.5x to confirm
+            # Sustained volume expansion
             if volume_ratio < 1.5:
                 continue
 
-            # RSI confirms momentum is established, not just starting
-            # intraday uses 45 — here we need 55
+            # RSI confirms momentum is established
             if latest["RSI"] < 55:
                 continue
 
@@ -340,7 +356,6 @@ while True:
                     continue
 
             # Golden cross — macro trend bullish
-            # intraday does NOT check this; 1h scanner does
             if (
                 "SMA50"  in ticker.columns and
                 "SMA200" in ticker.columns and
@@ -378,7 +393,7 @@ while True:
                 volume_ratio=volume_ratio
             )
 
-            # STRICTER minimum score than intraday (60)
+            # STRICTER minimum score than intraday
             if score < 75:
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
@@ -386,46 +401,27 @@ while True:
                 continue
 
             # ====================================================================
-            # ALERT MESSAGE
+            # COLLECT ALERT — do NOT send individually
             # ====================================================================
 
-            message = f'''
-🚀 TREND CONFIRMED ALERT — 1H
+            alert_data = {
+                "symbol":        symbol,
+                "breakout_type": breakout_type,
+                "price":         round(float(latest["Close"]), 2),
+                "rsi":           round(float(latest["RSI"]), 2),
+                "volume_ratio":  round(volume_ratio, 2),
+                "body_ratio":    round(body_ratio * 100),
+                "score":         score,
+            }
 
-Stock: {symbol}
+            if category not in alerts_by_category:
+                alerts_by_category[category] = []
 
-Category:
-{category}
+            alerts_by_category[category].append(alert_data)
 
-Breakouts:
-{breakout_type}
-
-Price:
-₹{round(float(latest["Close"]), 2)}
-
-RSI:
-{round(float(latest["RSI"]), 2)}
-
-Volume Expansion:
-{round(volume_ratio, 2)}x
-
-Candle:
-🟢 Bullish | Body {round(body_ratio * 100)}%
-
-Trend Structure:
-✅ Above EMA20
-✅ Above SMA50
-✅ Bullish 50/200 DMA (Golden Cross)
-
-Breakout Score:
-{score}/100
-
-Bar: 1H (completed)
-Time:
-{datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")}
-'''
-
-            send_telegram_message(message)
+            # ====================================================================
+            # SAVE DEDUP
+            # ====================================================================
 
             save_alert(
                 symbol,
@@ -436,7 +432,7 @@ Time:
             total_alerts += 1
 
             logger.info(
-                f"✅ 1H ALERT SENT: {symbol} | "
+                f"✅ ALERT COLLECTED: {symbol} | "
                 f"Score={score} | "
                 f"RSI={round(float(latest['RSI']), 1)} | "
                 f"Vol={round(volume_ratio, 2)}x | "
@@ -447,6 +443,65 @@ Time:
             logger.exception(f"❌ ERROR: {symbol}")
 
     # ============================================================================
+    # SEND CONSOLIDATED MESSAGES — one per category, chunked if large
+    # ============================================================================
+
+    scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+    for cat in sorted(alerts_by_category.keys()):
+
+        cat_alerts = sorted(
+            alerts_by_category[cat],
+            key=lambda x: x["score"],
+            reverse=True
+        )
+
+        chunks = [
+            cat_alerts[i:i + CHUNK_SIZE]
+            for i in range(0, len(cat_alerts), CHUNK_SIZE)
+        ]
+
+        for chunk_num, chunk in enumerate(chunks, start=1):
+
+            suffix = (
+                f" ({chunk_num}/{len(chunks)})"
+                if len(chunks) > 1
+                else ""
+            )
+
+            lines = []
+
+            for a in chunk:
+                lines.append(
+                    f"📌 {a['symbol']}\n"
+                    f"   Breakout : {a['breakout_type']}\n"
+                    f"   Price    : ₹{a['price']}\n"
+                    f"   RSI      : {a['rsi']}\n"
+                    f"   Volume   : {a['volume_ratio']}x\n"
+                    f"   Candle   : 🟢 Body {a['body_ratio']}%\n"
+                    f"   Score    : {a['score']}/100\n"
+                )
+
+            message = (
+                f"{HEADER}{suffix}\n"
+                f"{'=' * 35}\n"
+                f"Category : {cat}\n"
+                f"Stocks   : {len(cat_alerts)}\n"
+                f"{'=' * 35}\n\n"
+                + "\n".join(lines)
+                + f"\n⏰ {scan_time}"
+            )
+
+            send_telegram_message(message)
+
+            logger.info(
+                f"📨 Consolidated alert sent | "
+                f"Category={cat} | "
+                f"Chunk={chunk_num}/{len(chunks)} | "
+                f"Stocks={len(chunk)}"
+            )
+
+    # ============================================================================
     # SCAN END SUMMARY
     # ============================================================================
 
@@ -455,7 +510,7 @@ Time:
 
     logger.info("=" * 80)
     logger.info(f"✅ 1H SCAN COMPLETED | Duration={round(duration, 2)} sec")
-    logger.info(f"📨 Alerts Sent={total_alerts}")
+    logger.info(f"📨 Total Alerts={total_alerts}")
     logger.info("⏰ Sleeping 5 mins before next cycle...")
     logger.info("=" * 80)
 
