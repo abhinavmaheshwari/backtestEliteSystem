@@ -15,6 +15,7 @@ from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
+from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 
 from config import WATCHLIST_PATH
@@ -35,72 +36,15 @@ IST        = ZoneInfo("Asia/Kolkata")
 CHUNK_SIZE = 10
 
 # =====================================================================================
-# STRICT FILTER CONSTANTS — 1H (trend confirmation, between intraday and EOD)
+# STRICT FILTERS — 1H
 # =====================================================================================
 
-MIN_SIGNALS      = 2        # require at least 2 breakout signals for 1H
-MIN_BODY_RATIO   = 0.55     # solid candle body
-MIN_VOLUME_RATIO = 1.8      # clear institutional volume
-MIN_RSI          = 55       # established momentum
-MAX_RSI          = 80       # not overbought
-MIN_SCORE        = 80       # high conviction only
-
-# =====================================================================================
-# MESSAGE FORMATTER
-# =====================================================================================
-
-def score_badge(score):
-    if score >= 90: return "🏆"
-    if score >= 80: return "🔥"
-    if score >= 70: return "⚡"
-    return "📌"
-
-def signal_bar(score):
-    filled = round(score / 20)
-    return "█" * filled + "░" * (5 - filled)
-
-def breakout_emoji(signals):
-    if "52W Breakout"     in signals: return "🚀"
-    if "Monthly Breakout" in signals: return "🌕"
-    if "Weekly Breakout"  in signals: return "📈"
-    return "📊"
-
-def format_1h_alert(a):
-    badge = score_badge(a["score"])
-    bar   = signal_bar(a["score"])
-    bem   = breakout_emoji(a["breakout_signals"])
-
-    if a["score"] >= 90:   tier = "ELITE"
-    elif a["score"] >= 80: tier = "STRONG"
-    else:                  tier = "GOOD"
-
-    lines = [
-        f"{badge} <b>{a['symbol']}</b>  [{tier} · {a['score']}/100]",
-        f"   {bar}",
-        f"   ₹{a['price']}   RSI {a['rsi']}   Vol {a['volume_ratio']}x   Body {a['body_ratio']}%",
-        f"   {bem} {a['breakout_type']}",
-    ]
-    return "\n".join(lines)
-
-def build_1h_message(cat, alerts, chunk_num, total_chunks, scan_time):
-
-    suffix = f" — part {chunk_num}/{total_chunks}" if total_chunks > 1 else ""
-
-    lines = [
-        f"🚀 <b>TREND CONFIRMED 1H</b>{suffix}",
-        f"{'─' * 32}",
-        f"<b>{cat}</b>  ·  {len(alerts)} stock{'s' if len(alerts) > 1 else ''}",
-        f"{'─' * 32}",
-        "",
-    ]
-
-    for a in alerts:
-        lines.append(format_1h_alert(a))
-        lines.append("")
-
-    lines.append(f"⏰ <i>{scan_time}</i>")
-
-    return "\n".join(lines)
+MIN_SIGNALS      = 2
+MIN_BODY_RATIO   = 0.55
+MIN_VOLUME_RATIO = 1.8
+MIN_RSI          = 55
+MAX_RSI          = 80
+MIN_SCORE        = 80
 
 # =====================================================================================
 # INIT
@@ -124,16 +68,9 @@ while True:
     weekday_open = weekday < 5
 
     if not (market_open and weekday_open):
-        logger.info(
-            f"⏰ Outside 10:17-15:30 | "
-            f"{ist_now.strftime('%H:%M:%S')} | sleeping 5m"
-        )
+        logger.info(f"⏰ Outside 10:17-15:30 | {ist_now.strftime('%H:%M:%S')} | sleeping 5m")
         time.sleep(300)
         continue
-
-    # ============================================================================
-    # LOAD WATCHLIST
-    # ============================================================================
 
     try:
         watchlist = pd.read_parquet(WATCHLIST_PATH)
@@ -150,10 +87,6 @@ while True:
     logger.info("=" * 80)
     logger.info(f"🚀 1H SCAN | Stocks={len(watchlist)} | {scan_start.strftime('%H:%M:%S')}")
     logger.info("=" * 80)
-
-    # ============================================================================
-    # STOCK LOOP
-    # ============================================================================
 
     for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
@@ -204,10 +137,6 @@ while True:
 
             ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
-            # ====================================================================
-            # COMPLETED CANDLE GUARD
-            # ====================================================================
-
             datetime_col = None
             for col in ["Datetime", "Date", "index"]:
                 if col in ticker.columns:
@@ -216,15 +145,11 @@ while True:
 
             if datetime_col is not None:
                 try:
-                    candle_start = pd.Timestamp(
-                        ticker.iloc[-1][datetime_col]
-                    ).replace(tzinfo=None)
-                    candle_end = candle_start + pd.Timedelta(minutes=60)
-                    now_naive  = datetime.now(IST).replace(tzinfo=None)
+                    candle_start = pd.Timestamp(ticker.iloc[-1][datetime_col]).replace(tzinfo=None)
+                    candle_end   = candle_start + pd.Timedelta(minutes=60)
+                    now_naive    = datetime.now(IST).replace(tzinfo=None)
                     if now_naive < candle_end:
-                        logger.warning(
-                            f"⚠️ Candle forming until {candle_end.strftime('%H:%M')} — dropped: {symbol}"
-                        )
+                        logger.warning(f"⚠️ Candle forming until {candle_end.strftime('%H:%M')} — dropped: {symbol}")
                         ticker = ticker.iloc[:-1].copy()
                 except Exception:
                     logger.warning(f"⚠️ Candle age check failed: {symbol}")
@@ -257,7 +182,6 @@ while True:
                 continue
 
             volume_ratio = latest_volume / avg_volume
-
             candle_range = float(latest["High"]) - float(latest["Low"])
             candle_body  = abs(float(latest["Close"]) - float(latest["Open"]))
 
@@ -266,24 +190,19 @@ while True:
 
             body_ratio = candle_body / candle_range
 
-            # ── STRICT FILTERS ────────────────────────────────────────────────────
             if body_ratio < MIN_BODY_RATIO:
-                logger.info(f"❌ Weak body ({body_ratio:.0%}): {symbol}")
                 continue
             if float(latest["Close"]) <= float(latest["Open"]):
                 continue
             if volume_ratio < MIN_VOLUME_RATIO:
-                logger.info(f"❌ Low volume ({volume_ratio:.2f}x): {symbol}")
                 continue
             if not (MIN_RSI <= latest["RSI"] <= MAX_RSI):
-                logger.info(f"❌ RSI out of range ({latest['RSI']:.1f}): {symbol}")
                 continue
             if latest["Close"] < latest["EMA20"]:
                 continue
             if "SMA50" in ticker.columns and not pd.isna(latest["SMA50"]):
                 if latest["Close"] < latest["SMA50"]:
                     continue
-            # ── Golden cross required for 1H as well ─────────────────────────────
             if (
                 "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                 not pd.isna(latest["SMA50"]) and not pd.isna(latest["SMA200"])
@@ -318,18 +237,16 @@ while True:
                 logger.info(f"⚠️ Duplicate: {symbol}")
                 continue
 
-            alert_data = {
+            alerts_by_category.setdefault(category, []).append({
                 "symbol":           symbol,
-                "breakout_type":    breakout_type,
+                "category":         category,
                 "breakout_signals": signals,
                 "price":            round(float(latest["Close"]), 2),
                 "rsi":              round(float(latest["RSI"]), 1),
                 "volume_ratio":     round(volume_ratio, 2),
                 "body_ratio":       round(body_ratio * 100),
                 "score":            score,
-            }
-
-            alerts_by_category.setdefault(category, []).append(alert_data)
+            })
             total_alerts += 1
 
             logger.info(f"✅ Collected: {symbol} | Score={score} | Vol={round(volume_ratio,2)}x | Signals={len(signals)}")
@@ -338,31 +255,20 @@ while True:
             logger.exception(f"❌ ERROR: {symbol}")
 
     # ============================================================================
-    # SEND CONSOLIDATED MESSAGES
+    # SEND
     # ============================================================================
 
     scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
     for cat in sorted(alerts_by_category.keys()):
 
-        cat_alerts = sorted(
-            alerts_by_category[cat],
-            key=lambda x: x["score"],
-            reverse=True
-        )
-        chunks = [
-            cat_alerts[i:i + CHUNK_SIZE]
-            for i in range(0, len(cat_alerts), CHUNK_SIZE)
-        ]
+        cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
+        chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
         for chunk_num, chunk in enumerate(chunks, start=1):
-            message = build_1h_message(cat, chunk, chunk_num, len(chunks), scan_time)
-            send_telegram_message(message)
+            msg = build_message("1H", cat, chunk, chunk_num, len(chunks), scan_time)
+            send_telegram_message(msg)
             logger.info(f"📨 Sent | {cat} | {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
-
-    # ============================================================================
-    # SUMMARY
-    # ============================================================================
 
     duration = (datetime.now(IST) - scan_start).total_seconds()
     logger.info("=" * 80)
