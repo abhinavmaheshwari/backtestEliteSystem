@@ -158,7 +158,8 @@ while True:
                 logger.warning(f"❌ Insufficient candles ({len(ticker)}): {symbol}")
                 continue
 
-            ticker = apply_indicators(ticker)
+            # FIX: pass timeframe="15m" so HIGH_52W uses all available bars
+            ticker = apply_indicators(ticker, timeframe="15m")
 
             if ticker is None or ticker.empty:
                 logger.warning(f"❌ Indicator failure: {symbol}")
@@ -203,16 +204,29 @@ while True:
                 if latest["Close"] < latest["SMA50"]:
                     continue
 
+            # FIX: golden cross check — was missing in intraday, present in eod/live
+            if (
+                "SMA50" in ticker.columns and "SMA200" in ticker.columns and
+                not pd.isna(latest["SMA50"]) and not pd.isna(latest["SMA200"])
+            ):
+                if latest["SMA50"] < latest["SMA200"]:
+                    logger.info(f"❌ No golden cross: {symbol}")
+                    continue
+
             breakout_type = ", ".join(signals)
             today_str     = datetime.now(IST).strftime("%Y-%m-%d")
             dedup_key     = f"{breakout_type}|{today_str}"
 
+            # FIX: pass ticker, latest, symbol so all scoring components run
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
                 rsi=float(latest["RSI"]),
                 volume_ratio=volume_ratio,
-                breakout_signals=signals
+                breakout_signals=signals,
+                ticker=ticker,
+                latest=latest,
+                symbol=symbol,
             )
 
             if score < MIN_SCORE:
