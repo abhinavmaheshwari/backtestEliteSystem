@@ -456,7 +456,7 @@ while True:
             # MINIMUM SCORE FILTER
             # ====================================================================
 
-            if score < 60:
+            if score < 70:
 
                 logger.info(
                     f"❌ Weak setup skipped: {symbol} | Score={score}"
