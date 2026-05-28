@@ -1,642 +1,284 @@
 # =====================================================================================
-# app/daily_builder.py
+# app/delivery_data.py
+#
+# WHAT THIS FILE DOES:
+#   Fetches NSE end-of-day delivery volume data from the NSE bhavcopy archive.
+#   Called once per trading day by eod_scanner.py at the start of each 6 PM scan
+#   attempt. Includes retry logic (up to 3 attempts with exponential backoff) so
+#   that transient NSE server hiccups don't silently drop delivery data.
+#
+# DATA SOURCE:
+#   NSE Security-wise Delivery Position file (published daily after market close).
+#   URL pattern:
+#     https://archives.nseindia.com/products/content/sec_bhavdata_full_DDMMYYYY.csv
+#
+#   Columns we use from this file:
+#     SYMBOL      — NSE ticker symbol (e.g. "RELIANCE", "INFY")
+#     DELIV_QTY   — Total delivery quantity (shares that changed hands, not intraday)
+#     DELIV_PER   — Delivery % of total traded quantity (pre-computed by NSE)
+#
+#   DELIV_PER is the key metric:
+#     < 25%  → mostly intraday churn, institutional conviction is low
+#     25–40% → moderate delivery, mixed participation
+#     40–60% → solid delivery, genuine positional interest
+#     ≥ 60%  → high delivery, strong institutional / positional conviction
+#
+# PUBLICATION TIMING:
+#   NSE publishes this file between 5:00 PM and 6:00 PM IST.
+#   The eod_scanner runs multiple attempts between 6:00 PM and 7:00 PM.
+#   Retry logic here ensures transient fetch failures are recovered.
+#   If ALL retries fail, the function returns an empty dict — delivery data is
+#   treated as an optional scoring bonus, never a hard filter.
+#
+# WHY NOT USE THE NSE API ENDPOINT?
+#   NSE's equity API (quote-equity?section=trade_info) requires session cookies
+#   that expire frequently. Maintaining cookie sessions in a headless script is
+#   fragile and breaks silently. The bhavcopy archive URL is cookie-free, stable,
+#   and has been published in the same format since 2010.
+#
+# RETRY STRATEGY:
+#   Up to MAX_RETRIES attempts with exponential backoff (RETRY_BACKOFF_SECONDS).
+#   Retries cover: connection errors, timeouts, unexpected HTTP status codes.
+#   404 is NOT retried — it is expected on non-trading days and returns {} immediately.
+#
+# USAGE:
+#   from delivery_data import fetch_delivery_data
+#   delivery_map = fetch_delivery_data(date)   # returns {symbol: delivery_pct}
+#   pct = delivery_map.get("RELIANCE", None)   # None if data unavailable
 # =====================================================================================
 
-import os
+import logging
+import time
+import requests
 import pandas as pd
-import yfinance as yf
-import concurrent.futures
 
-from tqdm import tqdm
-from datetime import datetime
-from tradingview_screener import Query, col
+from datetime import date
+from io import StringIO
 
-from config import WATCHLIST_PATH
+logger = logging.getLogger(__name__)
 
-# =====================================================================================
-# OUTPUT FILES
-# =====================================================================================
-
-OUTPUT_PARQUET = WATCHLIST_PATH
-
-OUTPUT_CSV = WATCHLIST_PATH.replace(
-    ".parquet",
-    ".csv"
+# NSE bhavcopy URL template — date formatted as DDMMYYYY
+BHAVCOPY_URL = (
+    "https://archives.nseindia.com/products/content/"
+    "sec_bhavdata_full_{date_str}.csv"
 )
 
-# =====================================================================================
-# THREADS
-# =====================================================================================
+# HTTP headers that mimic a browser — NSE returns 403 without a User-Agent
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Referer":         "https://www.nseindia.com/",
+}
 
-MAX_WORKERS = 5
+# Timeout for the bhavcopy download (seconds).
+# The file is ~3–5 MB. 30 seconds is generous for any reasonable connection.
+FETCH_TIMEOUT = 30
 
-# =====================================================================================
-# BASE FILTERS
-# =====================================================================================
+# Retry configuration.
+# 3 attempts covers transient NSE CDN hiccups without delaying the scan too long.
+# Backoff: 5s, 10s — total worst-case extra wait ~15s before giving up.
+MAX_RETRIES           = 3
+RETRY_BACKOFF_SECONDS = 5   # multiplied by attempt number (5s, 10s)
 
-MIN_PRICE = 50
 
-MIN_MARKET_CAP = 5_000_000_000
+def fetch_delivery_data(trading_date: date) -> dict[str, float]:
+    """
+    Download and parse the NSE security-wise delivery position file for a given date.
+    Retries up to MAX_RETRIES times on transient failures (connection errors, timeouts,
+    unexpected HTTP status codes). Returns {} immediately on 404 (non-trading day).
 
-MIN_TRADED_VALUE = 100_000_000
+    Parameters
+    ----------
+    trading_date : date
+        The trading date to fetch delivery data for.
+        Should always be called with today's date from eod_scanner.py.
 
-MIN_ROE = 10
+    Returns
+    -------
+    dict[str, float]
+        Mapping of NSE symbol → delivery percentage (0.0 to 100.0).
+        Returns an empty dict on any unrecoverable error.
 
-MIN_OPM = 8
+    Examples
+    --------
+    >>> delivery_map = fetch_delivery_data(date(2025, 5, 15))
+    >>> delivery_map.get("RELIANCE")
+    54.32
+    >>> delivery_map.get("NONEXISTENT")   # returns None, not KeyError
+    None
+    """
 
-# =====================================================================================
-# GROWTH THRESHOLDS
-# =====================================================================================
+    date_str = trading_date.strftime("%d%m%Y")
+    url      = BHAVCOPY_URL.format(date_str=date_str)
 
-HIGH_GROWTH_YOY = 0.15
-
-HIGH_GROWTH_QOQ = 0.05
-
-COMPOUNDER_YOY = 0.03
-
-# =====================================================================================
-# FETCH BASE UNIVERSE
-# =====================================================================================
-
-def fetch_base_universe():
-
-    print("\n📡 Fetching NSE stocks...\n")
-
-    fields = [
-
-        "name",
-        "close",
-        "market_cap_basic",
-        "average_volume_30d_calc",
-
-        "return_on_equity_fy",
-        "operating_margin",
-        "debt_to_equity_fq",
-
-        "earnings_per_share_basic_ttm",
-
-        "sector"
-    ]
-
-    q = (
-
-        Query()
-
-        .set_markets("india")
-
-        .select(*fields)
-
-        .where(
-
-            col("exchange") == "NSE",
-
-            col("close") >= MIN_PRICE,
-
-            col("market_cap_basic") >= MIN_MARKET_CAP,
-
-            col("earnings_per_share_basic_ttm") > 0,
-
-            col("return_on_equity_fy") >= MIN_ROE,
-
-            col("operating_margin") >= MIN_OPM
-        )
-
-        .limit(5000)
+    logger.info(
+        f"📦 Bhavcopy fetch starting | Date={trading_date} | "
+        f"URL={url} | MaxRetries={MAX_RETRIES}"
     )
 
-    total, df = q.get_scanner_data()
-
-    print(f"✅ Base universe fetched: {total}")
-
-    return df
-
-# =====================================================================================
-# ANALYZE STOCK
-# =====================================================================================
-
-def analyze_stock(row):
-
-    symbol = "UNKNOWN"
-
-    try:
-
-        symbol = str(row["name"])
-
-        print(f"🔍 Checking: {symbol}")
-
-        ticker = yf.Ticker(f"{symbol}.NS")
-
-        q = ticker.quarterly_financials
-
-        # ============================================================================
-        # VALIDATION
-        # ============================================================================
-
-        if q is None or q.empty:
-
-            return None
-
-        if q.shape[1] < 5:
-
-            return None
-
-        # ============================================================================
-        # SAFE FINANCIAL EXTRACTION
-        # ============================================================================
-
-        revenue_rows = q[
-            q.index.astype(str).str.contains(
-                "Revenue|Sales",
-                case=False,
-                na=False
-            )
-        ]
-
-        profit_rows = q[
-            q.index.astype(str).str.contains(
-                "Net Income|Profit|Income",
-                case=False,
-                na=False
-            )
-        ]
-
-        if revenue_rows.empty or profit_rows.empty:
-
-            return None
-
-        # ============================================================================
-        # FORCE 1D SERIES
-        # ============================================================================
-
-        revenue = revenue_rows.iloc[0].squeeze()
-
-        profit = profit_rows.iloc[0].squeeze()
-
-        if not isinstance(revenue, pd.Series):
-
-            revenue = pd.Series(revenue)
-
-        if not isinstance(profit, pd.Series):
-
-            profit = pd.Series(profit)
-
-        if len(revenue) < 5 or len(profit) < 5:
-
-            return None
-
-        # ============================================================================
-        # EXTRACT VALUES
-        # ============================================================================
-
-        current_rev = float(revenue.iloc[0])
-
-        prev_q_rev = float(revenue.iloc[1])
-
-        last_year_rev = float(revenue.iloc[4])
-
-        current_profit = float(profit.iloc[0])
-
-        prev_q_profit = float(profit.iloc[1])
-
-        last_year_profit = float(profit.iloc[4])
-
-        # ============================================================================
-        # INVALID DATA CHECK
-        # ============================================================================
-
-        if (
-
-            current_rev <= 0 or
-            prev_q_rev <= 0 or
-            last_year_rev <= 0 or
-
-            current_profit <= 0 or
-            prev_q_profit <= 0 or
-            last_year_profit <= 0
-        ):
-
-            return None
-
-        # ============================================================================
-        # GROWTH
-        # ============================================================================
-
-        qoq_sales = (
-
-            (current_rev - prev_q_rev)
-
-            / prev_q_rev
-        )
-
-        yoy_sales = (
-
-            (current_rev - last_year_rev)
-
-            / last_year_rev
-        )
-
-        qoq_profit = (
-
-            (current_profit - prev_q_profit)
-
-            / prev_q_profit
-        )
-
-        yoy_profit = (
-
-            (current_profit - last_year_profit)
-
-            / last_year_profit
-        )
-
-        # ============================================================================
-        # MARGIN
-        # ============================================================================
-
-        current_margin = current_profit / current_rev
-
-        previous_margin = prev_q_profit / prev_q_rev
-
-        margin_improving = (
-
-            current_margin >= previous_margin
-        )
-
-        # ============================================================================
-        # LIQUIDITY
-        # ============================================================================
-
-        avg_volume = float(
-
-            row.get(
-                "average_volume_30d_calc",
-                0
-            )
-        )
-
-        close_price = float(
-
-            row.get(
-                "close",
-                0
-            )
-        )
-
-        traded_value = avg_volume * close_price
-
-        if traded_value < MIN_TRADED_VALUE:
-
-            return None
-
-        # ============================================================================
-        # QUALITY
-        # ============================================================================
-
-        roe = float(
-
-            row.get(
-                "return_on_equity_fy",
-                0
-            )
-        )
-
-        opm = float(
-
-            row.get(
-                "operating_margin",
-                0
-            )
-        )
-
-        debt_equity = float(
-
-            row.get(
-                "debt_to_equity_fq",
-                0
-            )
-        )
-
-        # ============================================================================
-        # HIGH GROWTH
-        # ============================================================================
-
-        high_growth = (
-
-            (
-
-                qoq_sales > HIGH_GROWTH_QOQ
-
-                or
-
-                yoy_sales > HIGH_GROWTH_YOY
+    for attempt in range(1, MAX_RETRIES + 1):
+
+        logger.info(f"📦 Bhavcopy attempt {attempt}/{MAX_RETRIES} | Date={trading_date}")
+
+        try:
+            fetch_start = time.monotonic()
+            response    = requests.get(url, headers=REQUEST_HEADERS, timeout=FETCH_TIMEOUT)
+            elapsed     = time.monotonic() - fetch_start
+
+            logger.info(
+                f"📦 HTTP {response.status_code} | "
+                f"Elapsed={elapsed:.1f}s | "
+                f"ContentLength={len(response.content):,} bytes | "
+                f"Attempt={attempt}/{MAX_RETRIES}"
             )
 
-            and
+            # ── 404: Non-trading day — do NOT retry, return immediately ──────────────
+            if response.status_code == 404:
+                logger.info(
+                    f"📦 Bhavcopy 404 — non-trading day (weekend/holiday): {trading_date} | "
+                    f"Not retrying."
+                )
+                return {}
 
-            (
+            # ── Non-200 that is worth retrying ────────────────────────────────────────
+            if response.status_code != 200:
+                logger.warning(
+                    f"⚠️ Bhavcopy unexpected HTTP {response.status_code} | "
+                    f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES}"
+                )
+                _maybe_retry(attempt, trading_date)
+                continue
 
-                qoq_profit > HIGH_GROWTH_QOQ
+            # ── PARSE CSV ─────────────────────────────────────────────────────────────
+            # Column names have leading/trailing spaces in some NSE versions — strip all.
+            raw_csv = response.text
 
-                or
+            if not raw_csv or len(raw_csv.strip()) < 100:
+                logger.warning(
+                    f"⚠️ Bhavcopy response body is empty or too short "
+                    f"({len(raw_csv)} chars) | Date={trading_date} | Attempt={attempt}/{MAX_RETRIES}"
+                )
+                _maybe_retry(attempt, trading_date)
+                continue
 
-                yoy_profit > HIGH_GROWTH_YOY
+            try:
+                df = pd.read_csv(StringIO(raw_csv))
+            except Exception as parse_err:
+                logger.warning(
+                    f"⚠️ Bhavcopy CSV parse error: {parse_err} | "
+                    f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES} | "
+                    f"First 200 chars: {raw_csv[:200]!r}"
+                )
+                _maybe_retry(attempt, trading_date)
+                continue
+
+            # Normalize column names: strip whitespace, uppercase
+            df.columns = [c.strip().upper() for c in df.columns]
+
+            logger.info(
+                f"📦 Bhavcopy columns found: {list(df.columns)[:15]} | "
+                f"Rows={len(df):,} | Date={trading_date}"
             )
 
-            and
+            # Verify required columns exist
+            required = {"SYMBOL", "DELIV_QTY", "DELIV_PER"}
+            missing  = required - set(df.columns)
 
-            margin_improving
-        )
+            if missing:
+                logger.error(
+                    f"❌ Bhavcopy missing required columns {missing} | "
+                    f"Available columns (first 15): {list(df.columns)[:15]} | "
+                    f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES} — "
+                    f"NSE may have changed the file format."
+                )
+                # Column mismatch is likely a format change, not a transient error.
+                # Still retry in case we got a partial/corrupt download.
+                _maybe_retry(attempt, trading_date)
+                continue
 
-        # ============================================================================
-        # ELITE COMPOUNDER
-        # ============================================================================
+            # Strip whitespace from symbol column (NSE sometimes pads with spaces)
+            df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
 
-        elite_compounder = (
+            # DELIV_PER can contain "-" for stocks with no delivery data (e.g. F&O-only).
+            # Coerce those to NaN, then drop them.
+            df["DELIV_PER"] = pd.to_numeric(df["DELIV_PER"], errors="coerce")
+            rows_before      = len(df)
+            df               = df.dropna(subset=["DELIV_PER"])
+            rows_dropped     = rows_before - len(df)
 
-            yoy_sales > COMPOUNDER_YOY
+            if rows_dropped > 0:
+                logger.info(
+                    f"📦 Dropped {rows_dropped:,} rows with non-numeric DELIV_PER "
+                    f"(F&O-only / suspended stocks) | Remaining={len(df):,}"
+                )
 
-            and
+            delivery_map = dict(zip(df["SYMBOL"], df["DELIV_PER"].astype(float)))
 
-            yoy_profit > COMPOUNDER_YOY
-
-            and
-
-            roe >= 15
-
-            and
-
-            opm >= 12
-
-            and
-
-            (
-                debt_equity <= 1.5
-                or
-                debt_equity == 0
-            )
-        )
-
-        # ============================================================================
-        # MATURE QUALITY
-        # ============================================================================
-
-        mature_quality = (
-
-            roe >= 18
-
-            and
-
-            opm >= 15
-
-            and
-
-            (
-                debt_equity <= 1.5
-                or
-                debt_equity == 0
+            logger.info(
+                f"✅ Bhavcopy parsed successfully | "
+                f"{len(delivery_map):,} symbols with delivery data | "
+                f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES} | "
+                f"Elapsed={elapsed:.1f}s"
             )
 
-            and
+            # Spot-check: log a few well-known symbols for sanity
+            for sentinel in ("RELIANCE", "INFY", "TCS", "HDFCBANK"):
+                val = delivery_map.get(sentinel)
+                if val is not None:
+                    logger.info(f"📦 Spot-check: {sentinel} delivery={val:.1f}%")
+                    break   # one is enough
 
-            float(row["market_cap_basic"]) >= 50_000_000_000
-        )
+            return delivery_map
 
-        if not (
-
-            high_growth
-            or
-            elite_compounder
-            or
-            mature_quality
-        ):
-
-            return None
-
-        # ============================================================================
-        # CATEGORY
-        # ============================================================================
-
-        categories = []
-
-        if high_growth:
-            categories.append("High Growth")
-
-        if elite_compounder:
-            categories.append("Elite Compounder")
-
-        if mature_quality:
-            categories.append("Mature Quality")
-
-        category = " + ".join(categories)
-
-        # ============================================================================
-        # SCORE
-        # ============================================================================
-
-        score = 0
-
-        if yoy_sales > 0.20:
-            score += 20
-
-        if yoy_profit > 0.25:
-            score += 25
-
-        if qoq_sales > 0.10:
-            score += 10
-
-        if qoq_profit > 0.10:
-            score += 15
-
-        if roe > 20:
-            score += 15
-
-        if opm > 15:
-            score += 10
-
-        if margin_improving:
-            score += 5
-
-        if debt_equity <= 0.5:
-            score += 10
-
-        if mature_quality:
-            score += 10
-
-        # ============================================================================
-        # FINAL OUTPUT
-        # ============================================================================
-
-        return {
-
-            "Stock": symbol,
-
-            "Category": category,
-
-            "Sector": row.get(
-                "sector",
-                "Unknown"
-            ),
-
-            "CMP": round(close_price, 2),
-
-            "Market Cap Cr": round(
-                float(row["market_cap_basic"]) / 10_000_000,
-                2
-            ),
-
-            "ROE %": round(roe, 2),
-
-            "OPM %": round(opm, 2),
-
-            "Debt/Equity": round(
-                debt_equity,
-                2
-            ),
-
-            "QOQ Sales %": round(
-                qoq_sales * 100,
-                2
-            ),
-
-            "YOY Sales %": round(
-                yoy_sales * 100,
-                2
-            ),
-
-            "QOQ Profit %": round(
-                qoq_profit * 100,
-                2
-            ),
-
-            "YOY Profit %": round(
-                yoy_profit * 100,
-                2
-            ),
-
-            "Fundamental Score": score,
-
-            "Scan Time": datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
+        except requests.exceptions.Timeout:
+            logger.warning(
+                f"⚠️ Bhavcopy fetch timed out after {FETCH_TIMEOUT}s | "
+                f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES}"
             )
-        }
+            _maybe_retry(attempt, trading_date)
 
-    except Exception as e:
-
-        print(f"❌ ERROR: {symbol} -> {e}")
-
-        return None
-
-# =====================================================================================
-# MAIN
-# =====================================================================================
-
-def main():
-
-    print("\n🚀 ELITE FUNDAMENTAL SCAN STARTED\n")
-
-    base_df = fetch_base_universe()
-
-    if base_df.empty:
-
-        print("❌ No stocks fetched")
-
-        return
-
-    rows = [
-
-        row
-
-        for _, row in base_df.iterrows()
-    ]
-
-    print("\n📊 Running deep analysis...\n")
-
-    with concurrent.futures.ThreadPoolExecutor(
-
-        max_workers=MAX_WORKERS
-
-    ) as executor:
-
-        results = list(
-
-            tqdm(
-
-                executor.map(
-                    analyze_stock,
-                    rows
-                ),
-
-                total=len(rows)
+        except requests.exceptions.ConnectionError as conn_err:
+            logger.warning(
+                f"⚠️ Bhavcopy connection error: {conn_err} | "
+                f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES}"
             )
-        )
+            _maybe_retry(attempt, trading_date)
 
-    winners = [
+        except Exception:
+            logger.exception(
+                f"❌ Unexpected error fetching bhavcopy | "
+                f"Date={trading_date} | Attempt={attempt}/{MAX_RETRIES}"
+            )
+            _maybe_retry(attempt, trading_date)
 
-        r
-
-        for r in results
-
-        if r
-    ]
-
-    final_df = pd.DataFrame(winners)
-
-    if final_df.empty:
-
-        print("❌ No qualifying stocks")
-
-        return
-
-    final_df = final_df.sort_values(
-
-        by=[
-
-            "Fundamental Score",
-            "ROE %",
-            "YOY Profit %"
-        ],
-
-        ascending=False
+    # All retries exhausted
+    logger.error(
+        f"❌ Bhavcopy fetch FAILED after {MAX_RETRIES} attempts | "
+        f"Date={trading_date} | "
+        f"Scoring will proceed WITHOUT delivery bonus for all stocks today."
     )
+    return {}
 
-    # ============================================================================
-    # SAVE
-    # ============================================================================
 
-    final_df.to_csv(
-
-        OUTPUT_CSV,
-
-        index=False
-    )
-
-    final_df.to_parquet(
-
-        OUTPUT_PARQUET,
-
-        index=False
-    )
-
-    # ============================================================================
-    # OUTPUT
-    # ============================================================================
-
-    print("\n================================================")
-
-    print(
-        f"✅ FINAL WATCHLIST: {len(final_df)}"
-    )
-
-    print("================================================\n")
-
-    print(final_df.head(20).to_string(index=False))
-
-    print(f"\n💾 CSV Saved: {OUTPUT_CSV}")
-
-    print(f"💾 PARQUET Saved: {OUTPUT_PARQUET}")
-
-# =====================================================================================
-
-if __name__ == "__main__":
-
-    main()
+def _maybe_retry(attempt: int, trading_date: date) -> None:
+    """
+    If not the last attempt, sleep with exponential backoff before the next try.
+    Logs the wait so the operator can see what's happening in real time.
+    """
+    if attempt < MAX_RETRIES:
+        wait_secs = RETRY_BACKOFF_SECONDS * attempt
+        logger.info(
+            f"📦 Retrying bhavcopy in {wait_secs}s | "
+            f"Date={trading_date} | Attempt {attempt} of {MAX_RETRIES}"
+        )
+        time.sleep(wait_secs)
+    else:
+        logger.warning(
+            f"⚠️ Bhavcopy: all {MAX_RETRIES} attempts exhausted | "
+            f"Date={trading_date}"
+        )
