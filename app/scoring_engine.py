@@ -41,6 +41,10 @@
 #   + NEW BONUS: Delivery conviction bonus (up to +6 pts) — EOD only. Rewards stocks
 #     where NSE delivery % is high, confirming that the volume was positional, not
 #     intraday churn. Requires delivery_pct parameter passed from eod_scanner.py
+#   + FIX: SCORE_CATEGORY now uses exact key matching instead of substring matching.
+#     Previously, a category string containing multiple labels (e.g. "Elite Compounder
+#     & High Growth") would have matched both keys and double-counted the points.
+#     Now only the first matching key is used (highest points wins, dict is ordered).
 #   + Disqualifier #8 (unsustained volume hard block) removed — was already softened
 #     to -8 penalty in previous version; now lives only in bonus_modifiers as penalty
 #   + All disqualifiers now log the specific value that triggered them
@@ -52,6 +56,10 @@ logger = logging.getLogger(__name__)
 
 # =====================================================================================
 # CATEGORY WEIGHTS
+#
+# Matching is exact: category string must contain the key as a substring, and the
+# FIRST matching key wins. Keys are ordered highest-points-first so an "Elite
+# Compounder" stock never accidentally also earns "High Growth" points.
 # =====================================================================================
 
 SCORE_CATEGORY = {
@@ -69,8 +77,8 @@ SCORE_CATEGORY = {
 # =====================================================================================
 
 RSI_DIVERGENCE_LOOKBACK = {
-    "1d": 5,
-    "1h": 6,
+    "1d":  5,
+    "1h":  6,
     "15m": 6,
 }
 
@@ -158,16 +166,12 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
     # ── DISQUALIFIER 5: RSI BEARISH DIVERGENCE ──────────────────────────────────────
     #
     # Lookback is timeframe-aware:
-    #   EOD (1d): 5 bars = 1 trading week — matches eod_scanner's hidden divergence check
-    #   1H / 15m: 6 bars — previous default, appropriate for shorter timeframes
-    #
-    # Threshold logic:
-    #   EOD: any RSI decline while price rises = hard reject (no tolerance buffer)
-    #        This aligns exactly with what eod_scanner checks. A stock reaching this
-    #        point already passed the scanner's divergence check, so if scoring engine
-    #        fires here it's a redundant safety net — still correct to reject.
-    #   1H / 15m: RSI must be down ≥ 3 points — small oscillations on short bars
-    #        are noise, not divergence. The 3-point buffer prevents false rejections.
+    #   EOD (1d): 5 bars = 1 trading week — matches eod_scanner's hidden divergence check.
+    #             Any RSI decline while price rises = hard reject (no tolerance buffer).
+    #             A stock reaching this point already passed eod_scanner Filter 9B, so
+    #             this is a redundant safety net — still correct to reject.
+    #   1H / 15m: 6 bars. RSI must be down ≥ 3 points — small oscillations on short
+    #             bars are noise, not divergence. The buffer prevents false rejections.
     #
     if "RSI" in ticker.columns:
         lookback = RSI_DIVERGENCE_LOOKBACK.get(timeframe, 6)
@@ -178,8 +182,6 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
             close_prev = float(ticker["Close"].iloc[-1 - lookback])
 
             if timeframe == "1d":
-                # EOD: price up + RSI down = hard reject (no tolerance buffer)
-                # Matches eod_scanner Filter 9B exactly
                 if close_now > close_prev and rsi_now < rsi_prev:
                     reason = (
                         f"RSI bearish divergence [EOD]: price "
@@ -190,7 +192,6 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
                     logger.warning(f"🚫 {tag}DISQ: {reason}")
                     return True, reason
             else:
-                # Intraday / 1H: require ≥ 3 point drop to filter noise
                 if close_now > close_prev * 1.005 and rsi_now < rsi_prev - 3:
                     reason = (
                         f"RSI bearish divergence: price +{(close_now/close_prev-1)*100:.1f}% "
@@ -271,7 +272,7 @@ def bonus_modifiers(
 
     Penalties:
       -8  Unsustained volume (fewer than 2 of last 3 bars above 80% of avg)
-      -5  Gap-up chase (>8% single-day move) — INTRADAY/1H ONLY (EOD uses ATR filter)
+      -5  Gap-up chase (>8% single-bar move) — INTRADAY/1H ONLY (EOD uses ATR filter)
       -5  Extreme overbought RSI (> 78)
     """
 
@@ -338,11 +339,7 @@ def bonus_modifiers(
     #                  approaching exhaustion territory — no bonus
     #   > 3.0× ATR: already blocked by eod_scanner before scoring is called
     #
-    # This bonus only fires on EOD because:
-    #   - ATR(14) on daily bars is meaningful (14 full sessions of data)
-    #   - ATR on 15m or 1H bars is noisier and the intraday scanners already use
-    #     a flat % cap, so ATR-relative analysis would be inconsistent
-    #   - The atr_val parameter is only passed by eod_scanner.py; intraday/1H pass None
+    # atr_val is only passed by eod_scanner.py; intraday/1H pass None.
     #
     if timeframe == "1d" and atr_val is not None and atr_val > 0:
         if len(ticker) >= 2:
@@ -369,16 +366,10 @@ def bonus_modifiers(
     # ── BONUS: DELIVERY CONVICTION — EOD ONLY ────────────────────────────────────────
     #
     # Rewards stocks where the day's NSE delivery percentage is high.
-    # High delivery % means the volume wasn't just intraday traders flipping shares —
-    # actual investors and institutions took physical delivery (settlement T+1).
-    #
+    # High delivery % = actual investors/institutions took physical delivery (T+1).
     # This is the most NSE-specific signal in the entire scoring engine.
-    # On BSE/NSE, delivery % is published daily in the bhavcopy after market close.
-    # It's one of the most reliable filters used by FII/DII desk analysts.
     #
-    # If delivery_pct is None (bhavcopy unavailable or stock not in file), this block
-    # is skipped entirely — no penalty, no bonus. The score is computed without it.
-    # The scanner logs when delivery data is missing so you can audit coverage.
+    # delivery_pct is None if bhavcopy unavailable or stock not in file → skip, no penalty.
     #
     if timeframe == "1d" and delivery_pct is not None:
         delivery_bonus = 0
@@ -400,11 +391,17 @@ def bonus_modifiers(
                 f"volume was primarily intraday churn, no delivery bonus"
             )
     elif timeframe == "1d" and delivery_pct is None:
-        logger.info(f"  ○ {tag}Delivery data unavailable — bonus skipped")
+        logger.info(f"  ○ {tag}Delivery data unavailable — bonus skipped (no penalty)")
 
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
+    #
+    # Checks if volume has been consistently elevated over the last 3 bars.
+    # On EOD, "last 3 bars" = last 3 trading days. That's an appropriate window —
+    # a breakout day preceded by 2 low-volume days is less convincing than one
+    # preceded by sustained accumulation.
+    #
     if len(ticker) >= 4:
-        avg_vol_20 = float(ticker["Volume"].tail(20).mean())
+        avg_vol_20   = float(ticker["Volume"].tail(20).mean())
         recent_above = sum(
             1 for i in range(-3, 0)
             if float(ticker["Volume"].iloc[i]) > avg_vol_20 * 0.80
@@ -418,7 +415,6 @@ def bonus_modifiers(
 
     # ── PENALTY: GAP-UP CHASE — INTRADAY AND 1H ONLY ─────────────────────────────────
     #
-    # Penalises stocks that have already made a large single-bar move.
     # NOT applied on EOD (timeframe == "1d") because eod_scanner's ATR filter already
     # hard-rejects exhaustion moves before scoring. Applying a flat 8% penalty on daily
     # bars that passed a 3× ATR cap would be double-penalising the same condition
@@ -492,10 +488,16 @@ def calculate_score(
             return 0
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
+    #
+    # Iterate in order (highest-points-first) and stop at the FIRST match.
+    # This prevents a category string that contains multiple key substrings
+    # (e.g. "Elite Compounder & High Growth Fund") from double-counting.
+    #
     category_pts = 0
     for label, pts in SCORE_CATEGORY.items():
         if label in category:
-            category_pts += pts
+            category_pts = pts
+            break   # first (highest-value) match wins — no double-counting
 
     score += category_pts
     logger.info(f"  Score after category ({category}): {score} (+{category_pts})")
