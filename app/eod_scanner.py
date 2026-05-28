@@ -47,8 +47,13 @@
 #   18. ATR-adjusted move cap — day's move ≤ 3× ATR(14)
 #   19. Score threshold       — composite score ≥ 78 (boosted if sector confluence ≥ 3)
 #       Score incorporates delivery conviction bonus (+2/+4/+6) from NSE bhavcopy
+#       Score also incorporates sector rotation bonus (+4/+2/-2/-4) from RS vs Nifty
 #
 # CHANGES FROM PREVIOUS VERSION:
+#   + SECTOR ROTATION: get_sector_scores() called once per scan attempt.
+#     Each stock gets a rotation bonus (+4/+2/-2/-4/0) from sector_rotation.py.
+#     The rotation report is sent to Telegram once per scan attempt.
+#     Fully graceful — if sector data is unavailable, bonuses are simply 0.
 #   + MULTIPLE SCANS: up to MAX_SCAN_ATTEMPTS (4) per trading day, spaced
 #     SCAN_INTERVAL_MINUTES (15) apart within the 6:00–7:15 PM window.
 #     Each scan uses a per-scan dedup key so a stock alerted in attempt 1 is not
@@ -78,6 +83,7 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_delivery_data
+from sector_rotation import get_sector_scores   # ← Edit 1: sector rotation import
 
 from config import WATCHLIST_PATH
 
@@ -300,6 +306,22 @@ while True:
             f"Scoring will proceed WITHOUT delivery bonus | "
             f"Check delivery_data.py logs above for the specific failure reason."
         )
+
+    # ── FETCH SECTOR ROTATION DATA ────────────────────────────────────────────────────
+    # Edit 2: fetch rotation once per scan attempt, before the stock loop.
+    # Uses a 30-minute cache — parallel scanner processes share the result automatically.
+    # The rotation report is sent to Telegram once per attempt (not per stock).
+    # If sector data is unavailable, rotation_bonus will be 0 for every stock — no crash.
+    rotation = get_sector_scores()
+    if rotation.scores:
+        logger.info(
+            f"🔄 Sector rotation ready | "
+            f"Strong: {', '.join(sorted(rotation.strong_sectors)) or 'none'} | "
+            f"Weak: {', '.join(sorted(rotation.weak_sectors)) or 'none'}"
+        )
+        send_telegram_message(rotation.rotation_report, scan_type="EOD")
+    else:
+        logger.warning("⚠️ Sector rotation unavailable — bonuses not applied this attempt")
 
     # ── LOAD WATCHLIST ───────────────────────────────────────────────────────────────
     try:
@@ -694,6 +716,18 @@ while True:
             )
 
             logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
+
+            # ── SECTOR ROTATION BONUS ─────────────────────────────────────────────────
+            # Edit 3: apply rotation bonus after base score, before threshold check.
+            # +4 LEADING | +2 IMPROVING | -2 WEAKENING | -4 LAGGING | 0 unknown/neutral
+            rotation_bonus = rotation.score_bonus_for(symbol)
+            if rotation_bonus != 0:
+                logger.info(
+                    f"  {'+' if rotation_bonus >= 0 else ''}{rotation_bonus} "
+                    f"Rotation [{rotation.sector_for(symbol)}] → "
+                    f"score {score} → {score + rotation_bonus}"
+                )
+            score = max(0, min(score + rotation_bonus, 100))
 
             if score < MIN_SCORE:
                 logger.info(f"  ❌ Score too low ({score} < {MIN_SCORE}): {symbol}")
