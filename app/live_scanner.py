@@ -61,6 +61,7 @@ from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
+from sector_rotation import get_sector_scores
 
 from config import WATCHLIST_PATH
 
@@ -174,6 +175,9 @@ while True:
         build_watchlist()
         watchlist = pd.read_parquet(WATCHLIST_PATH)
         logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
+
+    rotation = get_sector_scores()
+    logger.info(f"🔄 Rotation | Strong: {', '.join(sorted(rotation.strong_sectors)) or 'none'} | Weak: {', '.join(sorted(rotation.weak_sectors)) or 'none'}")
 
     scan_start         = datetime.now(IST)
     total_alerts       = 0
@@ -519,6 +523,11 @@ while True:
             )
 
             logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
+
+            rotation_bonus = rotation.score_bonus_for(symbol)
+            if rotation_bonus != 0:
+                logger.info(f"  {'+' if rotation_bonus >= 0 else ''}{rotation_bonus} Rotation [{rotation.sector_for(symbol)}] → score {score} → {score + rotation_bonus}")
+            score = max(0, min(score + rotation_bonus, 100))
 
             if score < MIN_SCORE:
                 logger.info(f"  ❌ Score too low ({score} < {MIN_SCORE}): {symbol}")
