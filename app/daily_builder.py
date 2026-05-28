@@ -1,249 +1,642 @@
 # =====================================================================================
 # app/daily_builder.py
-#
-# WHAT THIS FILE DOES:
-#   Constructs the master watchlist dataframe (Stock, Category) from the sector map.
-#   Saves the result to a Parquet file atomically to prevent race conditions.
 # =====================================================================================
 
 import os
-import tempfile
-import logging
 import pandas as pd
+import yfinance as yf
+import concurrent.futures
+
+from tqdm import tqdm
+from datetime import datetime
+from tradingview_screener import Query, col
 
 from config import WATCHLIST_PATH
 
-logger = logging.getLogger(__name__)
-
 # =====================================================================================
-# MASTER SECTOR MAP
+# OUTPUT FILES
 # =====================================================================================
 
-NSE_SECTOR_MAP: dict[str, str] = {
-    # ── IT ───────────────────────────────────────────────────────────────────────────
-    "TCS": "IT", "INFY": "IT", "WIPRO": "IT", "HCLTECH": "IT", "TECHM": "IT",
-    "LTIM": "IT", "MPHASIS": "IT", "PERSISTENT": "IT", "COFORGE": "IT",
-    "OFSS": "IT", "KPITTECH": "IT", "TATAELXSI": "IT", "MASTEK": "IT",
-    "HEXAWARE": "IT", "NIITTECH": "IT", "RATEGAIN": "IT", "NEWGEN": "IT",
-    "ZENSARTECH": "IT", "BIRLASOFT": "IT",
-    "SONATSOFTW": "IT", "HAPPSTMNDS": "IT", "INTELLECT": "IT",
-    "TANLA": "IT", "ECLERX": "IT", "ROUTE": "IT",
-    "DATAMATICS": "IT", "CYIENT": "IT",
+OUTPUT_PARQUET = WATCHLIST_PATH
 
-    # ── Pharma ───────────────────────────────────────────────────────────────────────
-    "SUNPHARMA": "Pharma", "DRREDDY": "Pharma", "CIPLA": "Pharma",
-    "DIVISLAB": "Pharma", "AUROPHARMA": "Pharma", "TORNTPHARM": "Pharma",
-    "ALKEM": "Pharma", "LUPIN": "Pharma", "ABBOTINDIA": "Pharma",
-    "GLAXO": "Pharma", "PFIZER": "Pharma", "SANOFI": "Pharma",
-    "LALPATHLAB": "Pharma", "METROPOLIS": "Pharma", "POLYMED": "Pharma",
-    "GRANULES": "Pharma", "AJANTPHARM": "Pharma", "NATCOPHARM": "Pharma",
-    "IPCALAB": "Pharma", "GLAND": "Pharma", "ERIS": "Pharma",
-    "SYNGENE": "Pharma", "LAURUSLABS": "Pharma",
-    "BIOCON": "Pharma", "ZYDUSLIFE": "Pharma",
-    "CAPLIPOINT": "Pharma", "SUVENPHAR": "Pharma",
-    "WOCKPHARMA": "Pharma", "KIMS": "Pharma",
-    "MEDANTA": "Pharma", "RAINBOW": "Pharma",
-    "VIJAYA": "Pharma", "THYROCARE": "Pharma",
-    "STARHEALTH": "Pharma",
-
-    # ── Banking ───────────────────────────────────────────────────────────────────────
-    "HDFCBANK": "Banking", "ICICIBANK": "Banking", "KOTAKBANK": "Banking",
-    "AXISBANK": "Banking", "INDUSINDBK": "Banking", "FEDERALBNK": "Banking",
-    "BANDHANBNK": "Banking", "IDFCFIRSTB": "Banking", "RBLBANK": "Banking",
-    "AUBANK": "Banking", "YESBANK": "Banking", "DCBBANK": "Banking",
-    "KARNATAKA": "Banking", "CSBBANK": "Banking",
-    "CUB": "Banking", "KVB": "Banking",
-
-    # ── PSU Bank ──────────────────────────────────────────────────────────────────────
-    "SBIN": "PSU Bank", "BANKBARODA": "PSU Bank", "PNB": "PSU Bank",
-    "CANBK": "PSU Bank", "UNIONBANK": "PSU Bank", "INDIANB": "PSU Bank",
-    "BANKINDIA": "PSU Bank", "MAHABANK": "PSU Bank", "IOB": "PSU Bank",
-    "UCOBANK": "PSU Bank", "CENTRALBK": "PSU Bank",
-
-    # ── Financials ───────────────────────────────────────────────────────────────────
-    "BAJFINANCE": "Financials", "BAJAJFINSV": "Financials",
-    "CHOLAFIN": "Financials", "SHRIRAMFIN": "Financials",
-    "MUTHOOTFIN": "Financials", "MANAPPURAM": "Financials",
-    "LICHSGFIN": "Financials", "HDFCAMC": "Financials",
-    "NAM-INDIA": "Financials", "360ONE": "Financials",
-    "ANGELONE": "Financials", "MOTILALOFS": "Financials",
-    "CDSL": "Financials", "BSE": "Financials",
-    "KFINTECH": "Financials", "MCX": "Financials",
-    "SBICARD": "Financials",
-
-    # ── FMCG ──────────────────────────────────────────────────────────────────────────
-    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG",
-    "BRITANNIA": "FMCG", "DABUR": "FMCG", "MARICO": "FMCG",
-    "COLPAL": "FMCG", "GODREJCP": "FMCG", "EMAMILTD": "FMCG",
-    "VBL": "FMCG", "UBL": "FMCG", "MCDOWELL-N": "FMCG",
-    "RADICO": "FMCG", "TATACONSUM": "FMCG", "JYOTHYLAB": "FMCG",
-    "PAGEIND": "FMCG",
-
-    # ── Auto ──────────────────────────────────────────────────────────────────────────
-    "MARUTI": "Auto", "TATAMOTORS": "Auto", "M&M": "Auto",
-    "BAJAJ-AUTO": "Auto", "HEROMOTOCO": "Auto", "EICHERMOT": "Auto",
-    "TVSMOTORS": "Auto", "ASHOKLEY": "Auto", "TIINDIA": "Auto",
-    "MOTHERSON": "Auto", "BOSCHLTD": "Auto", "BHARATFORG": "Auto",
-    "BALKRISIND": "Auto", "APOLLOTYRE": "Auto", "MRF": "Auto",
-    "CEATLTD": "Auto", "EXIDEIND": "Auto", "AMARARAJA": "Auto",
-    "SUNDRMFAST": "Auto", "SUBROS": "Auto",
-    "SONACOMS": "Auto", "UNOMINDA": "Auto",
-    "SUPRAJIT": "Auto", "ENDURANCE": "Auto",
-    "GABRIEL": "Auto", "SCHAEFFLER": "Auto",
-    "FIEMIND": "Auto", "OLECTRA": "Auto",
-    "GREAVESCOT": "Auto",
-
-    # ── Metal ─────────────────────────────────────────────────────────────────────────
-    "TATASTEEL": "Metal", "JSWSTEEL": "Metal", "SAIL": "Metal",
-    "HINDALCO": "Metal", "VEDL": "Metal", "NMDC": "Metal",
-    "NATIONALUM": "Metal", "APLAPOLLO": "Metal", "RATNAMANI": "Metal",
-    "WELSPUNLIV": "Metal", "JINDALSTEL": "Metal", "JSWISPL": "Metal",
-    "HINDZINC": "Metal", "MOIL": "Metal", "SHYAMMETL": "Metal",
-
-    # ── Energy ───────────────────────────────────────────────────────────────────────
-    "RELIANCE": "Energy", "ONGC": "Energy", "BPCL": "Energy",
-    "IOC": "Energy", "HINDPETRO": "Energy", "GAIL": "Energy",
-    "PETRONET": "Energy", "NTPC": "Energy", "POWERGRID": "Energy",
-    "TATAPOWER": "Energy", "ADANIPOWER": "Energy",
-    "ADANIGREEN": "Energy", "TORNTPOWER": "Energy",
-    "CESC": "Energy", "JSWENERGY": "Energy",
-    "NHPC": "Energy", "SJVN": "Energy",
-    "IREDA": "Energy", "SUZLON": "Energy",
-    "KPIGREEN": "Energy", "INDOXWIND": "Energy",
-    "WAAREEENER": "Energy", "INOXGREEN": "Energy",
-
-    # ── Realty ───────────────────────────────────────────────────────────────────────
-    "DLF": "Realty", "GODREJPROP": "Realty",
-    "OBEROIRLTY": "Realty", "PRESTIGE": "Realty",
-    "BRIGADE": "Realty", "SOBHA": "Realty",
-    "PHOENIXLTD": "Realty", "MAHLIFE": "Realty",
-    "LODHA": "Realty", "SUNTECK": "Realty",
-    "KOLTEPATIL": "Realty", "ARVIND": "Realty",
-
-    # ── Infrastructure ────────────────────────────────────────────────────────────────
-    "LT": "Infrastructure", "LTTS": "Infrastructure",
-    "IRCON": "Infrastructure", "RVNL": "Infrastructure",
-    "IRFC": "Infrastructure", "RECLTD": "Infrastructure",
-    "PFC": "Infrastructure", "ADANIPORTS": "Infrastructure",
-    "GMRINFRA": "Infrastructure", "AIAENGLTD": "Infrastructure",
-    "CUMMINSIND": "Infrastructure", "ABB": "Infrastructure",
-    "SIEMENS": "Infrastructure", "HAVELLS": "Infrastructure",
-    "KEI": "Infrastructure", "POLYCAB": "Infrastructure",
-    "KALPATPOWR": "Infrastructure", "KEC": "Infrastructure",
-    "ENGINERSIN": "Infrastructure", "NBCC": "Infrastructure",
-    "PSPPROJECT": "Infrastructure",
-
-    # ── Capital Goods ────────────────────────────────────────────────────────────────
-    "SKFINDIA": "Capital Goods",
-    "THERMAX": "Capital Goods",
-    "KAYNES": "Capital Goods",
-    "DIXON": "Capital Goods",
-    "SYRMA": "Capital Goods",
-    "CGPOWER": "Capital Goods",
-    "VOLTAS": "Capital Goods",
-    "BLUESTARCO": "Capital Goods",
-
-    # ── Railways ─────────────────────────────────────────────────────────────────────
-    "RAILTEL": "Railways",
-    "TITAGARH": "Railways",
-    "TEXRAIL": "Railways",
-    "JWL": "Railways",
-    "CONCOR": "Railways",
-
-    # ── Defence ──────────────────────────────────────────────────────────────────────
-    "HAL": "Defence", "BEL": "Defence",
-    "COCHINSHIP": "Defence", "MAZDOCK": "Defence",
-    "GRSE": "Defence", "MIDHANI": "Defence",
-    "PARAS": "Defence", "DATAPATTNS": "Defence",
-    "BHEL": "Defence", "BEML": "Defence",
-    "ASTRA": "Defence", "MTAR": "Defence",
-    "BDL": "Defence", "ZENTECH": "Defence",
-    "IDEAFORGE": "Defence",
-    "DCXINDIA": "Defence",
-    "SOLARINDS": "Defence",
-    "CYIENTDLM": "Defence",
-
-    # ── MNC ───────────────────────────────────────────────────────────────────────────
-    "ASIANPAINT": "MNC", "PIDILITIND": "MNC",
-    "3MINDIA": "MNC", "HONAUT": "MNC",
-    "SCHNEIDER": "MNC", "GILLETTE": "MNC",
-
-    # ── Consumption ──────────────────────────────────────────────────────────────────
-    "DMART": "Consumption", "TRENT": "Consumption",
-    "ZOMATO": "Consumption", "NYKAA": "Consumption",
-    "INDIAMART": "Consumption", "IRCTC": "Consumption",
-    "JUBLFOOD": "Consumption", "DEVYANI": "Consumption",
-    "SAPPHIRE": "Consumption", "WESTLIFE": "Consumption",
-    "BARBEQUE": "Consumption", "EASEMYTRIP": "Consumption",
-    "ABFRL": "Consumption", "VMART": "Consumption",
-    "SHOPERSTOP": "Consumption", "ETHOSLTD": "Consumption",
-    "MANYAVAR": "Consumption", "REDTAPE": "Consumption",
-    "MEDPLUS": "Consumption",
-
-    # ── Chemicals ────────────────────────────────────────────────────────────────────
-    "DEEPAKNTR": "Chemicals",
-    "SRF": "Chemicals",
-    "NAVINFLUOR": "Chemicals",
-    "FLUOROCHEM": "Chemicals",
-    "TATACHEM": "Chemicals",
-    "AARTIIND": "Chemicals",
-    "ALKYLAMINE": "Chemicals",
-
-    # ── Telecom ──────────────────────────────────────────────────────────────────────
-    "BHARTIARTL": "Telecom",
-    "INDUSTOWER": "Telecom",
-    "TEJASNET": "Telecom",
-    "HFCL": "Telecom",
-
-    # ── Electronics ──────────────────────────────────────────────────────────────────
-    "PGEL": "Electronics",
-    "AVALON": "Electronics",
-}
+OUTPUT_CSV = WATCHLIST_PATH.replace(
+    ".parquet",
+    ".csv"
+)
 
 # =====================================================================================
-# CORE LOGIC
+# THREADS
+# =====================================================================================
+
+MAX_WORKERS = 5
+
+# =====================================================================================
+# BASE FILTERS
+# =====================================================================================
+
+MIN_PRICE = 50
+
+MIN_MARKET_CAP = 5_000_000_000
+
+MIN_TRADED_VALUE = 100_000_000
+
+MIN_ROE = 10
+
+MIN_OPM = 8
+
+# =====================================================================================
+# GROWTH THRESHOLDS
+# =====================================================================================
+
+HIGH_GROWTH_YOY = 0.15
+
+HIGH_GROWTH_QOQ = 0.05
+
+COMPOUNDER_YOY = 0.03
+
+# =====================================================================================
+# FETCH BASE UNIVERSE
+# =====================================================================================
+
+def fetch_base_universe():
+
+    print("\n📡 Fetching NSE stocks...\n")
+
+    fields = [
+
+        "name",
+        "close",
+        "market_cap_basic",
+        "average_volume_30d_calc",
+
+        "return_on_equity_fy",
+        "operating_margin",
+        "debt_to_equity_fq",
+
+        "earnings_per_share_basic_ttm",
+
+        "sector"
+    ]
+
+    q = (
+
+        Query()
+
+        .set_markets("india")
+
+        .select(*fields)
+
+        .where(
+
+            col("exchange") == "NSE",
+
+            col("close") >= MIN_PRICE,
+
+            col("market_cap_basic") >= MIN_MARKET_CAP,
+
+            col("earnings_per_share_basic_ttm") > 0,
+
+            col("return_on_equity_fy") >= MIN_ROE,
+
+            col("operating_margin") >= MIN_OPM
+        )
+
+        .limit(5000)
+    )
+
+    total, df = q.get_scanner_data()
+
+    print(f"✅ Base universe fetched: {total}")
+
+    return df
+
+# =====================================================================================
+# ANALYZE STOCK
+# =====================================================================================
+
+def analyze_stock(row):
+
+    symbol = "UNKNOWN"
+
+    try:
+
+        symbol = str(row["name"])
+
+        print(f"🔍 Checking: {symbol}")
+
+        ticker = yf.Ticker(f"{symbol}.NS")
+
+        q = ticker.quarterly_financials
+
+        # ============================================================================
+        # VALIDATION
+        # ============================================================================
+
+        if q is None or q.empty:
+
+            return None
+
+        if q.shape[1] < 5:
+
+            return None
+
+        # ============================================================================
+        # SAFE FINANCIAL EXTRACTION
+        # ============================================================================
+
+        revenue_rows = q[
+            q.index.astype(str).str.contains(
+                "Revenue|Sales",
+                case=False,
+                na=False
+            )
+        ]
+
+        profit_rows = q[
+            q.index.astype(str).str.contains(
+                "Net Income|Profit|Income",
+                case=False,
+                na=False
+            )
+        ]
+
+        if revenue_rows.empty or profit_rows.empty:
+
+            return None
+
+        # ============================================================================
+        # FORCE 1D SERIES
+        # ============================================================================
+
+        revenue = revenue_rows.iloc[0].squeeze()
+
+        profit = profit_rows.iloc[0].squeeze()
+
+        if not isinstance(revenue, pd.Series):
+
+            revenue = pd.Series(revenue)
+
+        if not isinstance(profit, pd.Series):
+
+            profit = pd.Series(profit)
+
+        if len(revenue) < 5 or len(profit) < 5:
+
+            return None
+
+        # ============================================================================
+        # EXTRACT VALUES
+        # ============================================================================
+
+        current_rev = float(revenue.iloc[0])
+
+        prev_q_rev = float(revenue.iloc[1])
+
+        last_year_rev = float(revenue.iloc[4])
+
+        current_profit = float(profit.iloc[0])
+
+        prev_q_profit = float(profit.iloc[1])
+
+        last_year_profit = float(profit.iloc[4])
+
+        # ============================================================================
+        # INVALID DATA CHECK
+        # ============================================================================
+
+        if (
+
+            current_rev <= 0 or
+            prev_q_rev <= 0 or
+            last_year_rev <= 0 or
+
+            current_profit <= 0 or
+            prev_q_profit <= 0 or
+            last_year_profit <= 0
+        ):
+
+            return None
+
+        # ============================================================================
+        # GROWTH
+        # ============================================================================
+
+        qoq_sales = (
+
+            (current_rev - prev_q_rev)
+
+            / prev_q_rev
+        )
+
+        yoy_sales = (
+
+            (current_rev - last_year_rev)
+
+            / last_year_rev
+        )
+
+        qoq_profit = (
+
+            (current_profit - prev_q_profit)
+
+            / prev_q_profit
+        )
+
+        yoy_profit = (
+
+            (current_profit - last_year_profit)
+
+            / last_year_profit
+        )
+
+        # ============================================================================
+        # MARGIN
+        # ============================================================================
+
+        current_margin = current_profit / current_rev
+
+        previous_margin = prev_q_profit / prev_q_rev
+
+        margin_improving = (
+
+            current_margin >= previous_margin
+        )
+
+        # ============================================================================
+        # LIQUIDITY
+        # ============================================================================
+
+        avg_volume = float(
+
+            row.get(
+                "average_volume_30d_calc",
+                0
+            )
+        )
+
+        close_price = float(
+
+            row.get(
+                "close",
+                0
+            )
+        )
+
+        traded_value = avg_volume * close_price
+
+        if traded_value < MIN_TRADED_VALUE:
+
+            return None
+
+        # ============================================================================
+        # QUALITY
+        # ============================================================================
+
+        roe = float(
+
+            row.get(
+                "return_on_equity_fy",
+                0
+            )
+        )
+
+        opm = float(
+
+            row.get(
+                "operating_margin",
+                0
+            )
+        )
+
+        debt_equity = float(
+
+            row.get(
+                "debt_to_equity_fq",
+                0
+            )
+        )
+
+        # ============================================================================
+        # HIGH GROWTH
+        # ============================================================================
+
+        high_growth = (
+
+            (
+
+                qoq_sales > HIGH_GROWTH_QOQ
+
+                or
+
+                yoy_sales > HIGH_GROWTH_YOY
+            )
+
+            and
+
+            (
+
+                qoq_profit > HIGH_GROWTH_QOQ
+
+                or
+
+                yoy_profit > HIGH_GROWTH_YOY
+            )
+
+            and
+
+            margin_improving
+        )
+
+        # ============================================================================
+        # ELITE COMPOUNDER
+        # ============================================================================
+
+        elite_compounder = (
+
+            yoy_sales > COMPOUNDER_YOY
+
+            and
+
+            yoy_profit > COMPOUNDER_YOY
+
+            and
+
+            roe >= 15
+
+            and
+
+            opm >= 12
+
+            and
+
+            (
+                debt_equity <= 1.5
+                or
+                debt_equity == 0
+            )
+        )
+
+        # ============================================================================
+        # MATURE QUALITY
+        # ============================================================================
+
+        mature_quality = (
+
+            roe >= 18
+
+            and
+
+            opm >= 15
+
+            and
+
+            (
+                debt_equity <= 1.5
+                or
+                debt_equity == 0
+            )
+
+            and
+
+            float(row["market_cap_basic"]) >= 50_000_000_000
+        )
+
+        if not (
+
+            high_growth
+            or
+            elite_compounder
+            or
+            mature_quality
+        ):
+
+            return None
+
+        # ============================================================================
+        # CATEGORY
+        # ============================================================================
+
+        categories = []
+
+        if high_growth:
+            categories.append("High Growth")
+
+        if elite_compounder:
+            categories.append("Elite Compounder")
+
+        if mature_quality:
+            categories.append("Mature Quality")
+
+        category = " + ".join(categories)
+
+        # ============================================================================
+        # SCORE
+        # ============================================================================
+
+        score = 0
+
+        if yoy_sales > 0.20:
+            score += 20
+
+        if yoy_profit > 0.25:
+            score += 25
+
+        if qoq_sales > 0.10:
+            score += 10
+
+        if qoq_profit > 0.10:
+            score += 15
+
+        if roe > 20:
+            score += 15
+
+        if opm > 15:
+            score += 10
+
+        if margin_improving:
+            score += 5
+
+        if debt_equity <= 0.5:
+            score += 10
+
+        if mature_quality:
+            score += 10
+
+        # ============================================================================
+        # FINAL OUTPUT
+        # ============================================================================
+
+        return {
+
+            "Stock": symbol,
+
+            "Category": category,
+
+            "Sector": row.get(
+                "sector",
+                "Unknown"
+            ),
+
+            "CMP": round(close_price, 2),
+
+            "Market Cap Cr": round(
+                float(row["market_cap_basic"]) / 10_000_000,
+                2
+            ),
+
+            "ROE %": round(roe, 2),
+
+            "OPM %": round(opm, 2),
+
+            "Debt/Equity": round(
+                debt_equity,
+                2
+            ),
+
+            "QOQ Sales %": round(
+                qoq_sales * 100,
+                2
+            ),
+
+            "YOY Sales %": round(
+                yoy_sales * 100,
+                2
+            ),
+
+            "QOQ Profit %": round(
+                qoq_profit * 100,
+                2
+            ),
+
+            "YOY Profit %": round(
+                yoy_profit * 100,
+                2
+            ),
+
+            "Fundamental Score": score,
+
+            "Scan Time": datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        }
+
+    except Exception as e:
+
+        print(f"❌ ERROR: {symbol} -> {e}")
+
+        return None
+
+# =====================================================================================
+# MAIN
 # =====================================================================================
 
 def main():
-    """
-    Main execution function. Called directly or imported by main.py / eod_scanner.py.
-    """
-    logger.info("🛠️ Building daily watchlist...")
 
-    # 1. Ensure the target directory exists
-    target_dir = os.path.dirname(WATCHLIST_PATH)
-    os.makedirs(target_dir, exist_ok=True)
+    print("\n🚀 ELITE FUNDAMENTAL SCAN STARTED\n")
 
-    # 2. Extract symbols directly from the map
-    symbols = list(NSE_SECTOR_MAP.keys())
+    base_df = fetch_base_universe()
 
-    # 3. Construct DataFrame
-    watchlist_data = [
-        {"Stock": symbol, "Category": NSE_SECTOR_MAP[symbol]}
-        for symbol in symbols
+    if base_df.empty:
+
+        print("❌ No stocks fetched")
+
+        return
+
+    rows = [
+
+        row
+
+        for _, row in base_df.iterrows()
     ]
-    df = pd.DataFrame(watchlist_data)
 
-    # 4. Atomic Save (Prevents FileNotFoundError or corrupted reads in threads)
-    try:
-        # Create a temporary file in the same directory
-        fd, temp_path = tempfile.mkstemp(dir=target_dir, suffix=".parquet")
-        os.close(fd) # Close the file descriptor so pandas can open it
+    print("\n📊 Running deep analysis...\n")
 
-        # Save to the temporary file
-        df.to_parquet(temp_path, index=False)
+    with concurrent.futures.ThreadPoolExecutor(
 
-        # Atomically replace the old watchlist with the new one
-        os.replace(temp_path, WATCHLIST_PATH)
-        logger.info(f"💾 Watchlist saved atomically to {WATCHLIST_PATH}. Total active stocks: {len(df)}")
+        max_workers=MAX_WORKERS
 
-    except Exception as e:
-        logger.exception(f"❌ Failed to save watchlist: {e}")
-        # Clean up temp file if something went wrong
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    ) as executor:
+
+        results = list(
+
+            tqdm(
+
+                executor.map(
+                    analyze_stock,
+                    rows
+                ),
+
+                total=len(rows)
+            )
+        )
+
+    winners = [
+
+        r
+
+        for r in results
+
+        if r
+    ]
+
+    final_df = pd.DataFrame(winners)
+
+    if final_df.empty:
+
+        print("❌ No qualifying stocks")
+
+        return
+
+    final_df = final_df.sort_values(
+
+        by=[
+
+            "Fundamental Score",
+            "ROE %",
+            "YOY Profit %"
+        ],
+
+        ascending=False
+    )
+
+    # ============================================================================
+    # SAVE
+    # ============================================================================
+
+    final_df.to_csv(
+
+        OUTPUT_CSV,
+
+        index=False
+    )
+
+    final_df.to_parquet(
+
+        OUTPUT_PARQUET,
+
+        index=False
+    )
+
+    # ============================================================================
+    # OUTPUT
+    # ============================================================================
+
+    print("\n================================================")
+
+    print(
+        f"✅ FINAL WATCHLIST: {len(final_df)}"
+    )
+
+    print("================================================\n")
+
+    print(final_df.head(20).to_string(index=False))
+
+    print(f"\n💾 CSV Saved: {OUTPUT_CSV}")
+
+    print(f"💾 PARQUET Saved: {OUTPUT_PARQUET}")
+
+# =====================================================================================
 
 if __name__ == "__main__":
-    # Ensure logs print to console if run directly
-    logging.basicConfig(level=logging.INFO)
+
     main()
