@@ -3,20 +3,28 @@
 # EOD BREAKOUT SCANNER — DAILY CANDLES
 #
 # WHAT THIS FILE DOES:
-#   Runs once per trading day at 6:00 PM IST.
+#   Runs between 6:00 PM and 7:15 PM IST, performing up to MAX_SCAN_ATTEMPTS scans
+#   per trading day. Multiple runs ensure at least one alert fires even if the first
+#   pass has a transient data issue (yfinance returning stale data, bhavcopy delayed).
+#
 #   Timing rationale:
 #     3:30 PM — NSE market closes
-#     5:00–5:30 PM — NSE publishes bhavcopy (delivery data); inconsistent, sometimes 6 PM
-#     6:00 PM — bhavcopy is reliably available every trading day without exception
-#     7:00 PM — scan window closes; all alerts sent well before end of evening
+#     5:00–5:30 PM — NSE publishes bhavcopy (delivery data); inconsistent before 6 PM
+#     6:00 PM — EOD_START: bhavcopy is reliably available every trading day
+#     7:15 PM — EOD_END: window closes; all alerts sent well before end of evening
+#     ~15 min — SCAN_INTERVAL_MINUTES between scans
 #
-#   By waiting until 6:00 PM, we can fetch NSE delivery volume data (DELIV_PER) for
-#   every stock and incorporate it into the composite score. This is a significant
-#   upgrade over scanning at 3:45 PM when delivery data does not yet exist.
+#   Why multiple scans?
+#     On some days yfinance returns yesterday's close at 6:00 PM (CDN propagation lag).
+#     The data-freshness guard rejects stale bars. By retrying at 6:15 and 6:30 we
+#     almost certainly catch the data once it propagates. The dedup key prevents the
+#     same stock from being alerted twice on the same day.
 #
-#   Downloads 1 year of daily OHLCV data for each watchlist stock, applies indicators,
-#   runs the full filter stack, fetches delivery data, then scores each candidate.
-#   Daily alerts represent high-conviction multi-day momentum setups.
+# SCAN SCHEDULE (example):
+#   Attempt 1 — 6:00 PM  (bhavcopy just published, some yfinance data still propagating)
+#   Attempt 2 — 6:15 PM  (yfinance fully settled, nearly all stocks fresh)
+#   Attempt 3 — 6:30 PM  (safety net; bhavcopy almost always available)
+#   Attempt 4 — 6:45 PM  (final pass; catches any stragglers)
 #
 # FILTER PIPELINE (in order — a stock must pass ALL of these):
 #   1.  Data quality          — 200 candles minimum, no missing columns
@@ -38,20 +46,19 @@
 #   17. 52W high proximity    — within 15% of 52-week high
 #   18. ATR-adjusted move cap — day's move ≤ 3× ATR(14)
 #   19. Score threshold       — composite score ≥ 78 (boosted if sector confluence ≥ 3)
-#       Score now incorporates delivery conviction bonus (+2/+4/+6) from NSE bhavcopy
+#       Score incorporates delivery conviction bonus (+2/+4/+6) from NSE bhavcopy
 #
 # CHANGES FROM PREVIOUS VERSION:
-#   + TIMING: scan window moved from 3:45 PM → 6:00 PM IST
-#       Rationale: NSE bhavcopy (delivery data) is not reliably published before 6 PM.
-#       Scanning at 3:45 PM meant delivery data was never available. At 6 PM, it always is.
-#   + NEW: delivery data fetch at scan start via delivery_data.fetch_delivery_data()
-#       The NSE sec_bhavdata_full file is downloaded once per scan and parsed into
-#       a symbol → delivery_pct dict. Each stock's delivery_pct is passed to
-#       calculate_score(), which awards +2/+4/+6 bonus points based on DELIV_PER.
-#   + NEW: atr_val passed to calculate_score() for ATR quality bonus in scoring engine
-#   + NEW: timeframe="1d" passed to calculate_score() for all timeframe-aware logic
+#   + MULTIPLE SCANS: up to MAX_SCAN_ATTEMPTS (4) per trading day, spaced
+#     SCAN_INTERVAL_MINUTES (15) apart within the 6:00–7:15 PM window.
+#     Each scan uses a per-scan dedup key so a stock alerted in attempt 1 is not
+#     re-alerted in attempt 2. A per-day dedup ensures one alert per stock per day.
+#   + EOD_END extended from 19:00 → 19:15 to fit 4 attempts at 15-min intervals.
+#   + BHAVCOPY RETRY: fetch_delivery_data now has built-in retry logic (in
+#     delivery_data.py). The scanner still logs bhavcopy status clearly per attempt.
+#   + TIMING FIX: main.py EOD window must align with EOD_START (18:00) — see main.py.
 #   + All other logic (ATR cap, data freshness, hidden divergence, sector confluence,
-#     rotating log file) unchanged from previous version
+#     rotating log file, scoring) unchanged.
 # =====================================================================================
 
 import pandas as pd
@@ -103,9 +110,21 @@ _file_handler.setFormatter(_formatter)
 logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 logger = logging.getLogger(__name__)
 
-IST        = ZoneInfo("Asia/Kolkata")
-EOD_START  = dt_time(18, 0)    # 6:00 PM — bhavcopy is reliably published by this time
-EOD_END    = dt_time(19, 0)    # 7:00 PM — plenty of time for full watchlist scan
+IST = ZoneInfo("Asia/Kolkata")
+
+# ── EOD SCAN WINDOW ───────────────────────────────────────────────────────────────────
+#
+# 6:00 PM — bhavcopy is reliably published by NSE
+# 7:15 PM — extended end to fit 4 scan attempts at 15-min intervals
+#
+# Attempt schedule (approximate):
+#   18:00, 18:15, 18:30, 18:45  ← 4 attempts, 15 min apart
+#
+EOD_START              = dt_time(18, 0)
+EOD_END                = dt_time(19, 15)
+SCAN_INTERVAL_MINUTES  = 15    # gap between consecutive scan attempts
+MAX_SCAN_ATTEMPTS      = 4     # max scans per trading day
+
 CHUNK_SIZE = 10
 
 # =====================================================================================
@@ -143,9 +162,10 @@ logger.info(f"📝 Rejection log: {os.path.abspath(REJECTION_LOG_PATH)}")
 # =====================================================================================
 
 def seconds_until_eod() -> int:
-    """Calculate seconds until the next 6:00 PM IST scan window."""
+    """Return seconds until the next 6:00 PM IST scan window opens."""
     now          = datetime.now(IST)
-    target_today = now.replace(hour=18, minute=0, second=0, microsecond=0)
+    target_today = now.replace(hour=EOD_START.hour, minute=EOD_START.minute,
+                               second=0, microsecond=0)
     if now < target_today:
         delta = target_today - now
     else:
@@ -175,8 +195,15 @@ def compute_atr(ticker: pd.DataFrame, period: int = 14) -> float | None:
     return float(true_range.tail(period).mean())
 
 
-# Tracks the last date a scan completed
-last_scan_date = None
+# ── STATE TRACKING ────────────────────────────────────────────────────────────────────
+#
+# last_scan_date    — the calendar date of the last completed scan attempt
+# scan_attempt_num  — how many scan attempts have been made today (resets each new day)
+# last_scan_time    — wall-clock time (IST) when the last scan finished, for interval gating
+#
+last_scan_date   = None
+scan_attempt_num = 0
+last_scan_time   = None   # datetime object (IST-aware) or None
 
 # =====================================================================================
 # MAIN LOOP
@@ -192,24 +219,28 @@ while True:
 
     in_eod_window = EOD_START <= current_time <= EOD_END
     is_weekday    = weekday < 5
-    already_ran   = (last_scan_date == today_str)
+
+    # Reset attempt counter on a new calendar day
+    if last_scan_date != today_str:
+        scan_attempt_num = 0
+        last_scan_time   = None
 
     # ── WEEKEND ──────────────────────────────────────────────────────────────────────
     if not is_weekday:
         sleep_secs = seconds_until_eod()
         logger.info(
             f"📅 Weekend ({ist_now.strftime('%A')}) | "
-            f"Next scan in {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
+            f"Next scan window opens in {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
         )
         time.sleep(min(sleep_secs, 3600))
         continue
 
-    # ── ALREADY SCANNED TODAY ────────────────────────────────────────────────────────
-    if already_ran:
+    # ── MAX ATTEMPTS REACHED TODAY ────────────────────────────────────────────────────
+    if scan_attempt_num >= MAX_SCAN_ATTEMPTS:
         sleep_secs = seconds_until_eod()
         logger.info(
-            f"✅ EOD already completed for {today_str} | "
-            f"Next scan in {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
+            f"✅ EOD: {MAX_SCAN_ATTEMPTS} scan attempts completed for {today_str} | "
+            f"Next window opens in {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
         )
         time.sleep(min(sleep_secs, 3600))
         continue
@@ -219,39 +250,55 @@ while True:
         sleep_secs = seconds_until_eod()
         logger.info(
             f"⏰ Waiting for EOD window | Now={ist_now.strftime('%H:%M:%S')} | "
-            f"Starts 18:00 | {sleep_secs // 60}m {sleep_secs % 60}s remaining"
+            f"Opens {EOD_START.strftime('%H:%M')} | "
+            f"{sleep_secs // 60}m {sleep_secs % 60}s remaining"
         )
         time.sleep(min(sleep_secs, 60))
         continue
 
+    # ── INTERVAL GATE: wait SCAN_INTERVAL_MINUTES between attempts ────────────────────
+    if last_scan_time is not None:
+        elapsed_since_last = (ist_now - last_scan_time).total_seconds()
+        interval_secs      = SCAN_INTERVAL_MINUTES * 60
+        if elapsed_since_last < interval_secs:
+            wait_remaining = int(interval_secs - elapsed_since_last)
+            logger.info(
+                f"⏳ Interval gate | Attempt {scan_attempt_num + 1}/{MAX_SCAN_ATTEMPTS} | "
+                f"Next scan in {wait_remaining // 60}m {wait_remaining % 60}s"
+            )
+            time.sleep(min(wait_remaining, 60))
+            continue
+
     # ================================================================================
-    # EOD SCAN WINDOW — 6:00 PM to 7:00 PM IST
+    # EOD SCAN ATTEMPT
     # ================================================================================
 
+    scan_attempt_num += 1
+
     logger.info("=" * 80)
-    logger.info(f"📊 EOD SCAN STARTED | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
+    logger.info(
+        f"📊 EOD SCAN ATTEMPT {scan_attempt_num}/{MAX_SCAN_ATTEMPTS} | "
+        f"{ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}"
+    )
     logger.info("=" * 80)
 
     # ── FETCH DELIVERY DATA ───────────────────────────────────────────────────────────
-    # Fetched once per scan, before the stock loop starts.
+    # Fetched once per scan attempt, before the stock loop starts.
+    # delivery_data.py now includes retry logic (up to 3 HTTP attempts with backoff).
     # delivery_map: {symbol_str: delivery_pct_float} — e.g. {"RELIANCE": 54.3}
-    # Empty dict if fetch fails — scoring engine handles None gracefully per stock.
-    #
-    # Why fetch before the loop?
-    # The bhavcopy is a single CSV for all NSE-listed stocks (~2000 rows, ~3 MB).
-    # Fetching it once and building a dict is O(1) per stock lookup in the loop.
-    # Fetching per-stock would require ~2000 HTTP requests and take 30+ minutes.
+    # Empty dict if all retries fail — scoring engine handles None gracefully per stock.
     delivery_map = fetch_delivery_data(today_date)
 
     if delivery_map:
         logger.info(
-            f"📦 Delivery data ready | {len(delivery_map)} symbols | "
-            f"Will be used for scoring bonus"
+            f"📦 Delivery data ready | {len(delivery_map):,} symbols | "
+            f"Attempt={scan_attempt_num}/{MAX_SCAN_ATTEMPTS}"
         )
     else:
         logger.warning(
-            "⚠️ Delivery data unavailable | Scoring will proceed without delivery bonus | "
-            "Check delivery_data.py logs for the fetch error"
+            f"⚠️ Delivery data unavailable for attempt {scan_attempt_num} | "
+            f"Scoring will proceed WITHOUT delivery bonus | "
+            f"Check delivery_data.py logs above for the specific failure reason."
         )
 
     # ── LOAD WATCHLIST ───────────────────────────────────────────────────────────────
@@ -296,7 +343,7 @@ while True:
         "duplicate":             0,
     }
 
-    logger.info(f"🚀 Processing {len(watchlist)} stocks...")
+    logger.info(f"🚀 Processing {len(watchlist)} stocks | Attempt {scan_attempt_num}/{MAX_SCAN_ATTEMPTS}...")
 
     for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
 
@@ -358,9 +405,9 @@ while True:
                 continue
 
             # ── DATA FRESHNESS GUARD ──────────────────────────────────────────────────
-            # At 6 PM, the latest daily bar should always be today.
-            # If yfinance returns yesterday's data at 6 PM, something is wrong with
-            # the data feed — reject and log rather than scanning stale data.
+            # At 6 PM, the latest daily bar should be today.
+            # If yfinance returns yesterday's data (CDN lag), reject and wait for next
+            # scan attempt when the data will have propagated.
             if "Date" in ticker.columns:
                 latest_date_raw = ticker["Date"].iloc[-1]
                 if hasattr(latest_date_raw, "date"):
@@ -370,7 +417,8 @@ while True:
 
                 if latest_bar_date != today_date:
                     logger.warning(
-                        f"  ❌ Stale data (latest bar={latest_bar_date}, today={today_date}): {symbol}"
+                        f"  ❌ Stale data (latest bar={latest_bar_date}, today={today_date}): {symbol} | "
+                        f"Will retry on next scan attempt."
                     )
                     rejection_counts["stale_data"] += 1
                     continue
@@ -581,8 +629,6 @@ while True:
                     logger.info(f"  ✔ Near 52W high: {pct_from_high:.1f}% below ₹{high_52w:.2f}")
 
             # ── FILTER 15: ATR-ADJUSTED MOVE CAP ─────────────────────────────────────
-            # Compute ATR here and store it — we reuse atr_val in calculate_score()
-            # for the ATR quality bonus. No need to compute it twice.
             atr_val = compute_atr(ticker, period=14)
 
             if len(ticker) >= 2:
@@ -616,11 +662,6 @@ while True:
             )
 
             # ── DELIVERY DATA LOOKUP ──────────────────────────────────────────────────
-            # Look up this stock's delivery % from the pre-fetched bhavcopy dict.
-            # NSE bhavcopy uses the raw symbol without ".NS" suffix.
-            # delivery_pct is None if: bhavcopy fetch failed, or stock not in file
-            # (e.g. recently listed, suspended, or F&O-only instrument).
-            # None is handled gracefully by calculate_score — no bonus, no penalty.
             delivery_pct = delivery_map.get(symbol, None)
 
             if delivery_pct is not None:
@@ -629,18 +670,15 @@ while True:
                     f"{'High conviction' if delivery_pct >= 60 else 'Solid' if delivery_pct >= 40 else 'Moderate' if delivery_pct >= 25 else 'Low — intraday churn'}"
                 )
             else:
-                logger.info(f"  📦 Delivery: N/A (not in bhavcopy)")
+                logger.info(f"  📦 Delivery: N/A (not in bhavcopy or bhavcopy unavailable)")
 
             # ── DEDUP KEY ─────────────────────────────────────────────────────────────
+            # Includes today_str so the same setup can re-alert on a future day,
+            # but NOT the attempt number — prevents multi-alert within one day.
             breakout_type = ", ".join(signals)
             dedup_key     = f"{breakout_type}|{today_str}|EOD"
 
             # ── SCORE ─────────────────────────────────────────────────────────────────
-            # Pass timeframe="1d", atr_val, and delivery_pct so scoring engine can:
-            #   - Use correct RSI divergence lookback (5 bars for daily)
-            #   - Skip the flat 8% gap-up penalty (ATR already handled it upstream)
-            #   - Award ATR quality bonus if move was 1.0–2.0× ATR
-            #   - Award delivery conviction bonus based on NSE DELIV_PER
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
@@ -743,7 +781,10 @@ while True:
     scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
     if total_alerts == 0:
-        logger.info("📭 No EOD alerts today")
+        logger.info(
+            f"📭 No new EOD alerts | Attempt {scan_attempt_num}/{MAX_SCAN_ATTEMPTS} | "
+            f"(Stocks already alerted today will not re-fire)"
+        )
     else:
         for cat in sorted(alerts_by_category.keys()):
             cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
@@ -759,22 +800,37 @@ while True:
     # ── SCAN SUMMARY ──────────────────────────────────────────────────────────────────
     duration       = (datetime.now(IST) - scan_start).total_seconds()
     last_scan_date = today_str
-    sleep_secs     = seconds_until_eod()
+    last_scan_time = datetime.now(IST)
+
+    remaining_attempts = MAX_SCAN_ATTEMPTS - scan_attempt_num
 
     logger.info("=" * 80)
     logger.info(
-        f"✅ EOD SCAN COMPLETE | {round(duration, 2)}s | "
-        f"Alerts={total_alerts}/{len(watchlist)} | "
-        f"Delivery coverage={len(delivery_map)} symbols"
+        f"✅ EOD SCAN ATTEMPT {scan_attempt_num}/{MAX_SCAN_ATTEMPTS} COMPLETE | "
+        f"{round(duration, 2)}s | "
+        f"NewAlerts={total_alerts}/{len(watchlist)} | "
+        f"DeliveryCoverage={len(delivery_map):,} symbols | "
+        f"RemainingAttempts={remaining_attempts}"
     )
     logger.info("── Rejection breakdown ──────────────────────────────────────────────────")
     for reason, count in rejection_counts.items():
         if count > 0:
             logger.info(f"   {reason:<28}: {count}")
-    logger.info(
-        f"💤 Next scan: tomorrow at 18:00 IST | "
-        f"sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
-    )
+
+    if remaining_attempts > 0:
+        next_attempt_time = (last_scan_time + timedelta(minutes=SCAN_INTERVAL_MINUTES)).strftime("%H:%M:%S")
+        logger.info(
+            f"⏭ Next attempt in {SCAN_INTERVAL_MINUTES}m (~{next_attempt_time} IST) | "
+            f"Dedup prevents re-alerting stocks already sent"
+        )
+    else:
+        sleep_secs = seconds_until_eod()
+        logger.info(
+            f"💤 All {MAX_SCAN_ATTEMPTS} attempts done | "
+            f"Next window: tomorrow 18:00 IST | "
+            f"Sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
+        )
     logger.info("=" * 80)
 
-    time.sleep(min(sleep_secs, 3600))
+    # Short sleep before re-entering the loop — the interval gate above handles pacing
+    time.sleep(60)
