@@ -104,6 +104,13 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Defence":        "DEFEFIETF.NS",
     "MNC":            "MNCIETF.NS",
     "Consumption":    "CONSIETF.NS",
+    # ── New sectors added alongside expanded NSE_SECTOR_MAP ──────────────────────────
+    "Financials":     "FINIETF.NS",       # Nifty Financial Services ETF
+    "Capital Goods":  "CGIETF.NS",        # Nifty India Manufacturing / Capital Goods ETF
+    "Chemicals":      "CHEMIETF.NS",      # Nifty India Chemicals ETF
+    "Telecom":        "TELE.NS",          # Nifty India Digital / Telecom ETF (verify ticker)
+    "Railways":       "INFRAIETF.NS",     # No dedicated Railways ETF — proxied via Infra ETF
+    "Electronics":    "MANUIETF.NS",      # Nifty India Manufacturing ETF (proxy)
 }
 
 BENCHMARK_TICKER      = "^NSEI"
@@ -132,6 +139,10 @@ NSE_SECTOR_MAP: dict[str, str] = {
     "LTIM": "IT", "MPHASIS": "IT", "PERSISTENT": "IT", "COFORGE": "IT",
     "OFSS": "IT", "KPITTECH": "IT", "TATAELXSI": "IT", "MASTEK": "IT",
     "HEXAWARE": "IT", "NIITTECH": "IT", "RATEGAIN": "IT", "NEWGEN": "IT",
+    "ZENSARTECH": "IT", "BIRLASOFT": "IT",
+    "SONATSOFTW": "IT", "HAPPSTMNDS": "IT", "INTELLECT": "IT",
+    "TANLA": "IT", "ECLERX": "IT", "ROUTE": "IT",
+    "DATAMATICS": "IT", "CYIENT": "IT",
 
     # ── Pharma ───────────────────────────────────────────────────────────────────────
     "SUNPHARMA": "Pharma", "DRREDDY": "Pharma", "CIPLA": "Pharma",
@@ -141,6 +152,13 @@ NSE_SECTOR_MAP: dict[str, str] = {
     "LALPATHLAB": "Pharma", "METROPOLIS": "Pharma", "POLYMED": "Pharma",
     "GRANULES": "Pharma", "AJANTPHARM": "Pharma", "NATCOPHARM": "Pharma",
     "IPCALAB": "Pharma", "GLAND": "Pharma", "ERIS": "Pharma",
+    "SYNGENE": "Pharma", "LAURUSLABS": "Pharma",
+    "BIOCON": "Pharma", "ZYDUSLIFE": "Pharma",
+    "CAPLIPOINT": "Pharma", "SUVENPHAR": "Pharma",
+    "WOCKPHARMA": "Pharma", "KIMS": "Pharma",
+    "MEDANTA": "Pharma", "RAINBOW": "Pharma",
+    "VIJAYA": "Pharma", "THYROCARE": "Pharma",
+    "STARHEALTH": "Pharma",
 
     # ── Banking ───────────────────────────────────────────────────────────────────────
     "HDFCBANK": "Banking", "ICICIBANK": "Banking", "KOTAKBANK": "Banking",
@@ -148,6 +166,7 @@ NSE_SECTOR_MAP: dict[str, str] = {
     "BANDHANBNK": "Banking", "IDFCFIRSTB": "Banking", "RBLBANK": "Banking",
     "AUBANK": "Banking", "YESBANK": "Banking", "DCBBANK": "Banking",
     "KARNATAKA": "Banking", "CSBBANK": "Banking",
+    "CUB": "Banking", "KVB": "Banking",
 
     # ── PSU Bank ──────────────────────────────────────────────────────────────────────
     "SBIN": "PSU Bank", "BANKBARODA": "PSU Bank", "PNB": "PSU Bank",
@@ -155,12 +174,24 @@ NSE_SECTOR_MAP: dict[str, str] = {
     "BANKINDIA": "PSU Bank", "MAHABANK": "PSU Bank", "IOB": "PSU Bank",
     "UCOBANK": "PSU Bank", "CENTRALBK": "PSU Bank",
 
+    # ── Financials ───────────────────────────────────────────────────────────────────
+    "BAJFINANCE": "Financials", "BAJAJFINSV": "Financials",
+    "CHOLAFIN": "Financials", "SHRIRAMFIN": "Financials",
+    "MUTHOOTFIN": "Financials", "MANAPPURAM": "Financials",
+    "LICHSGFIN": "Financials", "HDFCAMC": "Financials",
+    "NAM-INDIA": "Financials", "360ONE": "Financials",
+    "ANGELONE": "Financials", "MOTILALOFS": "Financials",
+    "CDSL": "Financials", "BSE": "Financials",
+    "KFINTECH": "Financials", "MCX": "Financials",
+    "SBICARD": "Financials",
+
     # ── FMCG ──────────────────────────────────────────────────────────────────────────
     "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG",
     "BRITANNIA": "FMCG", "DABUR": "FMCG", "MARICO": "FMCG",
     "COLPAL": "FMCG", "GODREJCP": "FMCG", "EMAMILTD": "FMCG",
     "VBL": "FMCG", "UBL": "FMCG", "MCDOWELL-N": "FMCG",
     "RADICO": "FMCG", "TATACONSUM": "FMCG", "JYOTHYLAB": "FMCG",
+    "PAGEIND": "FMCG",
 
     # ── Auto ──────────────────────────────────────────────────────────────────────────
     "MARUTI": "Auto", "TATAMOTORS": "Auto", "M&M": "Auto",
@@ -170,52 +201,117 @@ NSE_SECTOR_MAP: dict[str, str] = {
     "BALKRISIND": "Auto", "APOLLOTYRE": "Auto", "MRF": "Auto",
     "CEATLTD": "Auto", "EXIDEIND": "Auto", "AMARARAJA": "Auto",
     "SUNDRMFAST": "Auto", "SUBROS": "Auto",
+    "SONACOMS": "Auto", "UNOMINDA": "Auto",
+    "SUPRAJIT": "Auto", "ENDURANCE": "Auto",
+    "GABRIEL": "Auto", "SCHAEFFLER": "Auto",
+    "FIEMIND": "Auto", "OLECTRA": "Auto",
+    "GREAVESCOT": "Auto",
 
     # ── Metal ─────────────────────────────────────────────────────────────────────────
     "TATASTEEL": "Metal", "JSWSTEEL": "Metal", "SAIL": "Metal",
     "HINDALCO": "Metal", "VEDL": "Metal", "NMDC": "Metal",
     "NATIONALUM": "Metal", "APLAPOLLO": "Metal", "RATNAMANI": "Metal",
     "WELSPUNLIV": "Metal", "JINDALSTEL": "Metal", "JSWISPL": "Metal",
-    "HINDZINC": "Metal", "MOIL": "Metal",
+    "HINDZINC": "Metal", "MOIL": "Metal", "SHYAMMETL": "Metal",
 
     # ── Energy ───────────────────────────────────────────────────────────────────────
     "RELIANCE": "Energy", "ONGC": "Energy", "BPCL": "Energy",
     "IOC": "Energy", "HINDPETRO": "Energy", "GAIL": "Energy",
     "PETRONET": "Energy", "NTPC": "Energy", "POWERGRID": "Energy",
-    "TATAPOWER": "Energy", "ADANIPOWER": "Energy", "ADANIGREEN": "Energy",
-    "TORNTPOWER": "Energy", "CESC": "Energy", "JSWENERGY": "Energy",
-    "NHPC": "Energy", "SJVN": "Energy", "IREDA": "Energy",
+    "TATAPOWER": "Energy", "ADANIPOWER": "Energy",
+    "ADANIGREEN": "Energy", "TORNTPOWER": "Energy",
+    "CESC": "Energy", "JSWENERGY": "Energy",
+    "NHPC": "Energy", "SJVN": "Energy",
+    "IREDA": "Energy", "SUZLON": "Energy",
+    "KPIGREEN": "Energy", "INDOXWIND": "Energy",
+    "WAAREEENER": "Energy", "INOXGREEN": "Energy",
 
     # ── Realty ───────────────────────────────────────────────────────────────────────
-    "DLF": "Realty", "GODREJPROP": "Realty", "OBEROIRLTY": "Realty",
-    "PRESTIGE": "Realty", "BRIGADE": "Realty", "SOBHA": "Realty",
-    "PHOENIXLTD": "Realty", "MAHLIFE": "Realty", "LODHA": "Realty",
-    "SUNTECK": "Realty", "KOLTEPATIL": "Realty", "ARVIND": "Realty",
+    "DLF": "Realty", "GODREJPROP": "Realty",
+    "OBEROIRLTY": "Realty", "PRESTIGE": "Realty",
+    "BRIGADE": "Realty", "SOBHA": "Realty",
+    "PHOENIXLTD": "Realty", "MAHLIFE": "Realty",
+    "LODHA": "Realty", "SUNTECK": "Realty",
+    "KOLTEPATIL": "Realty", "ARVIND": "Realty",
 
     # ── Infrastructure ────────────────────────────────────────────────────────────────
-    "LT": "Infrastructure", "LTTS": "Infrastructure", "IRCON": "Infrastructure",
-    "RVNL": "Infrastructure", "IRFC": "Infrastructure", "RECLTD": "Infrastructure",
-    "PFC": "Infrastructure", "ADANIPORTS": "Infrastructure", "GMRINFRA": "Infrastructure",
-    "AIAENGLTD": "Infrastructure", "CUMMINSIND": "Infrastructure", "ABB": "Infrastructure",
-    "SIEMENS": "Infrastructure", "HAVELLS": "Infrastructure", "KEI": "Infrastructure",
-    "POLYCAB": "Infrastructure", "KALPATPOWR": "Infrastructure", "KEC": "Infrastructure",
+    "LT": "Infrastructure", "LTTS": "Infrastructure",
+    "IRCON": "Infrastructure", "RVNL": "Infrastructure",
+    "IRFC": "Infrastructure", "RECLTD": "Infrastructure",
+    "PFC": "Infrastructure", "ADANIPORTS": "Infrastructure",
+    "GMRINFRA": "Infrastructure", "AIAENGLTD": "Infrastructure",
+    "CUMMINSIND": "Infrastructure", "ABB": "Infrastructure",
+    "SIEMENS": "Infrastructure", "HAVELLS": "Infrastructure",
+    "KEI": "Infrastructure", "POLYCAB": "Infrastructure",
+    "KALPATPOWR": "Infrastructure", "KEC": "Infrastructure",
     "ENGINERSIN": "Infrastructure", "NBCC": "Infrastructure",
+    "PSPPROJECT": "Infrastructure",
+
+    # ── Capital Goods ────────────────────────────────────────────────────────────────
+    "SKFINDIA": "Capital Goods",
+    "THERMAX": "Capital Goods",
+    "KAYNES": "Capital Goods",
+    "DIXON": "Capital Goods",
+    "SYRMA": "Capital Goods",
+    "CGPOWER": "Capital Goods",
+    "VOLTAS": "Capital Goods",
+    "BLUESTARCO": "Capital Goods",
+
+    # ── Railways ─────────────────────────────────────────────────────────────────────
+    "RAILTEL": "Railways",
+    "TITAGARH": "Railways",
+    "TEXRAIL": "Railways",
+    "JWL": "Railways",
+    "CONCOR": "Railways",
 
     # ── Defence ──────────────────────────────────────────────────────────────────────
-    "HAL": "Defence", "BEL": "Defence", "COCHINSHIP": "Defence",
-    "MAZDOCK": "Defence", "GRSE": "Defence", "MIDHANI": "Defence",
-    "PARAS": "Defence", "DATAPATTNS": "Defence", "BHEL": "Defence",
-    "BEML": "Defence", "ASTRA": "Defence", "MTAR": "Defence",
+    "HAL": "Defence", "BEL": "Defence",
+    "COCHINSHIP": "Defence", "MAZDOCK": "Defence",
+    "GRSE": "Defence", "MIDHANI": "Defence",
+    "PARAS": "Defence", "DATAPATTNS": "Defence",
+    "BHEL": "Defence", "BEML": "Defence",
+    "ASTRA": "Defence", "MTAR": "Defence",
+    "BDL": "Defence", "ZENTECH": "Defence",
+    "IDEAFORGE": "Defence",
+    "DCXINDIA": "Defence",
+    "SOLARINDS": "Defence",
+    "CYIENTDLM": "Defence",
 
     # ── MNC ───────────────────────────────────────────────────────────────────────────
-    "ASIANPAINT": "MNC", "PIDILITIND": "MNC", "3MINDIA": "MNC",
-    "HONAUT": "MNC", "SCHNEIDER": "MNC", "GILLETTE": "MNC",
+    "ASIANPAINT": "MNC", "PIDILITIND": "MNC",
+    "3MINDIA": "MNC", "HONAUT": "MNC",
+    "SCHNEIDER": "MNC", "GILLETTE": "MNC",
 
     # ── Consumption ──────────────────────────────────────────────────────────────────
-    "DMART": "Consumption", "TRENT": "Consumption", "ZOMATO": "Consumption",
-    "NYKAA": "Consumption", "INDIAMART": "Consumption", "IRCTC": "Consumption",
-    "JUBLFOOD": "Consumption", "DEVYANI": "Consumption", "SAPPHIRE": "Consumption",
-    "WESTLIFE": "Consumption", "BARBEQUE": "Consumption", "EASEMYTRIP": "Consumption",
+    "DMART": "Consumption", "TRENT": "Consumption",
+    "ZOMATO": "Consumption", "NYKAA": "Consumption",
+    "INDIAMART": "Consumption", "IRCTC": "Consumption",
+    "JUBLFOOD": "Consumption", "DEVYANI": "Consumption",
+    "SAPPHIRE": "Consumption", "WESTLIFE": "Consumption",
+    "BARBEQUE": "Consumption", "EASEMYTRIP": "Consumption",
+    "ABFRL": "Consumption", "VMART": "Consumption",
+    "SHOPERSTOP": "Consumption", "ETHOSLTD": "Consumption",
+    "MANYAVAR": "Consumption", "REDTAPE": "Consumption",
+    "MEDPLUS": "Consumption",
+
+    # ── Chemicals ────────────────────────────────────────────────────────────────────
+    "DEEPAKNTR": "Chemicals",
+    "SRF": "Chemicals",
+    "NAVINFLUOR": "Chemicals",
+    "FLUOROCHEM": "Chemicals",
+    "TATACHEM": "Chemicals",
+    "AARTIIND": "Chemicals",
+    "ALKYLAMINE": "Chemicals",
+
+    # ── Telecom ──────────────────────────────────────────────────────────────────────
+    "BHARTIARTL": "Telecom",
+    "INDUSTOWER": "Telecom",
+    "TEJASNET": "Telecom",
+    "HFCL": "Telecom",
+
+    # ── Electronics ──────────────────────────────────────────────────────────────────
+    "PGEL": "Electronics",
+    "AVALON": "Electronics",
 }
 
 
