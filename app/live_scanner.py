@@ -306,7 +306,7 @@ while True:
                 continue
 
             # ── BREAKOUT SIGNALS ──────────────────────────────────────────────────────
-            signals = detect_breakouts(ticker)
+            signals = detect_breakouts(ticker, timeframe="1h")
 
             if len(signals) < MIN_SIGNALS:
                 logger.info(f"  ❌ Weak signals ({len(signals)} < {MIN_SIGNALS}): {symbol}")
