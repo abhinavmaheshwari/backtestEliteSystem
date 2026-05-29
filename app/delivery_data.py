@@ -73,6 +73,46 @@ REQUEST_HEADERS = {
 FETCH_TIMEOUT = 30
 
 
+def _last_trading_date(reference: date) -> date:
+    """
+    Returns the most recent trading weekday before `reference`.
+    Steps back one day at a time skipping Saturday (5) and Sunday (6).
+    Does not account for NSE holidays — bhavcopy fetch will return 404 on those,
+    which is handled gracefully by fetch_delivery_data() already.
+    """
+    d = reference
+    while True:
+        d = date(d.year, d.month, d.day - 1) if d.day > 1 else date(
+            d.year if d.month > 1 else d.year - 1,
+            d.month - 1 if d.month > 1 else 12,
+            31
+        )
+        # Use timedelta arithmetic to avoid manual day-rollover bugs
+        from datetime import timedelta
+        d = reference - timedelta(days=1)
+        while d.weekday() >= 5:   # 5=Sat, 6=Sun
+            d -= timedelta(days=1)
+        return d
+
+
+def fetch_previous_day_delivery() -> dict[str, float]:
+    """
+    Fetches delivery data for the most recent completed trading day.
+    Used by intraday.py and live_scanner.py at scan-start to enrich
+    today's scoring with the previous session's delivery conviction.
+
+    Returns an empty dict if unavailable — callers handle None gracefully.
+    """
+    from datetime import datetime as _dt, timedelta
+    today = _dt.now().date()
+    prev  = today - timedelta(days=1)
+    while prev.weekday() >= 5:
+        prev -= timedelta(days=1)
+
+    logger.info(f"📦 Fetching previous-day delivery data | Date={prev}")
+    return fetch_delivery_data(prev)
+
+
 def fetch_delivery_data(trading_date: date) -> dict[str, float]:
     """
     Download and parse the NSE security-wise delivery position file for a given date.
