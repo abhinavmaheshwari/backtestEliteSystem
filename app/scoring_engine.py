@@ -291,7 +291,7 @@ def bonus_modifiers(
         avg_20 = float(ticker["Volume"].tail(20).mean())
         avg_3  = float(ticker["Volume"].tail(3).mean())
         if avg_20 > 0 and (avg_3 / avg_20) >= 1.5:
-            logger.info(f"  +3 {tag}Sustained volume (3-bar avg {avg_3/avg_20:.1f}x 20-bar baseline)")
+            logger.debug(f"  +3 {tag}Sustained volume (3-bar avg {avg_3/avg_20:.1f}x 20-bar baseline)")
             bonus += 3
 
     # ── BONUS: FULL MA BULL STACK ─────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ def bonus_modifiers(
         s50  = float(latest.get("SMA50", 0) or 0)
         s200 = float(latest.get("SMA200", 0) or 0)
         if e20 > 0 and s50 > 0 and s200 > 0 and e20 > s50 > s200:
-            logger.info(f"  +3 {tag}Full bull stack (EMA20 > SMA50 > SMA200)")
+            logger.debug(f"  +3 {tag}Full bull stack (EMA20 > SMA50 > SMA200)")
             bonus += 3
 
     # ── BONUS: RSI ACCELERATING ───────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ def bonus_modifiers(
         rsi_now  = float(latest["RSI"])
         rsi_3ago = float(ticker["RSI"].iloc[-4])
         if rsi_now > rsi_3ago + 2:
-            logger.info(f"  +2 {tag}RSI accelerating ({rsi_3ago:.1f} → {rsi_now:.1f})")
+            logger.debug(f"  +2 {tag}RSI accelerating ({rsi_3ago:.1f} → {rsi_now:.1f})")
             bonus += 2
 
     # ── BONUS: TOP-OF-RANGE CLOSE ─────────────────────────────────────────────────────
@@ -316,12 +316,12 @@ def bonus_modifiers(
     if candle_range > 0:
         close_position = (float(latest["Close"]) - float(latest["Low"])) / candle_range
         if close_position >= 0.80:
-            logger.info(f"  +2 {tag}Top-of-range close ({close_position:.0%} of range)")
+            logger.debug(f"  +2 {tag}Top-of-range close ({close_position:.0%} of range)")
             bonus += 2
 
     # ── BONUS: VOLUME CLIMAX ──────────────────────────────────────────────────────────
     if volume_ratio >= 5.0:
-        logger.info(f"  +2 {tag}Volume climax ({volume_ratio:.1f}x avg)")
+        logger.debug(f"  +2 {tag}Volume climax ({volume_ratio:.1f}x avg)")
         bonus += 2
 
     # ── BONUS: NEAR 52-WEEK HIGH ──────────────────────────────────────────────────────
@@ -330,7 +330,7 @@ def bonus_modifiers(
         if high52 > 0:
             proximity = float(latest["Close"]) / high52
             if proximity >= 0.97:
-                logger.info(f"  +2 {tag}Near 52W high ({proximity:.1%} of high ₹{high52:.2f})")
+                logger.debug(f"  +2 {tag}Near 52W high ({proximity:.1%} of high ₹{high52:.2f})")
                 bonus += 2
 
     # ── BONUS: ATR QUALITY MOVE — EOD ONLY ───────────────────────────────────────────
@@ -356,17 +356,17 @@ def bonus_modifiers(
             atr_multiple    = single_move_abs / atr_val
 
             if 1.0 <= atr_multiple < 2.0:
-                logger.info(
+                logger.debug(
                     f"  +3 {tag}ATR quality move ({atr_multiple:.2f}× ATR — "
                     f"sustainable breakout signature)"
                 )
                 bonus += 3
             elif atr_multiple < 1.0:
-                logger.info(
+                logger.debug(
                     f"  ○ {tag}Move below 1× ATR ({atr_multiple:.2f}×) — no ATR bonus"
                 )
             else:
-                logger.info(
+                logger.debug(
                     f"  ○ {tag}Move {atr_multiple:.2f}× ATR — above sweet spot, no bonus"
                 )
 
@@ -407,18 +407,17 @@ def bonus_modifiers(
             conviction = "institutional" if delivery_pct >= 60 else "positional" if delivery_pct >= 40 else "moderate"
             logger.info(
                 f"  +{delivery_bonus} {tag}Delivery conviction "
-                f"({delivery_pct:.1f}% delivery [{label}] — {conviction})"
+                f"({delivery_pct:.1f}% [{label}] — {conviction})"
             )
             bonus += delivery_bonus
         else:
-            logger.info(
-                f"  ○ {tag}Low delivery ({delivery_pct:.1f}% < 25% [{label}]) — "
-                f"volume was primarily intraday churn, no delivery bonus"
+            logger.debug(
+                f"  ○ {tag}Low delivery ({delivery_pct:.1f}% < 25% [{label}]) — no bonus"
             )
     elif timeframe == "1d":
-        logger.info(f"  ○ {tag}Delivery data unavailable — bonus skipped (no penalty)")
+        logger.debug(f"  ○ {tag}Delivery data unavailable — bonus skipped (no penalty)")
     else:
-        logger.info(f"  ○ {tag}Prev-day delivery unavailable — bonus skipped (no penalty)")
+        logger.debug(f"  ○ {tag}Prev-day delivery unavailable — bonus skipped (no penalty)")
 
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
     #
@@ -434,7 +433,7 @@ def bonus_modifiers(
             if float(ticker["Volume"].iloc[i]) > avg_vol_20 * 0.80
         )
         if recent_above < 2:
-            logger.info(
+            logger.debug(
                 f"  -8 {tag}Unsustained volume "
                 f"(only {recent_above}/3 recent bars above 80% of avg)"
             )
@@ -452,14 +451,14 @@ def bonus_modifiers(
         if prev_close > 0:
             single_move = (float(latest["Close"]) - prev_close) / prev_close * 100
             if single_move > 8:
-                logger.info(f"  -5 {tag}Gap-up chase ({single_move:.1f}% single-bar move)")
+                logger.debug(f"  -5 {tag}Gap-up chase ({single_move:.1f}% single-bar move)")
                 bonus -= 5
 
     # ── PENALTY: EXTREME OVERBOUGHT RSI ──────────────────────────────────────────────
     if "RSI" in ticker.columns:
         rsi_val = float(latest["RSI"])
         if rsi_val > 78:
-            logger.info(f"  -5 {tag}Extreme RSI ({rsi_val:.1f} > 78)")
+            logger.debug(f"  -5 {tag}Extreme RSI ({rsi_val:.1f} > 78)")
             bonus -= 5
 
     return bonus
@@ -527,16 +526,16 @@ def calculate_score(
             break   # first (highest-value) match wins — no double-counting
 
     score += category_pts
-    logger.info(f"  Score after category ({category}): {score} (+{category_pts})")
+    logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")
 
     # ── STEP 3: BREAKOUT SIGNALS ─────────────────────────────────────────────────────
     signal_pts = min(breakout_count, 3) * 8
     if breakout_signals and any("52W" in s for s in breakout_signals):
         signal_pts += 1
-        logger.info(f"  +1 {tag}52W breakout signal bonus")
+        logger.debug(f"  +1 {tag}52W breakout signal bonus")
 
     score += signal_pts
-    logger.info(f"  Score after signals ({breakout_count} signals): {score} (+{signal_pts})")
+    logger.debug(f"  Score after signals ({breakout_count} signals): {score} (+{signal_pts})")
 
     # ── STEP 4: RSI QUALITY ──────────────────────────────────────────────────────────
     if 58 <= rsi <= 72:
@@ -553,7 +552,7 @@ def calculate_score(
         rsi_pts = 0
 
     score += rsi_pts
-    logger.info(f"  Score after RSI ({rsi:.1f}): {score} (+{rsi_pts})")
+    logger.debug(f"  Score after RSI ({rsi:.1f}): {score} (+{rsi_pts})")
 
     # ── STEP 5: VOLUME QUALITY ───────────────────────────────────────────────────────
     if volume_ratio >= 4.0:
@@ -572,7 +571,7 @@ def calculate_score(
         vol_pts = 0
 
     score += vol_pts
-    logger.info(f"  Score after volume ({volume_ratio:.2f}x): {score} (+{vol_pts})")
+    logger.debug(f"  Score after volume ({volume_ratio:.2f}x): {score} (+{vol_pts})")
 
     # ── STEP 6: TREND STRENGTH ───────────────────────────────────────────────────────
     if ticker is not None and latest is not None:
@@ -582,32 +581,32 @@ def calculate_score(
         s50 = float(latest.get("SMA50", 0) or 0)
         if e20 > 0 and s50 > 0 and e20 > s50:
             trend_pts += 3
-            logger.info(f"  +3 {tag}EMA20 > SMA50 (bull alignment)")
+            logger.debug(f"  +3 {tag}EMA20 > SMA50 (bull alignment)")
 
         s200 = float(latest.get("SMA200", 0) or 0)
         if s50 > 0 and s200 > 0 and s50 > s200:
             trend_pts += 3
-            logger.info(f"  +3 {tag}SMA50 > SMA200 (golden cross)")
+            logger.debug(f"  +3 {tag}SMA50 > SMA200 (golden cross)")
 
         if "ADX" in ticker.columns:
             adx_val = float(latest.get("ADX", 0) or 0)
             if adx_val >= 25:
                 trend_pts += 2
-                logger.info(f"  +2 {tag}ADX {adx_val:.1f} ≥ 25 (strong trend)")
+                logger.debug(f"  +2 {tag}ADX {adx_val:.1f} ≥ 25 (strong trend)")
             elif adx_val >= 22:
                 trend_pts += 1
-                logger.info(f"  +1 {tag}ADX {adx_val:.1f} ≥ 22 (established trend)")
+                logger.debug(f"  +1 {tag}ADX {adx_val:.1f} ≥ 22 (established trend)")
 
         if "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns:
             macd_val = float(latest.get("MACD", 0) or 0)
             macd_sig = float(latest.get("MACD_SIGNAL", 0) or 0)
             if macd_val > macd_sig:
                 trend_pts += 2
-                logger.info(f"  +2 {tag}MACD bullish ({macd_val:.4f} > {macd_sig:.4f})")
+                logger.debug(f"  +2 {tag}MACD bullish ({macd_val:.4f} > {macd_sig:.4f})")
 
         trend_pts = min(trend_pts, 10)
         score += trend_pts
-        logger.info(f"  Score after trend: {score} (+{trend_pts})")
+        logger.debug(f"  Score after trend: {score} (+{trend_pts})")
 
     # ── STEP 7: BONUS MODIFIERS ───────────────────────────────────────────────────────
     if ticker is not None and latest is not None:
@@ -621,7 +620,7 @@ def calculate_score(
             delivery_pct=delivery_pct,
         )
         score += bonuses
-        logger.info(f"  Score after bonuses: {score} ({'+' if bonuses >= 0 else ''}{bonuses})")
+        logger.debug(f"  Score after bonuses: {score} ({'+' if bonuses >= 0 else ''}{bonuses})")
 
     final_score = max(0, min(score, 100))
     logger.info(f"  📊 Final score: {final_score}")
