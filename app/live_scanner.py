@@ -63,6 +63,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 
 from config import WATCHLIST_PATH
+from delivery_data import fetch_previous_day_delivery
 
 # =====================================================================================
 # LOGGER
@@ -178,6 +179,17 @@ while True:
     scan_start         = datetime.now(IST)
     total_alerts       = 0
     alerts_by_category = {}
+
+    # ── PREVIOUS-DAY DELIVERY DATA ───────────────────────────────────────────────────
+    # Fetched once per scan cycle. Previous session's NSE delivery % is a meaningful
+    # proxy for positional conviction — high delivery on prior day = institutions held
+    # overnight, which supports today's intraday/swing momentum reads.
+    # Returns {} if unavailable — delivery_pct will be None, bonus skipped silently.
+    prev_delivery_map: dict[str, float] = fetch_previous_day_delivery()
+    if prev_delivery_map:
+        logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
+    else:
+        logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped this cycle")
 
     # Per-scan rejection counters — printed at the end of each scan cycle.
     # Use these to identify which filter is killing the most candidates.
@@ -507,6 +519,12 @@ while True:
             dedup_key     = f"{breakout_type}|{today_str}|1H"
 
             # ── SCORE ─────────────────────────────────────────────────────────────────
+            # delivery_pct: previous session NSE delivery % — rewards stocks where prior
+            # day's volume was positional, not intraday churn. None → bonus skipped.
+            delivery_pct = prev_delivery_map.get(symbol, None)
+            if delivery_pct is not None:
+                logger.info(f"  📦 Prev-day delivery: {delivery_pct:.1f}%")
+
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
@@ -517,6 +535,7 @@ while True:
                 latest=latest,
                 symbol=symbol,
                 timeframe="1h",
+                delivery_pct=delivery_pct,
             )
 
             logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
