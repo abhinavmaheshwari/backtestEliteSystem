@@ -281,7 +281,13 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
         return skip(f"Missing data: {', '.join(missing)}")
 
     # ── OPM gate (meaningful only for non-financials) ─────────────────
-    if opm < MIN_OPM_NONFIN:
+    # Mega-cap bypass: high-volume/low-margin businesses (retail, auto,
+    # FMCG) with market cap ≥ ₹1,000 Cr are exempt from the hard OPM
+    # floor — their thin margins are a structural feature, not a defect.
+    # The 8% floor still applies to everyone below that size threshold.
+    MEGA_CAP_BYPASS = 100_000_000_000   # ₹1,000 Cr
+    is_mega_cap = (market_cap is not None and market_cap >= MEGA_CAP_BYPASS)
+    if opm < MIN_OPM_NONFIN and not is_mega_cap:
         return skip(f"OPM too low: {opm:.1f}% (min {MIN_OPM_NONFIN}%)")
 
     # ── liquidity ─────────────────────────────────────────────────────
@@ -301,6 +307,12 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     low_debt             = (debt_equity <= 1.5 or debt_equity == 0.0)
 
     # ── category checks ───────────────────────────────────────────────
+    # MEGA-CAP BYPASS: businesses like Titan, Maruti, DMart operate on
+    # intentionally thin margins because of high-volume/low-markup models.
+    # Their OPM (8-9%) is structurally low, not a sign of poor quality.
+    # For market caps ≥ ₹1,000 Cr, we relax OPM gates on mature_quality
+    # and let size + ROE carry the quality signal instead.
+
     high_growth = (
         yoy_sales  > HIGH_GROWTH_YOY
         and yoy_profit > HIGH_GROWTH_YOY
@@ -310,14 +322,16 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
         yoy_sales  > COMPOUNDER_YOY
         and yoy_profit > COMPOUNDER_YOY
         and roe    >= 15
-        and opm    >= 12
+        and opm    >= 10    # relaxed from 12% — allows high-volume retail/auto
         and low_debt
     )
     mature_quality = (
-        roe        >= 18
-        and opm    >= 15
+        roe        >= 15    # relaxed from 18% — mega-caps earn lower headline ROE
         and low_debt
         and market_cap >= 50_000_000_000
+        # MEGA-CAP BYPASS: if market cap ≥ ₹1,000 Cr, OPM rule is waived;
+        # otherwise require OPM ≥ 15% as normal
+        and (opm >= 15 or is_mega_cap)
     )
     turnaround = (
         yoy_profit >= TURNAROUND_PROFIT
