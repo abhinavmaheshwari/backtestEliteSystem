@@ -542,7 +542,7 @@ while True:
             # None if bhavcopy unavailable — bonus is skipped cleanly (no penalty).
             delivery_pct = prev_delivery_map.get(symbol, None)
             if delivery_pct is not None:
-                logger.info(f"  📦 Prev-day delivery: {delivery_pct:.1f}%")
+                logger.debug(f"  📦 Prev-day delivery: {delivery_pct:.1f}%")
 
             score = calculate_score(
                 category=category,
