@@ -363,35 +363,55 @@ def bonus_modifiers(
                     f"  ○ {tag}Move {atr_multiple:.2f}× ATR — above sweet spot, no bonus"
                 )
 
-    # ── BONUS: DELIVERY CONVICTION — EOD ONLY ────────────────────────────────────────
+    # ── BONUS: DELIVERY CONVICTION ────────────────────────────────────────────────────
     #
-    # Rewards stocks where the day's NSE delivery percentage is high.
-    # High delivery % = actual investors/institutions took physical delivery (T+1).
-    # This is the most NSE-specific signal in the entire scoring engine.
+    # EOD (timeframe == "1d"):
+    #   Uses today's bhavcopy delivery % — same-day, highest confidence signal.
+    #   Rewards up to +6 pts.
     #
-    # delivery_pct is None if bhavcopy unavailable or stock not in file → skip, no penalty.
+    # Intraday / 1H (timeframe != "1d"):
+    #   Uses previous trading day's delivery % as a proxy for positional conviction.
+    #   High prior-day delivery = institutions held overnight and are still positioned
+    #   long — a meaningful tailwind for today's momentum setup.
+    #   Bonus is halved vs EOD (max +3 pts) because prior-day data is one day stale
+    #   and can't speak to what institutions are doing today specifically.
     #
-    if timeframe == "1d" and delivery_pct is not None:
-        delivery_bonus = 0
-        for threshold, pts in DELIVERY_BONUS_TIERS:
-            if delivery_pct >= threshold:
-                delivery_bonus = pts
-                break
+    # delivery_pct is None if bhavcopy unavailable or symbol not in file → skip cleanly.
+    #
+    if delivery_pct is not None:
+        if timeframe == "1d":
+            # Same-day delivery — full bonus tiers
+            delivery_bonus = 0
+            for threshold, pts in DELIVERY_BONUS_TIERS:
+                if delivery_pct >= threshold:
+                    delivery_bonus = pts
+                    break
+            label = "same-day"
+        else:
+            # Previous-day delivery — halved tiers (max +3)
+            delivery_bonus = 0
+            for threshold, pts in DELIVERY_BONUS_TIERS:
+                if delivery_pct >= threshold:
+                    delivery_bonus = pts // 2   # 6→3, 4→2, 2→1, 0→0
+                    break
+            label = "prev-day"
 
         if delivery_bonus > 0:
+            conviction = "institutional" if delivery_pct >= 60 else "positional" if delivery_pct >= 40 else "moderate"
             logger.info(
                 f"  +{delivery_bonus} {tag}Delivery conviction "
-                f"({delivery_pct:.1f}% delivery — "
-                f"{'institutional' if delivery_pct >= 60 else 'positional' if delivery_pct >= 40 else 'moderate'})"
+                f"({delivery_pct:.1f}% delivery [{label}] — {conviction})"
             )
             bonus += delivery_bonus
         else:
             logger.info(
-                f"  ○ {tag}Low delivery ({delivery_pct:.1f}% < 25%) — "
+                f"  ○ {tag}Low delivery ({delivery_pct:.1f}% < 25% [{label}]) — "
                 f"volume was primarily intraday churn, no delivery bonus"
             )
-    elif timeframe == "1d" and delivery_pct is None:
+    elif timeframe == "1d":
         logger.info(f"  ○ {tag}Delivery data unavailable — bonus skipped (no penalty)")
+    else:
+        logger.info(f"  ○ {tag}Prev-day delivery unavailable — bonus skipped (no penalty)")
 
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
     #
