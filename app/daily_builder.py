@@ -231,7 +231,7 @@ def _classify_stock_inner(row: pd.Series, symbol: str) -> dict | None:
     # astronomically high growth (e.g. +5000%) that is a math artefact,
     # not real compounding.  Cap at ±90% to filter turnaround noise.
     # Also rejects structural collapses that happen to "beat" a bad quarter.
-    if yoy_sales < -90 or yoy_profit < -90:
+    if yoy_sales < -90 or yoy_profit < -90 or yoy_sales > 500 or yoy_profit > 500:
         return skip(
             f"Extreme base-effect anomaly: "
             f"YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%"
