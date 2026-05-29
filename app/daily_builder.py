@@ -26,6 +26,7 @@
 # =====================================================================================
 
 import os
+import traceback
 import pandas as pd
 
 from datetime import datetime
@@ -151,6 +152,17 @@ def fetch_universe() -> pd.DataFrame:
 def classify_stock(row: pd.Series) -> dict | None:
 
     symbol = str(row.get("name", "UNKNOWN"))
+
+    try:
+        return _classify_stock_inner(row, symbol)
+    except Exception as e:
+        tb = traceback.format_exc()
+        log_exclusion(symbol, f"Unhandled exception: {e}\n{tb}")
+        print(f"❌ EXCEPTION [{symbol}]: {e}\n{tb}")
+        return None
+
+
+def _classify_stock_inner(row: pd.Series, symbol: str) -> dict | None:
 
     def fval(col_name: str) -> float | None:
         v = row.get(col_name)
