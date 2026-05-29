@@ -3,7 +3,8 @@
 #
 # WHAT THIS FILE DOES:
 #   Fetches NSE end-of-day delivery volume data from the NSE bhavcopy archive.
-#   Called once per trading day by eod_scanner.py at the start of the 6:00 PM scan.
+#   Called by eod_scanner.py once per trading day (6:30 PM scan, with 5 retries),
+#   and by intraday.py / live_scanner.py once per scan cycle (previous-day data).
 #
 # DATA SOURCE:
 #   NSE Security-wise Delivery Position file (published daily after market close).
@@ -23,11 +24,11 @@
 #
 # PUBLICATION TIMING:
 #   NSE publishes this file between 5:00 PM and 6:00 PM IST.
-#   The eod_scanner now starts at 6:00 PM to ensure the file is reliably available.
-#   No retry logic is needed at scan time — the file is always present by 6 PM.
-#   If the fetch fails (network error, NSE maintenance), the function returns an empty
-#   dict. The scanner and scoring engine handle this gracefully — delivery data is
-#   treated as an optional scoring bonus, never a hard filter.
+#   eod_scanner.py starts at 6:30 PM and retries up to 5 times (10-min gaps)
+#   to handle delayed publication. intraday.py and live_scanner.py fetch the
+#   previous trading day's data once at scan-start — no retry needed there.
+#   If the fetch fails for any reason, callers receive an empty dict and proceed
+#   without delivery scoring (treated as an optional bonus, never a hard filter).
 #
 # WHY NOT USE THE NSE API ENDPOINT?
 #   NSE's equity API (quote-equity?section=trade_info) requires session cookies
@@ -76,23 +77,15 @@ FETCH_TIMEOUT = 30
 def _last_trading_date(reference: date) -> date:
     """
     Returns the most recent trading weekday before `reference`.
-    Steps back one day at a time skipping Saturday (5) and Sunday (6).
+    Skips Saturday (5) and Sunday (6) by stepping back with timedelta.
     Does not account for NSE holidays — bhavcopy fetch will return 404 on those,
     which is handled gracefully by fetch_delivery_data() already.
     """
-    d = reference
-    while True:
-        d = date(d.year, d.month, d.day - 1) if d.day > 1 else date(
-            d.year if d.month > 1 else d.year - 1,
-            d.month - 1 if d.month > 1 else 12,
-            31
-        )
-        # Use timedelta arithmetic to avoid manual day-rollover bugs
-        from datetime import timedelta
-        d = reference - timedelta(days=1)
-        while d.weekday() >= 5:   # 5=Sat, 6=Sun
-            d -= timedelta(days=1)
-        return d
+    from datetime import timedelta
+    d = reference - timedelta(days=1)
+    while d.weekday() >= 5:   # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d
 
 
 def fetch_previous_day_delivery() -> dict[str, float]:
