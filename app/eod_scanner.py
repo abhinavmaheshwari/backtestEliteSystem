@@ -68,6 +68,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 
 from config import WATCHLIST_PATH
+from delivery_data import fetch_delivery_data
 
 # =====================================================================================
 # LOGGER
@@ -82,9 +83,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-EOD_START  = dt_time(15, 45)   # Start scanning after NSE close (3:45 PM)
-EOD_END    = dt_time(16, 30)   # End window — must complete scan by 4:00
+EOD_START  = dt_time(18, 30)   # Start at 6:30 PM — NSE bhavcopy reliably published by then
+EOD_END    = dt_time(20, 0)    # End window at 8:00 PM
 CHUNK_SIZE = 10                 # Max stocks per Telegram message
+
+# =====================================================================================
+# DELIVERY DATA FETCH SETTINGS
+#
+# The NSE bhavcopy is typically published between 5 PM and 6 PM IST.
+# We start at 6:30 PM to give NSE buffer, but on slow days the file may still
+# be delayed. If the first fetch returns empty, we retry up to 5 times with
+# 10-minute gaps before proceeding without delivery data.
+# =====================================================================================
+DELIVERY_FETCH_RETRIES    = 5     # Total attempts to fetch bhavcopy
+DELIVERY_RETRY_INTERVAL_S = 600   # 10 minutes between retry attempts
 
 # =====================================================================================
 # FILTER CONSTANTS — EOD DAILY
@@ -167,15 +179,15 @@ logger.info("✅ Database initialized | Stale alerts cleaned (7-day window)")
 
 def seconds_until_eod():
     """
-    Calculate seconds until the next 3:45 PM IST scan window.
+    Calculate seconds until the next 6:30 PM IST scan window.
     Used to sleep efficiently rather than polling every 60 seconds.
     """
     now          = datetime.now(IST)
-    target_today = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    target_today = now.replace(hour=18, minute=30, second=0, microsecond=0)
     if now < target_today:
         delta = target_today - now
     else:
-        # Already past 3:45 PM today — target tomorrow's window
+        # Already past 6:30 PM today — target tomorrow's window
         delta = target_today + timedelta(days=1) - now
     return max(int(delta.total_seconds()), 0)
 
@@ -220,12 +232,12 @@ while True:
         time.sleep(min(sleep_secs, 3600))
         continue
 
-    # ── NOT YET IN EOD WINDOW: sleep in 60-second ticks until 3:45 PM ──────────────
+    # ── NOT YET IN EOD WINDOW: sleep in 60-second ticks until 6:30 PM ──────────────
     if not in_eod_window:
         sleep_secs = seconds_until_eod()
         logger.info(
             f"⏰ Waiting for EOD window | Now={ist_now.strftime('%H:%M:%S')} | "
-            f"Starts 15:45 | {sleep_secs // 60}m {sleep_secs % 60}s remaining"
+            f"Starts 18:30 | {sleep_secs // 60}m {sleep_secs % 60}s remaining"
         )
         time.sleep(min(sleep_secs, 60))   # tick every 60s or until window opens
         continue
@@ -249,6 +261,36 @@ while True:
         build_watchlist()
         watchlist = pd.read_parquet(WATCHLIST_PATH)
         logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
+
+    # ── FETCH DELIVERY DATA (with retry) ─────────────────────────────────────────────
+    # NSE bhavcopy is typically ready by 5–6 PM. We start at 6:30 PM but retry up to
+    # 5 times (10-min gaps) in case of NSE delays or network hiccups.
+    # If all retries fail, delivery_map stays empty — scoring handles None gracefully.
+    delivery_map: dict[str, float] = {}
+    for delivery_attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
+        logger.info(
+            f"📦 Fetching delivery data | Attempt {delivery_attempt}/{DELIVERY_FETCH_RETRIES} "
+            f"| Date={ist_now.strftime('%Y-%m-%d')}"
+        )
+        delivery_map = fetch_delivery_data(ist_now.date())
+        if delivery_map:
+            logger.info(
+                f"✅ Delivery data ready | {len(delivery_map)} symbols | "
+                f"Attempt {delivery_attempt}/{DELIVERY_FETCH_RETRIES}"
+            )
+            break
+        else:
+            if delivery_attempt < DELIVERY_FETCH_RETRIES:
+                logger.warning(
+                    f"⚠️ Delivery data empty on attempt {delivery_attempt} | "
+                    f"Retrying in {DELIVERY_RETRY_INTERVAL_S // 60} min..."
+                )
+                time.sleep(DELIVERY_RETRY_INTERVAL_S)
+            else:
+                logger.warning(
+                    f"⚠️ Delivery data unavailable after {DELIVERY_FETCH_RETRIES} attempts | "
+                    f"Proceeding without delivery scoring (no penalty applied)"
+                )
 
     scan_start         = datetime.now(IST)
     total_alerts       = 0
@@ -575,6 +617,15 @@ while True:
                 f"| Price=₹{candle_close:.2f}"
             )
 
+            # ── DELIVERY DATA LOOKUP ──────────────────────────────────────────────────
+            # Resolve NSE symbol → delivery % from today's bhavcopy.
+            # None if stock not in file or bhavcopy unavailable — bonus is skipped cleanly.
+            delivery_pct = delivery_map.get(symbol, None)
+            if delivery_pct is not None:
+                logger.info(f"  📦 Delivery: {delivery_pct:.1f}%")
+            else:
+                logger.info(f"  📦 Delivery: N/A (symbol not in bhavcopy)")
+
             # ── DEDUP KEY ─────────────────────────────────────────────────────────────
             breakout_type = ", ".join(signals)
             dedup_key     = f"{breakout_type}|{today_str}|EOD"
@@ -593,6 +644,7 @@ while True:
                 latest=latest,
                 symbol=symbol,
                 timeframe="1d",
+                delivery_pct=delivery_pct,
             )
 
             logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
@@ -642,6 +694,7 @@ while True:
                 "body_ratio":       round(body_ratio * 100),
                 "close_position":   round(close_position * 100),
                 "score":            score,
+                "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                 "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns else None,
                 "above_sma50":      above_sma50,
                 "golden_cross":     golden_cross,
@@ -684,7 +737,7 @@ while True:
     for reason, count in rejection_counts.items():
         if count > 0:
             logger.info(f"   {reason:<24}: {count}")
-    logger.info(f"💤 Next scan: tomorrow at 15:45 IST | sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m")
+    logger.info(f"💤 Next scan: tomorrow at 18:30 IST | sleeping {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m")
     logger.info("=" * 80)
 
     time.sleep(min(sleep_secs, 3600))
