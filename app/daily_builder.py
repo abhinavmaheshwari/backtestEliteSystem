@@ -170,7 +170,14 @@ def classify_stock(row: pd.Series) -> dict | None:
     market_cap   = fval("market_cap_basic")
     roe          = fval("return_on_equity_fy")
     opm          = fval("operating_margin")
-    debt_equity  = fval("debt_to_equity_fq") or 0.0
+    # FIX 1: Separate missing data from genuinely debt-free (0.0).
+    # fval() returns None when the field is absent/NaN.
+    # We only default to 0.0 for truly missing values — it is a conservative
+    # assumption (treat unknown debt as zero) — but we record it so the
+    # exclusion log can surface anomalous negatives if they ever appear.
+    _raw_de      = fval("debt_to_equity_fq")
+    debt_equity  = _raw_de if _raw_de is not None else 0.0
+    debt_missing = _raw_de is None
 
     # Sales growth (gross profit as proxy)
     yoy_sales    = fval("gross_profit_yoy_growth_ttm")
@@ -206,9 +213,29 @@ def classify_stock(row: pd.Series) -> dict | None:
             f"(min ₹{MIN_TRADED_VALUE/1e7:.0f} Cr)"
         )
 
+    # ── anomalous base-effect guard ───────────────────────────────────
+    # A company recovering from a near-zero or negative baseline can show
+    # astronomically high growth (e.g. +5000%) that is a math artefact,
+    # not real compounding.  Cap at ±90% to filter turnaround noise.
+    # Also rejects structural collapses that happen to "beat" a bad quarter.
+    if yoy_sales < -90 or yoy_profit < -90:
+        return skip(
+            f"Extreme base-effect anomaly: "
+            f"YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%"
+        )
+
     # ── margin-improving proxy ────────────────────────────────────────
-    # EPS grew faster than gross profit → net margin expanded
-    margin_improving = qoq_profit >= qoq_sales
+    # FIX 3: margin_improving proxy
+    # The raw comparison (qoq_profit >= qoq_sales) is mathematically sound
+    # even when both are negative — profit contracting less than gross profit
+    # does mean margins held up.  However, under the "High Growth" label it
+    # is misleading: a company with qoq_sales=-5% and qoq_profit=-2% should
+    # not be called "High Growth" on the basis of margin resilience alone.
+    #
+    # Rule: margin is "improving" only when profit is growing in absolute
+    # terms (qoq_profit > 0) AND it outpaces gross-profit growth.
+    # This is a stricter, intentional gate for the High Growth category.
+    margin_improving = (qoq_profit > 0) and (qoq_profit >= qoq_sales)
 
     # ── category filters ──────────────────────────────────────────────
     high_growth = (
@@ -224,13 +251,15 @@ def classify_stock(row: pd.Series) -> dict | None:
         and yoy_profit > COMPOUNDER_YOY
         and roe        >= 15
         and opm        >= 12
-        and (debt_equity <= 1.5 or debt_equity == 0)
+        # debt_equity == 0.0 may mean genuinely debt-free OR missing data;
+        # debt_missing flag distinguishes them in the output row below.
+        and (debt_equity <= 1.5 or debt_equity == 0.0)
     )
 
     mature_quality = (
         roe        >= 18
         and opm        >= 15
-        and (debt_equity <= 1.5 or debt_equity == 0)
+        and (debt_equity <= 1.5 or debt_equity == 0.0)
         and market_cap >= 50_000_000_000
     )
 
@@ -269,6 +298,7 @@ def classify_stock(row: pd.Series) -> dict | None:
         "ROE %":             round(roe, 2),
         "OPM %":             round(opm, 2),
         "Debt/Equity":       round(debt_equity, 2),
+        "D/E Missing":       debt_missing,        # True = field was absent; defaulted to 0
         "QOQ Sales %":       round(qoq_sales,  2),
         "YOY Sales %":       round(yoy_sales,  2),
         "QOQ Profit %":      round(qoq_profit, 2),
