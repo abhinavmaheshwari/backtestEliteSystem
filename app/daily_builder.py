@@ -73,6 +73,7 @@ def log_exclusion(symbol: str, reason: str) -> None:
         "Reason":    reason,
         "Scan Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
+    print(f"⛔ SKIP [{symbol}]: {reason}")
 
 # =====================================================================================
 # FETCH UNIVERSE  —  single API call, all columns included
