@@ -38,9 +38,9 @@
 #     flat 8% penalty on daily would double-penalise a condition already upstream-gated
 #   + NEW BONUS: ATR quality bonus (+3) — move of 1.0–2.0× ATR on high volume is the
 #     ideal breakout signature. Rewards sustainable breakouts over marginal ones
-#   + NEW BONUS: Delivery conviction bonus (up to +6 pts) — EOD only. Rewards stocks
-#     where NSE delivery % is high, confirming that the volume was positional, not
-#     intraday churn. Requires delivery_pct parameter passed from eod_scanner.py
+#   + NEW BONUS: Delivery conviction bonus (up to +6 pts EOD, +3 pts intraday/1H).
+#     EOD uses same-day bhavcopy; intraday/1H use previous day's bhavcopy as a proxy
+#     for overnight positional conviction. Requires delivery_pct passed from scanners.
 #   + FIX: SCORE_CATEGORY now uses exact key matching instead of substring matching.
 #     Previously, a category string containing multiple labels (e.g. "Elite Compounder
 #     & High Growth") would have matched both keys and double-counted the points.
@@ -83,10 +83,14 @@ RSI_DIVERGENCE_LOOKBACK = {
 }
 
 # =====================================================================================
-# DELIVERY CONVICTION THRESHOLDS — EOD only
+# DELIVERY CONVICTION THRESHOLDS
 #
-# These bands determine how many bonus points a stock earns based on its NSE
-# delivery percentage for the day. Delivery % = shares delivered / total traded.
+# EOD: same-day bhavcopy — full bonus (max +6 pts)
+# Intraday / 1H: previous-day bhavcopy — halved bonus (max +3 pts)
+#
+# These bands determine how many base points a stock earns based on its NSE
+# delivery percentage. The intraday/1H bonus is halved because prior-day data
+# is one session stale.
 #
 # Why these thresholds?
 #   < 25%: The day's volume was dominated by intraday traders and F&O hedgers.
@@ -257,7 +261,9 @@ def bonus_modifiers(
     timeframe    : str         — "1d", "1h", or "15m"
     atr_val      : float|None  — ATR(14) in price units, pre-computed by eod_scanner
                                  None for intraday/1H (ATR bonus skipped)
-    delivery_pct : float|None  — NSE delivery % for today (EOD only)
+    delivery_pct : float|None  — NSE delivery % for the relevant session.
+                                 EOD: today's bhavcopy (same-day, max +6 pts).
+                                 Intraday/1H: previous day's bhavcopy (max +3 pts).
                                  None means data unavailable — bonus skipped cleanly
 
     Bonuses:
@@ -268,7 +274,8 @@ def bonus_modifiers(
       +2  Volume climax (≥ 5× average)
       +2  Near 52W high (≥ 97% of 52W high)
       +3  ATR quality move (1.0–2.0× ATR on high volume) — EOD only
-      +6  Delivery conviction (up to +6 based on NSE delivery %) — EOD only
+      +6  Delivery conviction EOD (same-day bhavcopy, up to +6 pts)
+      +3  Delivery conviction intraday/1H (prev-day bhavcopy, up to +3 pts)
 
     Penalties:
       -8  Unsustained volume (fewer than 2 of last 3 bars above 80% of avg)
@@ -492,8 +499,8 @@ def calculate_score(
     timeframe        : str           — "1d", "1h", or "15m" — controls divergence lookback,
                                        ATR bonus eligibility, delivery bonus eligibility,
                                        and gap-up chase penalty applicability
-    atr_val          : float|None    — ATR(14) in ₹, passed by eod_scanner only
-    delivery_pct     : float|None    — NSE delivery % for today, passed by eod_scanner only
+    atr_val          : float|None    — ATR(14) in ₹, passed by eod_scanner only (intraday/1H pass None)
+    delivery_pct     : float|None    — NSE delivery %. EOD: same-day bhavcopy. Intraday/1H: prev-day bhavcopy.
     """
 
     score = 0
