@@ -120,7 +120,7 @@ def format_alert(a, scanner="1H"):
     open_price   = a.get("open")
     day_high     = a.get("day_high")
     day_low      = a.get("day_low")
-    delivery_pct = a.get("delivery_pct")   # EOD only; None for intraday/1H
+    delivery_pct = a.get("delivery_pct")   # present in EOD alerts; None for intraday/1H
 
     price_lines = [f"Price:    ₹{a['price']}"]
     if open_price is not None:
