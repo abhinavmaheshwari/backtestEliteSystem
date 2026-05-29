@@ -91,19 +91,25 @@ def _last_trading_date(reference: date) -> date:
 def fetch_previous_day_delivery() -> dict[str, float]:
     """
     Fetches delivery data for the most recent completed trading day.
-    Used by intraday.py and live_scanner.py at scan-start to enrich
-    today's scoring with the previous session's delivery conviction.
-
+    Tries up to 3 prior weekdays to handle NSE holidays gracefully.
+    Used by intraday.py and live_scanner.py at scan-start.
     Returns an empty dict if unavailable — callers handle None gracefully.
     """
     from datetime import datetime as _dt, timedelta
     today = _dt.now().date()
-    prev  = today - timedelta(days=1)
-    while prev.weekday() >= 5:
-        prev -= timedelta(days=1)
 
-    logger.info(f"📦 Fetching previous-day delivery data | Date={prev}")
-    return fetch_delivery_data(prev)
+    for days_back in range(1, 5):
+        candidate = today - timedelta(days=days_back)
+        while candidate.weekday() >= 5:
+            candidate -= timedelta(days=1)
+        result = fetch_delivery_data(candidate)
+        if result:
+            logger.info(f"📦 Previous-day delivery loaded | Date={candidate} | {len(result)} symbols")
+            return result
+        # 404 (holiday/weekend) → try the next day back silently
+
+    logger.info("📦 Previous-day delivery unavailable after 4-day lookback")
+    return {}
 
 
 def fetch_delivery_data(trading_date: date) -> dict[str, float]:
