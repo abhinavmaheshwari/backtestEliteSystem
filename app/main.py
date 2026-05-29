@@ -73,8 +73,8 @@ WINDOWS = {
     ),
 
     "eod": (
-        dt_time(15, 45),
-        dt_time(16, 15)
+        dt_time(18, 30),
+        dt_time(20, 0)
     ),
 }
 
@@ -268,7 +268,7 @@ if __name__ == "__main__":
 
     logger.info(
         "📊 eod_scanner.py  | "
-        "1D  | Opens 03:45 PM"
+        "1D  | Opens 06:30 PM"
     )
 
     logger.info("=" * 70)
