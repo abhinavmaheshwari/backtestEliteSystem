@@ -117,9 +117,10 @@ def format_alert(a, scanner="1H"):
     trend    = trend_structure_lines(a)
     bar_type = _BAR_LABEL.get(scanner, scanner)
 
-    open_price = a.get("open")
-    day_high   = a.get("day_high")
-    day_low    = a.get("day_low")
+    open_price   = a.get("open")
+    day_high     = a.get("day_high")
+    day_low      = a.get("day_low")
+    delivery_pct = a.get("delivery_pct")   # EOD only; None for intraday/1H
 
     price_lines = [f"Price:    ₹{a['price']}"]
     if open_price is not None:
@@ -130,8 +131,22 @@ def format_alert(a, scanner="1H"):
         price_lines.append(f"Day Low:  ₹{day_low}")
     price_block = "\n".join(price_lines)
 
+    # Delivery conviction label — shown only for EOD alerts
+    if delivery_pct is not None:
+        if delivery_pct >= 60:
+            deliv_label = "🏦 Institutional"
+        elif delivery_pct >= 40:
+            deliv_label = "📦 Positional"
+        elif delivery_pct >= 25:
+            deliv_label = "📬 Moderate"
+        else:
+            deliv_label = "🔄 Intraday churn"
+        delivery_line = f"Delivery:         {delivery_pct:.1f}%  {deliv_label}"
+    else:
+        delivery_line = None
+
     # <b> tag for bold symbol — HTML parse_mode
-    return "\n".join([
+    lines = [
         _DIV,
         f"Stock: <b>{a['symbol']}</b>",
         "",
@@ -146,6 +161,10 @@ def format_alert(a, scanner="1H"):
         f"RSI:              {a['rsi']}",
         f"Volume Expansion: {a['volume_ratio']}x",
         f"Candle:           🟢 Bullish | Body {a['body_ratio']}%",
+    ]
+    if delivery_line:
+        lines.append(delivery_line)
+    lines += [
         "",
         "Trend Structure:",
         trend,
@@ -155,7 +174,8 @@ def format_alert(a, scanner="1H"):
         bar,
         "",
         f"Bar: {bar_type}",
-    ])
+    ]
+    return "\n".join(lines)
 
 # =====================================================================================
 # FULL MESSAGE
