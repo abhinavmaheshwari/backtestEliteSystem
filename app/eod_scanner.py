@@ -622,7 +622,7 @@ while True:
             # None if stock not in file or bhavcopy unavailable — bonus is skipped cleanly.
             delivery_pct = delivery_map.get(symbol, None)
             if delivery_pct is not None:
-                logger.info(f"  📦 Delivery: {delivery_pct:.1f}%")
+                logger.debug(f"  📦 Delivery: {delivery_pct:.1f}%")
             else:
                 logger.info(f"  📦 Delivery: N/A (symbol not in bhavcopy)")
 
