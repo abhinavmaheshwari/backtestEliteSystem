@@ -50,13 +50,14 @@ IST = ZoneInfo("Asia/Kolkata")
 #
 # IMPORTANT:
 #
-# EOD intentionally starts at 3:45 PM
+# EOD intentionally starts at 6:30 PM
 # to ensure:
 #
 # ✅ NSE close settled
 # ✅ Yahoo settled
 # ✅ Volume finalized
 # ✅ Indicators stabilized
+# ✅ NSE bhavcopy (delivery data) published and available
 #
 # =====================================================================================
 
