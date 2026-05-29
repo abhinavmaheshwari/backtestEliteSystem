@@ -316,7 +316,7 @@ while True:
             # ── BREAKOUT SIGNALS ────────────────────────────────────────────────────
             # detect_breakouts() returns a list of signal name strings.
             # Examples: ["52W High Breakout", "BB Squeeze Breakout", "Volume Surge"]
-            signals = detect_breakouts(ticker)
+            signals = detect_breakouts(ticker, timeframe="15m")
 
             if len(signals) < MIN_SIGNALS:
                 logger.info(f"  ❌ Weak signals ({len(signals)} < {MIN_SIGNALS}): {symbol}")
