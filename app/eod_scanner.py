@@ -3,9 +3,9 @@
 # EOD BREAKOUT SCANNER — DAILY CANDLES
 #
 # WHAT THIS FILE DOES:
-#   Runs once per trading day in the window 3:45 PM IST.
-#   This timing ensures the final daily candle has effectively closed (3:30 PM NSE
-#   close) before we evaluate it — no forming-candle ambiguity on daily bars.
+#   Runs once per trading day at 6:30 PM IST.
+#   This timing ensures the NSE bhavcopy (delivery data) is published and available,
+#   while the final daily candle has long settled (NSE close is 3:30 PM).
 #   Downloads 1 year of daily OHLCV data for each watchlist stock, applies indicators,
 #   then runs the strictest filter stack of the three scanners.
 #
@@ -197,7 +197,7 @@ last_scan_date = None
 
 # =====================================================================================
 # MAIN LOOP
-# Runs continuously. Outside the 3:45–4:00 PM window, sleeps until the next window.
+# Runs continuously. Outside the 6:30–8:00 PM window, sleeps until the next window.
 # Inside the window, runs the full scan exactly once per trading day.
 # =====================================================================================
 
@@ -212,7 +212,7 @@ while True:
     is_weekday    = weekday < 5
     already_ran   = (last_scan_date == today_str)
 
-    # ── WEEKEND: sleep until next Monday 3:45 PM ────────────────────────────────────
+    # ── WEEKEND: sleep until next Monday 6:30 PM ────────────────────────────────────
     if not is_weekday:
         sleep_secs = seconds_until_eod()
         logger.info(
@@ -243,7 +243,7 @@ while True:
         continue
 
     # ================================================================================
-    # EOD SCAN WINDOW — 3:45 PM to 4:00 PM IST
+    # EOD SCAN WINDOW — 6:30 PM to 8:00 PM IST
     # We're in the window, haven't scanned today, it's a weekday. Run the full scan.
     # ================================================================================
 
