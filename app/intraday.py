@@ -534,6 +534,7 @@ while True:
                 ticker=ticker,
                 latest=latest,
                 symbol=symbol,
+                timeframe="15m",
             )
 
             logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
