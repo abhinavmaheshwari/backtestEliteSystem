@@ -57,6 +57,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 
 from config import WATCHLIST_PATH
+from delivery_data import fetch_previous_day_delivery
 
 # =====================================================================================
 # LOGGER
@@ -183,6 +184,17 @@ while True:
     scan_start         = datetime.now(IST)
     total_alerts       = 0
     alerts_by_category = {}
+
+    # ── PREVIOUS-DAY DELIVERY DATA ───────────────────────────────────────────────────
+    # Fetched once per scan cycle (not per stock) to keep NSE bhavcopy requests minimal.
+    # Uses yesterday's bhavcopy. Returns {} if unavailable — delivery_pct will be None
+    # for all stocks and the scoring bonus is simply skipped (no penalty).
+    # Note: timeframe is "15m" so scoring_engine applies the intraday delivery bonus path.
+    prev_delivery_map: dict[str, float] = fetch_previous_day_delivery()
+    if prev_delivery_map:
+        logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
+    else:
+        logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped this cycle")
 
     # Per-scan filter rejection counters — logged at scan end for tuning
     rejection_counts = {
@@ -525,6 +537,13 @@ while True:
             # scoring_engine.py returns 0–100. Returns 0 immediately if any hard
             # disqualifier fires (illiquid, distribution candle, wick >40%, ADX<22,
             # RSI divergence, BB overextension, exhaustion, isolated volume spike).
+            #
+            # delivery_pct: previous session's NSE delivery % for this stock.
+            # None if bhavcopy unavailable — bonus is skipped cleanly (no penalty).
+            delivery_pct = prev_delivery_map.get(symbol, None)
+            if delivery_pct is not None:
+                logger.info(f"  📦 Prev-day delivery: {delivery_pct:.1f}%")
+
             score = calculate_score(
                 category=category,
                 breakout_count=len(signals),
@@ -535,6 +554,7 @@ while True:
                 latest=latest,
                 symbol=symbol,
                 timeframe="15m",
+                delivery_pct=delivery_pct,
             )
 
             logger.info(f"  📊 Score={score} | Threshold={MIN_SCORE}")
