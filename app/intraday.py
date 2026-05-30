@@ -76,29 +76,45 @@ def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "5d", interval: 
         logger.info(f"📥 Batch downloading {len(batch)} symbols ({i}–{min(i + batch_size, len(symbols))}/{len(symbols)})")
         
         try:
-            # Download entire batch in ONE request
+            # Download entire batch in ONE request.
+            # group_by='ticker' locks the MultiIndex structure to (Ticker, OHLCV) so
+            # xs(sym, level=0) is always correct regardless of yfinance version changes.
             batch_data = yf.download(
                 tickers_str,
                 period=period,
                 interval=interval,
                 progress=False,
                 auto_adjust=True,
-                threads=False
+                threads=False,
+                group_by="ticker",
             )
-            
+
+            if batch_data is None or batch_data.empty:
+                logger.warning(f"⚠️ Empty response for batch {i // batch_size + 1}")
+                continue
+
             # Parse batch results — yfinance returns different structures for single vs multi-ticker
             if len(batch) == 1:
-                # Single ticker: DataFrame directly
+                # Single ticker: plain DataFrame (group_by has no effect)
                 all_data[batch[0]] = batch_data.reset_index()
             else:
-                # Multiple tickers: MultiIndex columns {OHLCV: {Ticker: values}}
-                for ticker in batch:
-                    if ticker in batch_data.columns.get_level_values(1):
-                        ticker_df = batch_data.xs(ticker, level=1, axis=1).reset_index()
-                        all_data[ticker] = ticker_df
-        
+                # Multi-ticker: MultiIndex columns (Ticker, OHLCV) with group_by='ticker'
+                for sym in batch:
+                    ns_sym = f"{sym}.NS"
+                    try:
+                        # Try .NS form first (what we passed to yf.download), then bare sym
+                        level0 = batch_data.columns.get_level_values(0)
+                        key    = ns_sym if ns_sym in level0 else (sym if sym in level0 else None)
+                        if key is None:
+                            logger.warning(f"⚠️ Symbol not in batch response: {sym}")
+                            continue
+                        ticker_df      = batch_data[key].reset_index()
+                        all_data[sym]  = ticker_df
+                    except Exception as e:
+                        logger.exception(f"❌ Slice error extracting {sym} from batch: {e}")
+
         except Exception as e:
-            logger.warning(f"⚠️ Batch download error for {len(batch)} symbols: {e}")
+            logger.exception(f"❌ Batch download failed (batch {i // batch_size + 1}): {e}")
     
     return all_data
 
