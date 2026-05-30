@@ -24,6 +24,8 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
 
+from sector_rotation import get_sector_scores, get_sector_score_bonus
+
 # FIX #3: Import config centrally instead of hardcoding
 from config import WATCHLIST_PATH, SCORE_THRESHOLDS, SCAN_CONFIG
 
@@ -164,6 +166,23 @@ def start():
                 logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
             else:
                 logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped this cycle")
+
+            # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
+            try:
+                rotation_result = get_sector_scores()
+                if rotation_result.scores:
+                    logger.info(
+                        f"🔄 Sector rotation loaded | "
+                        f"{len(rotation_result.scores)} sectors | "
+                        f"leading={len(rotation_result.strong_sectors)}"
+                    )
+                else:
+                    logger.info("🔄 Sector rotation unavailable — bonus skipped")
+            except Exception:
+                logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
+                from sector_rotation import SectorRotationResult
+                from datetime import date as _date
+                rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
             
             alerts_by_category = {}
             rejection_counts = {}
@@ -173,6 +192,7 @@ def start():
             for idx, (_, row) in enumerate(watchlist.iterrows(), 1):
                 symbol = row["Stock"]
                 category = row["Category"]
+                sector   = row.get("Sector", None)
                 
                 # Initialize rejection counter
                 if f"{symbol}_rejection" not in rejection_counts:
@@ -229,6 +249,14 @@ def start():
                     )
                     
                     score = score_result if isinstance(score_result, int) else score_result.get("score", 0)
+
+                    if score > 0:
+                        sector_bonus = get_sector_score_bonus(
+                            symbol=symbol,
+                            result=rotation_result,
+                            sector=sector,
+                        )
+                        score = max(0, min(score + sector_bonus, 100))
                     
                     if score < MIN_SCORE:
                         logger.debug(f"  ❌ Score {score} < threshold {MIN_SCORE}")
