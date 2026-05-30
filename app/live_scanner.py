@@ -40,6 +40,8 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
 
+from sector_rotation import get_sector_scores, get_sector_score_bonus
+
 # FIX 3: Centralized config — no more hardcoded constants
 from config import (
     WATCHLIST_PATH,
@@ -236,6 +238,23 @@ def start():
             else:
                 logger.info("📦 Delivery data unavailable — bonus skipped")
 
+            # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
+            try:
+                rotation_result = get_sector_scores()
+                if rotation_result.scores:
+                    logger.info(
+                        f"🔄 Sector rotation loaded | "
+                        f"{len(rotation_result.scores)} sectors | "
+                        f"leading={len(rotation_result.strong_sectors)}"
+                    )
+                else:
+                    logger.info("🔄 Sector rotation unavailable — bonus skipped")
+            except Exception:
+                logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
+                from sector_rotation import SectorRotationResult
+                from datetime import date as _date
+                rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
+
             # Per-scan rejection counters
             rejection_counts = {
                 "no_data":           0,
@@ -271,6 +290,7 @@ def start():
                 try:
                     symbol   = row["Stock"]
                     category = row["Category"]
+                    sector   = row.get("Sector", None)
 
                     # FIX 2: use pre-downloaded batch data
                     if symbol not in all_ticker_data:
@@ -485,6 +505,14 @@ def start():
                         timeframe="1h",
                         delivery_pct=delivery_pct,
                     )
+
+                    if score > 0:
+                        sector_bonus = get_sector_score_bonus(
+                            symbol=symbol,
+                            result=rotation_result,
+                            sector=sector,
+                        )
+                        score = max(0, min(score + sector_bonus, 100))
 
                     logger.info(
                         f"  ✅ {symbol} | Score={score} | "
