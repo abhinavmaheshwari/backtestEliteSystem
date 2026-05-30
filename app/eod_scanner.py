@@ -282,11 +282,17 @@ def start():
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
                 logger.info(f"📋 Watchlist | {len(watchlist)} stocks")
-            except Exception as e:
-                logger.error(f"❌ Watchlist load failed: {e} — rebuilding")
-                from daily_builder import build_watchlist
-                build_watchlist()
-                watchlist = pd.read_parquet(WATCHLIST_PATH)
+            except Exception:
+                logger.exception("❌ Watchlist load failed — attempting rebuild")
+                try:
+                    from daily_builder import build_watchlist
+                    build_watchlist()
+                    watchlist = pd.read_parquet(WATCHLIST_PATH)
+                    logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
+                except Exception:
+                    logger.exception("❌ Watchlist rebuild also failed — aborting scan cycle")
+                    time.sleep(300)
+                    continue
 
             # ── FETCH DELIVERY DATA (with retry) ─────────────────────────────────────
             # NSE bhavcopy typically published by 5–6 PM; we start at 6:30 PM.
