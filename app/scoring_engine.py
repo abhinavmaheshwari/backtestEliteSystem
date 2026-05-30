@@ -530,18 +530,36 @@ def calculate_score(
 
     # ── STEP 3: BREAKOUT SIGNALS (WEIGHTED STRENGTH) ─────────────────────────────────
     #
-    # breakout_signals is now a dict {signal_name: strength_score} from breakout_engine.
-    # Each score = breakout magnitude (%) × signal weight. Summing them rewards a 12%
-    # 52W breakout far more than a 0.1% daily breakout — which is the whole point.
-    # We cap at 24 pts to preserve the overall scoring scale.
-    # Fallback to flat counter (×8 per signal, max 3) handles any legacy callers that
-    # still pass a list or None.
+    # breakout_signals is a dict {signal_name: strength_score} from breakout_engine,
+    # where each score = breakout magnitude (%) × signal weight.
     #
+    # SCALE PROBLEM: windowed breakouts produce small scores (0.1–9 pts typical) but
+    # Volume Surge produces 200–500+ pts (vol_surge % × 1.3 — entirely different unit).
+    # A raw sum() would let a single volume spike claim all 24 pts every time, making
+    # the per-signal differentiation completely meaningless.
+    #
+    # FIX: cap each individual signal at 8 pts before summing, then cap the total at 24.
+    # This matches the old flat-counter ceiling (8 pts per signal, max 3 signals = 24)
+    # while still rewarding a strong 52W breakout (e.g. 9 → capped 8) more than a weak
+    # daily breakout (e.g. 0.9 → contributes 0.9). Differentiation is preserved within
+    # each signal type; the volume unit mismatch can no longer blow the budget.
+    #
+    # Fallback to flat counter handles legacy callers passing a list or None.
+    #
+    PER_SIGNAL_CAP = 8.0
+
     if isinstance(breakout_signals, dict) and breakout_signals:
-        signal_pts = min(sum(breakout_signals.values()), 24)
+        signal_pts = min(
+            sum(min(v, PER_SIGNAL_CAP) for v in breakout_signals.values()),
+            24.0
+        )
         if any("52W" in s for s in breakout_signals):
-            signal_pts = min(signal_pts + 1, 24)
+            signal_pts = min(signal_pts + 1, 24.0)
             logger.debug(f"  +1 {tag}52W breakout signal bonus")
+        logger.debug(
+            f"  {tag}Signal breakdown: "
+            + ", ".join(f"{k}={min(v, PER_SIGNAL_CAP):.2f}" for k, v in breakout_signals.items())
+        )
     else:
         signal_pts = min(breakout_count, 3) * 8
         if breakout_signals and any("52W" in s for s in breakout_signals):
@@ -549,7 +567,7 @@ def calculate_score(
             logger.debug(f"  +1 {tag}52W breakout signal bonus")
 
     score += int(signal_pts)
-    logger.debug(f"  Score after signals ({breakout_count} signals, strength_pts={signal_pts:.1f}): {score} (+{int(signal_pts)})")
+    logger.debug(f"  Score after signals ({breakout_count} signals, pts={signal_pts:.1f}): {score} (+{int(signal_pts)})")
 
     # ── STEP 4: RSI QUALITY ──────────────────────────────────────────────────────────
     if 58 <= rsi <= 72:
