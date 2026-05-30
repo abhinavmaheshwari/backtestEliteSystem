@@ -34,7 +34,7 @@ def safe_float(value, default=0):
 def log(message):
 
     print(
-        f\"[{get_current_time()}] {message}\"
+        f"[{get_current_time()}] {message}"
     )
 
 # =====================================================================================
