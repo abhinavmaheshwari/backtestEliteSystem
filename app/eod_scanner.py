@@ -162,6 +162,8 @@ def fetch_watchlist_data(
         logger.info(f"📥 Batch {i // batch_size + 1} | symbols {i+1}–{batch_end}/{total}")
 
         try:
+            # group_by='ticker' locks MultiIndex to (Ticker, OHLCV) — prevents breakage
+            # when yfinance changes its default column layout between versions.
             raw = yf.download(
                 tickers_str,
                 period=period,
@@ -169,6 +171,7 @@ def fetch_watchlist_data(
                 progress=False,
                 auto_adjust=True,
                 threads=False,
+                group_by="ticker",
             )
 
             if raw is None or raw.empty:
@@ -176,27 +179,30 @@ def fetch_watchlist_data(
                 continue
 
             if len(batch) == 1:
+                # Single ticker: plain DataFrame (group_by has no effect here)
                 sym = batch[0]
                 df  = raw.reset_index().copy()
                 if not df.empty:
                     all_data[sym] = df
 
             else:
+                # Multi-ticker: MultiIndex columns (Ticker, OHLCV) with group_by='ticker'
                 for sym in batch:
+                    ns_sym = f"{sym}.NS"
                     try:
-                        level1 = raw.columns.get_level_values(1)
-                        ns_sym = f"{sym}.NS"
-                        if ns_sym not in level1 and sym not in level1:
+                        level0 = raw.columns.get_level_values(0)
+                        key    = ns_sym if ns_sym in level0 else (sym if sym in level0 else None)
+                        if key is None:
+                            logger.warning(f"⚠️ Symbol not in batch response: {sym}")
                             continue
-                        key = ns_sym if ns_sym in level1 else sym
-                        df  = raw.xs(key, level=1, axis=1).reset_index().copy()
+                        df = raw[key].reset_index().copy()
                         if not df.empty:
                             all_data[sym] = df
-                    except Exception as e:
-                        logger.warning(f"⚠️ Slice error {sym}: {e}")
+                    except Exception:
+                        logger.exception(f"❌ Slice error extracting {sym} from batch")
 
-        except Exception as e:
-            logger.error(f"❌ Batch download failed (batch {i // batch_size + 1}): {e}")
+        except Exception:
+            logger.exception(f"❌ Batch download failed (batch {i // batch_size + 1})")
 
     logger.info(f"📥 Download complete | {len(all_data)}/{total} symbols fetched")
     return all_data
