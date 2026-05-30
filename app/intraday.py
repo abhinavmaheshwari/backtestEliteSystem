@@ -213,27 +213,62 @@ def start():
                     candle_close = float(latest["Close"])
                     candle_open = float(latest["Open"])
                     
-                    # Score calculation
+                    # Score calculation — explicit keyword args prevent signature mapping crashes
+                    avg_vol = float(ticker["Volume"].tail(20).mean())
                     score_result = calculate_score(
-                        symbol,
-                        ticker,
-                        signals,
+                        category=category,
+                        breakout_count=len(signals),
+                        rsi=float(ticker["RSI"].iloc[-1]),
+                        volume_ratio=float(ticker["Volume"].iloc[-1] / avg_vol) if avg_vol > 0 else 0.0,
+                        breakout_signals=signals,
+                        ticker=ticker,
+                        latest=ticker.iloc[-1],
+                        symbol=symbol,
+                        timeframe=TIMEFRAME,
                         delivery_pct=prev_delivery_map.get(symbol),
-                        timeframe=TIMEFRAME
                     )
                     
-                    score = score_result.get("score", 0)
+                    score = score_result if isinstance(score_result, int) else score_result.get("score", 0)
                     
                     if score < MIN_SCORE:
                         logger.debug(f"  ❌ Score {score} < threshold {MIN_SCORE}")
                         rejection_counts[symbol] = "low_score"
                         continue
                     
-                    # Alert collected
+                    # Alert collected — build payload dict matching message_formatter expectations
+                    latest    = ticker.iloc[-1]
+                    candle_high  = float(latest["High"])
+                    candle_low   = float(latest["Low"])
+                    candle_open  = float(latest["Open"])
+                    candle_close = float(latest["Close"])
+                    candle_range = candle_high - candle_low
+                    candle_body  = abs(candle_close - candle_open)
+                    body_ratio   = (candle_body / candle_range) if candle_range > 0 else 0
+                    close_pos    = ((candle_close - candle_low) / candle_range) if candle_range > 0 else 0
+                    avg_vol_20   = float(ticker["Volume"].tail(20).mean())
+                    vol_ratio    = float(ticker["Volume"].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else 0
+                    rsi_now      = float(latest["RSI"]) if "RSI" in ticker.columns else 0
+
                     if category not in alerts_by_category:
                         alerts_by_category[category] = []
-                    
-                    alerts_by_category[category].append(score_result)
+
+                    alerts_by_category[category].append({
+                        "symbol":           symbol,
+                        "category":         category,
+                        "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
+                        "price":            round(candle_close, 2),
+                        "open":             round(candle_open, 2),
+                        "day_high":         round(candle_high, 2),
+                        "day_low":          round(candle_low, 2),
+                        "rsi":              round(rsi_now, 1),
+                        "volume_ratio":     round(vol_ratio, 2),
+                        "body_ratio":       round(body_ratio * 100),
+                        "close_position":   round(close_pos * 100),
+                        "score":            score,
+                        "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
+                        "above_sma50":      bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None,
+                        "golden_cross":     bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None,
+                    })
                     total_alerts += 1
                     
                     logger.info(
