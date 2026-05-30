@@ -24,7 +24,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
 
-from sector_rotation import get_sector_scores, get_sector_score_bonus
+from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
 
 # FIX #3: Import config centrally instead of hardcoding
 from config import WATCHLIST_PATH, SCORE_THRESHOLDS, SCAN_CONFIG
@@ -153,8 +153,20 @@ def start():
         
         try:
             # Load watchlist
-            watchlist = pd.read_parquet(WATCHLIST_PATH)
-            logger.info(f"📋 Watchlist loaded | {len(watchlist)} stocks")
+            try:
+                watchlist = pd.read_parquet(WATCHLIST_PATH)
+                logger.info(f"📋 Watchlist loaded | {len(watchlist)} stocks")
+            except Exception:
+                logger.exception("❌ Watchlist load failed — attempting rebuild")
+                try:
+                    from daily_builder import build_watchlist
+                    build_watchlist()
+                    watchlist = pd.read_parquet(WATCHLIST_PATH)
+                    logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
+                except Exception:
+                    logger.exception("❌ Watchlist rebuild also failed — aborting scan cycle")
+                    time.sleep(300)
+                    continue
             
             # FIX #2: Batch download instead of 200 individual calls
             all_ticker_data = fetch_watchlist_data(watchlist, period="5d", interval="15m")
@@ -185,102 +197,233 @@ def start():
                 rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
             
             alerts_by_category = {}
-            rejection_counts = {}
+            rejection_counts   = {
+                "no_data":           0,
+                "missing_col":       0,
+                "forming_candle":    0,
+                "insufficient_bars": 0,
+                "indicator_fail":    0,
+                "weak_signals":      0,
+                "weak_body":         0,
+                "bearish_candle":    0,
+                "weak_close_pos":    0,
+                "upper_wick":        0,
+                "low_volume":        0,
+                "low_avg_volume":    0,
+                "rsi_range":         0,
+                "rsi_not_rising":    0,
+                "low_score":         0,
+                "duplicate":         0,
+            }
             total_alerts = 0
-            
-            # Process each stock
-            for idx, (_, row) in enumerate(watchlist.iterrows(), 1):
-                symbol = row["Stock"]
-                category = row["Category"]
-                sector   = row.get("Sector", None)
-                
-                # Initialize rejection counter
-                if f"{symbol}_rejection" not in rejection_counts:
-                    rejection_counts[symbol] = None
-                
-                logger.info(f"🔍 [{idx}/{len(watchlist)}] {symbol} | Category={category}")
-                
-                # Get pre-downloaded data
-                if symbol not in all_ticker_data:
-                    logger.debug(f"  ❌ No data for {symbol}")
-                    rejection_counts[symbol] = "no_data"
-                    continue
-                
-                ticker = all_ticker_data[symbol]
-                
-                if ticker.empty or len(ticker) < 26:
-                    logger.debug(f"  ❌ Insufficient data for {symbol} ({len(ticker)} bars)")
-                    rejection_counts[symbol] = "insufficient_bars"
-                    continue
-                
-                try:
-                    # Apply indicators
-                    ticker = apply_indicators(ticker, timeframe=TIMEFRAME)
-                    
-                    # Detect breakouts
-                    signals = detect_breakouts(ticker, timeframe=TIMEFRAME)
-                    
-                    if len(signals) < MIN_SIGNALS:
-                        logger.debug(f"  ❌ Only {len(signals)} signals (need {MIN_SIGNALS})")
-                        rejection_counts[symbol] = "insufficient_signals"
-                        continue
-                    
-                    # [... rest of filter pipeline — same as original ...]
-                    # [Calculate score, check thresholds, send alerts]
-                    # [This section unchanged — focus on the batching fix]
-                    
-                    latest = ticker.iloc[-1]
-                    candle_close = float(latest["Close"])
-                    candle_open = float(latest["Open"])
-                    
-                    # Score calculation — explicit keyword args prevent signature mapping crashes
-                    avg_vol = float(ticker["Volume"].tail(20).mean())
-                    score_result = calculate_score(
-                        category=category,
-                        breakout_count=len(signals),
-                        rsi=float(ticker["RSI"].iloc[-1]),
-                        volume_ratio=float(ticker["Volume"].iloc[-1] / avg_vol) if avg_vol > 0 else 0.0,
-                        breakout_signals=signals,
-                        ticker=ticker,
-                        latest=ticker.iloc[-1],
-                        symbol=symbol,
-                        timeframe=TIMEFRAME,
-                        delivery_pct=prev_delivery_map.get(symbol),
-                    )
-                    
-                    score = score_result if isinstance(score_result, int) else score_result.get("score", 0)
 
-                    if score > 0:
-                        sector_bonus = get_sector_score_bonus(
-                            symbol=symbol,
-                            result=rotation_result,
-                            sector=sector,
-                        )
-                        score = max(0, min(score + sector_bonus, 100))
-                    
-                    if score < MIN_SCORE:
-                        logger.debug(f"  ❌ Score {score} < threshold {MIN_SCORE}")
-                        rejection_counts[symbol] = "low_score"
+            # ── PER-STOCK PROCESSING ────────────────────────────────────────────────
+            for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
+
+                symbol = "UNKNOWN"
+
+                try:
+                    symbol   = row["Stock"]
+                    category = row["Category"]
+                    sector   = row.get("Sector", None)
+
+                    if symbol not in all_ticker_data:
+                        rejection_counts["no_data"] += 1
                         continue
-                    
-                    # Alert collected — build payload dict matching message_formatter expectations
-                    latest    = ticker.iloc[-1]
+
+                    ticker = all_ticker_data[symbol].copy()
+
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
+
+                    # ── COLUMN NORMALISATION ────────────────────────────────────────
+                    if isinstance(ticker.columns, pd.MultiIndex):
+                        ticker.columns = ticker.columns.get_level_values(0)
+
+                    ticker = ticker.loc[:, ~ticker.columns.duplicated()]
+
+                    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+                    missing_col   = False
+
+                    for col_name in required_cols:
+                        if col_name not in ticker.columns:
+                            logger.warning(f"  ❌ Missing col '{col_name}': {symbol}")
+                            missing_col = True
+                            break
+                        if isinstance(ticker[col_name], pd.DataFrame):
+                            ticker[col_name] = ticker[col_name].iloc[:, 0]
+                        ticker[col_name] = pd.Series(ticker[col_name]).astype(float)
+
+                    if missing_col:
+                        rejection_counts["missing_col"] += 1
+                        continue
+
+                    ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+
+                    # ── FORMING CANDLE CHECK ─────────────────────────────────────────
+                    datetime_col = next(
+                        (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
+                        None
+                    )
+                    if datetime_col is not None:
+                        try:
+                            candle_start = pd.Timestamp(ticker.iloc[-1][datetime_col]).replace(tzinfo=None)
+                            candle_end   = candle_start + pd.Timedelta(minutes=15)
+                            now_naive    = datetime.now(IST).replace(tzinfo=None)
+                            if now_naive < candle_end:
+                                ticker = ticker.iloc[:-1].copy()
+                                rejection_counts["forming_candle"] += 1
+                        except Exception:
+                            logger.exception(f"  ⚠️ Candle age check error {symbol}")
+
+                    if len(ticker) < 26:
+                        rejection_counts["insufficient_bars"] += 1
+                        continue
+
+                    # ── INDICATORS ──────────────────────────────────────────────────
+                    ticker = apply_indicators(ticker, timeframe=TIMEFRAME)
+
+                    if ticker is None or ticker.empty:
+                        rejection_counts["indicator_fail"] += 1
+                        continue
+
+                    # ── BREAKOUT SIGNALS ────────────────────────────────────────────
+                    signals = detect_breakouts(ticker, timeframe=TIMEFRAME)
+
+                    if len(signals) < MIN_SIGNALS:
+                        rejection_counts["weak_signals"] += 1
+                        continue
+
+                    latest = ticker.iloc[-1]
+
+                    if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
+                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
+                        continue
+
+                    # ── VOLUME ──────────────────────────────────────────────────────
+                    latest_volume = float(latest["Volume"])
+                    avg_volume    = float(ticker["Volume"].tail(20).mean())
+
+                    if avg_volume <= 0:
+                        logger.warning(f"  ❌ Zero avg volume: {symbol}")
+                        continue
+
+                    volume_ratio = latest_volume / avg_volume
+
+                    # ── CANDLE GEOMETRY ─────────────────────────────────────────────
                     candle_high  = float(latest["High"])
                     candle_low   = float(latest["Low"])
                     candle_open  = float(latest["Open"])
                     candle_close = float(latest["Close"])
                     candle_range = candle_high - candle_low
                     candle_body  = abs(candle_close - candle_open)
-                    body_ratio   = (candle_body / candle_range) if candle_range > 0 else 0
-                    close_pos    = ((candle_close - candle_low) / candle_range) if candle_range > 0 else 0
-                    avg_vol_20   = float(ticker["Volume"].tail(20).mean())
-                    vol_ratio    = float(ticker["Volume"].iloc[-1] / avg_vol_20) if avg_vol_20 > 0 else 0
-                    rsi_now      = float(latest["RSI"]) if "RSI" in ticker.columns else 0
+                    upper_wick   = candle_high - candle_close
 
-                    if category not in alerts_by_category:
-                        alerts_by_category[category] = []
+                    if candle_range <= 0:
+                        logger.warning(f"  ❌ Zero candle range: {symbol}")
+                        continue
 
-                    alerts_by_category[category].append({
+                    body_ratio     = candle_body / candle_range
+                    close_position = (candle_close - candle_low) / candle_range
+                    wick_ratio     = upper_wick / candle_range
+                    rsi_val        = float(latest["RSI"])
+
+                    # ── FILTER 1: CANDLE BODY ────────────────────────────────────────
+                    if body_ratio < MIN_BODY_RATIO:
+                        rejection_counts["weak_body"] += 1
+                        continue
+
+                    # ── FILTER 2: BULLISH CANDLE ─────────────────────────────────────
+                    if candle_close <= candle_open:
+                        rejection_counts["bearish_candle"] += 1
+                        continue
+
+                    # ── FILTER 3: CLOSE POSITION ─────────────────────────────────────
+                    if close_position < MIN_CLOSE_POSITION:
+                        rejection_counts["weak_close_pos"] += 1
+                        continue
+
+                    # ── FILTER 4: UPPER WICK ─────────────────────────────────────────
+                    if wick_ratio > MAX_UPPER_WICK:
+                        rejection_counts["upper_wick"] += 1
+                        continue
+
+                    # ── FILTER 5: VOLUME RATIO ───────────────────────────────────────
+                    if volume_ratio < MIN_VOLUME_RATIO:
+                        rejection_counts["low_volume"] += 1
+                        continue
+
+                    # ── FILTER 6: AVG VOLUME FLOOR ───────────────────────────────────
+                    if avg_volume < MIN_VOLUME_AVG:
+                        rejection_counts["low_avg_volume"] += 1
+                        continue
+
+                    # ── FILTER 7: RSI RANGE ──────────────────────────────────────────
+                    if not (MIN_RSI <= rsi_val <= MAX_RSI):
+                        rejection_counts["rsi_range"] += 1
+                        continue
+
+                    # ── FILTER 8: RSI DIRECTION ──────────────────────────────────────
+                    RSI_LOOKBACK_BARS = 3
+                    if len(ticker) > RSI_LOOKBACK_BARS:
+                        rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
+                        if rsi_val <= rsi_prev:
+                            rejection_counts["rsi_not_rising"] += 1
+                            continue
+
+                    # ── SCORE ────────────────────────────────────────────────────────
+                    delivery_pct = prev_delivery_map.get(symbol, None)
+
+                    score = calculate_score(
+                        category=category,
+                        breakout_count=len(signals),
+                        rsi=rsi_val,
+                        volume_ratio=volume_ratio,
+                        breakout_signals=signals,
+                        ticker=ticker,
+                        latest=latest,
+                        symbol=symbol,
+                        timeframe=TIMEFRAME,
+                        delivery_pct=delivery_pct,
+                    )
+
+                    if score > 0:
+                        # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
+                        try:
+                            safe_sector  = str(sector) if sector else "Unknown"
+                            sector_bonus = rotation_result.score_bonus_for(symbol=symbol, sector=safe_sector)
+                            score = max(0, min(score + sector_bonus, 100))
+                        except Exception as e:
+                            logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
+                            # base score survives — alert still fires
+
+                    logger.info(
+                        f"  ✅ {symbol} | Score={score} | "
+                        f"Vol={volume_ratio:.1f}x | RSI={rsi_val:.1f} | Sig={len(signals)}"
+                    )
+
+                    if score < MIN_SCORE:
+                        rejection_counts["low_score"] += 1
+                        continue
+
+                    # ── DEDUP ────────────────────────────────────────────────────────
+                    breakout_type = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
+                    today_str     = datetime.now(IST).strftime("%Y-%m-%d")
+                    dedup_key     = f"{breakout_type}|{today_str}|INTRADAY"
+
+                    saved = save_alert_if_new(
+                        symbol,
+                        dedup_key,
+                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                    )
+
+                    if not saved:
+                        rejection_counts["duplicate"] += 1
+                        continue
+
+                    # ── BUILD ALERT PAYLOAD ──────────────────────────────────────────
+                    alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
                         "category":         category,
                         "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
@@ -288,29 +431,26 @@ def start():
                         "open":             round(candle_open, 2),
                         "day_high":         round(candle_high, 2),
                         "day_low":          round(candle_low, 2),
-                        "rsi":              round(rsi_now, 1),
-                        "volume_ratio":     round(vol_ratio, 2),
+                        "rsi":              round(rsi_val, 1),
+                        "volume_ratio":     round(volume_ratio, 2),
                         "body_ratio":       round(body_ratio * 100),
-                        "close_position":   round(close_pos * 100),
+                        "close_position":   round(close_position * 100),
                         "score":            score,
                         "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
                         "above_sma50":      bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None,
                         "golden_cross":     bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None,
                     })
                     total_alerts += 1
-                    
-                    logger.info(
-                        f"  ✅ ALERT | {symbol} | Score={score} | "
-                        f"Signals={len(signals)} | Delivery={prev_delivery_map.get(symbol, 'N/A')}"
-                    )
-                
+
                 except Exception:
                     logger.exception(f"❌ UNHANDLED ERROR processing {symbol}")
             
-            # Send alerts
+            # ── SEND ALERTS ──────────────────────────────────────────────────────────
             scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
-            if total_alerts > 0:
+            if total_alerts == 0:
+                logger.info("📭 No INTRADAY alerts this cycle")
+            else:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(
                         alerts_by_category[cat],
@@ -322,12 +462,19 @@ def start():
                     for chunk_num, chunk in enumerate(chunks, 1):
                         msg = build_message("INTRADAY", cat, chunk, chunk_num, len(chunks), scan_time)
                         send_telegram_message(msg, scan_type="INTRADAY")
-            
+                        logger.info(f"📨 Sent | {cat} | chunk {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
+
+            # ── SCAN SUMMARY ─────────────────────────────────────────────────────────
             duration = (datetime.now(IST) - scan_start).total_seconds()
-            
+
             logger.info("=" * 80)
             logger.info(f"✅ INTRADAY SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")
-            logger.info(f"💤 Next scan in 5 minutes")
+
+            fired = {k: v for k, v in rejection_counts.items() if v > 0}
+            if fired:
+                logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
+
+            logger.info("💤 Next scan in 5 minutes")
             logger.info("=" * 80)
         
         except Exception:
