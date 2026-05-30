@@ -24,7 +24,7 @@ def safe_float(value, default=0):
     try:
         return float(value)
 
-    except:
+    except (TypeError, ValueError):
         return default
 
 # =====================================================================================
@@ -63,5 +63,5 @@ def calculate_percentage_change(current, previous):
             (current - previous) / previous
         ) * 100
 
-    except:
+    except (TypeError, ValueError, ZeroDivisionError):
         return 0
