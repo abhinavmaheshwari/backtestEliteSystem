@@ -1,27 +1,11 @@
 # =====================================================================================
-# app/breakout_engine.py
+# app/breakout_engine.py (FIXED)
 #
-# SIGNAL DESIGN RATIONALE BY TIMEFRAME
+# MAJOR FIX: Return weighted scores instead of plain signal strings
+# Before: ["Daily Breakout", "Weekly Breakout"]  (equal weight, no signal strength)
+# After:  {"Daily Breakout": 8.0, "Weekly Breakout": 15.2}  (strength-weighted)
 #
-# Daily (EOD) — 252 bars of daily data available:
-#   "Daily Breakout"    close > 20-bar high  = above 1-month high
-#   "Weekly Breakout"   close > 50-bar high  = above ~10-week high
-#   "Monthly Breakout"  close > 100-bar high = above ~5-month high
-#   "52W Breakout"      close > 252-bar high = new 52-week high
-#
-# 1H — ~360 bars (60 days × 6 bars/day):
-#   "Hourly Breakout"   close > 6-bar high   = above prior full trading day
-#   "Daily Breakout"    close > 26-bar high  = above prior ~5 trading days
-#   "Weekly Breakout"   close > 130-bar high = above prior ~25 days (5 weeks)
-#   "Monthly Breakout"  close > 260-bar high = above prior ~50 days (10 weeks)
-#
-# 15m — ~130 bars (5 days × 26 bars/day):
-#   "Session Breakout"  close > 26-bar high  = above prior full trading day
-#   "Daily Breakout"    close > 52-bar high  = above prior 2 trading days
-#   "Weekly Breakout"   close > 104-bar high = above prior 4 trading days
-#
-# The WINDOW_MAP below encodes these lookbacks per timeframe.
-# All comparisons use .iloc[-2] to exclude the current bar (same as before).
+# This allows scoring_engine to reward bigger breakouts more than small ones.
 # =====================================================================================
 
 import pandas as pd
@@ -29,53 +13,78 @@ import pandas as pd
 
 WINDOW_MAP = {
     "1d": [
-        ("Daily Breakout",   20),
-        ("Weekly Breakout",  50),
-        ("Monthly Breakout", 100),
         ("52W Breakout",     252),
+        ("Monthly Breakout", 100),
+        ("Weekly Breakout",  50),
+        ("Daily Breakout",   20),
     ],
     "1h": [
-        ("Hourly Breakout",  6),
-        ("Daily Breakout",   26),
-        ("Weekly Breakout",  130),
         ("Monthly Breakout", 260),
+        ("Weekly Breakout",  130),
+        ("Daily Breakout",   26),
+        ("Hourly Breakout",  6),
     ],
     "15m": [
-        ("Session Breakout", 26),
-        ("Daily Breakout",   52),
         ("Weekly Breakout",  104),
+        ("Daily Breakout",   52),
+        ("Session Breakout", 26),
     ],
 }
 
+# Weighting: How much to reward each breakout type (as % of raw strength)
+BREAKOUT_WEIGHTS = {
+    "52W Breakout":     1.8,      # 80% bonus on raw strength (rarest, most significant)
+    "Monthly Breakout": 1.4,
+    "Weekly Breakout":  1.1,
+    "Daily Breakout":   0.9,
+    "Hourly Breakout":  0.8,
+    "Session Breakout": 0.7,      # Least significant (timeframe=15m)
+    "BB Breakout":      1.2,      # Bollinger Band squeeze
+    "Volume Surge":     1.3,      # Strong volume confirmation
+}
 
-def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> list[str]:
+
+def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> dict[str, float]:
     """
     Detects breakout signals on the latest completed candle.
-
+    
+    FIX: Returns {signal_name: strength_score} instead of [signal_name, ...]
+    
+    Strength score = how much above the prior high (as % of price) × weighting factor
+    
     Parameters
     ----------
     df        : OHLCV DataFrame with indicators already applied
     timeframe : "15m" | "1h" | "1d" — controls which rolling windows are used
-
-    Returns a list of signal name strings, e.g. ["Session Breakout", "Daily Breakout"].
-    Returns [] if data is insufficient or the latest close is NaN.
+    
+    Returns
+    -------
+    dict[str, float]
+        {signal_name: strength_score, ...}
+        Empty dict if data is insufficient or latest close is NaN.
+        
+        Example:
+            {"52W Breakout": 24.5, "Weekly Breakout": 12.3, "Volume Surge": 5.8}
+            
+            Score represents: breakout magnitude (%) × weighting factor
+            Bigger breakouts and stronger signals = higher scores
     """
 
     if df is None or df.empty:
-        return []
+        return {}
 
     latest = df.iloc[-1]
     close  = latest["Close"]
 
     if pd.isna(close):
-        return []
+        return {}
 
-    signals   = []
+    signals   = {}
     windows   = WINDOW_MAP.get(timeframe, WINDOW_MAP["15m"])
     n         = len(df)
 
+    # ── WINDOWED BREAKOUTS ──────────────────────────────────────────────────────────
     for signal_name, window in windows:
-        # Need window + 1 rows: `window` for the rolling calc, +1 for .iloc[-2]
         if n < window + 1:
             continue
 
@@ -85,18 +94,26 @@ def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> list[str]:
             continue
 
         if close > prev_high:
-            signals.append(signal_name)
+            # Calculate breakout strength: how much above the prior high (as %)
+            breakout_strength = ((close - prev_high) / prev_high) * 100
+            
+            # Weight by signal type
+            weight = BREAKOUT_WEIGHTS.get(signal_name, 1.0)
+            
+            # Final score = strength × weight (higher = more significant)
+            score = breakout_strength * weight
+            
+            signals[signal_name] = score
 
-    # ── BOLLINGER BAND SQUEEZE BREAKOUT ──────────────────────────────────────────
-    # Price closes above the upper BB band with bandwidth expanding.
-    # Works on all timeframes — BB uses a fixed 20-bar window.
+    # ── BOLLINGER BAND SQUEEZE BREAKOUT ──────────────────────────────────────────────
     if (
         "BB_UPPER" in df.columns and
         "BB_LOWER" in df.columns and
         n >= 22
     ):
         bb_upper   = df["BB_UPPER"].iloc[-1]
-        bb_width   = df["BB_UPPER"].iloc[-1] - df["BB_LOWER"].iloc[-1]
+        bb_lower   = df["BB_LOWER"].iloc[-1]
+        bb_width   = bb_upper - bb_lower
         bb_width_5 = (df["BB_UPPER"].iloc[-6] - df["BB_LOWER"].iloc[-6]) if n >= 6 else None
 
         if (
@@ -104,18 +121,38 @@ def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> list[str]:
             close > bb_upper and
             bb_width_5 is not None and
             not pd.isna(bb_width_5) and
-            bb_width > bb_width_5   # bands expanding = breakout, not just overextension
+            bb_width > bb_width_5   # bands expanding = breakout, not overextension
         ):
-            signals.append("BB Breakout")
+            # Strength = how much above upper band
+            bb_strength = ((close - bb_upper) / bb_upper) * 100
+            weight = BREAKOUT_WEIGHTS.get("BB Breakout", 1.2)
+            signals["BB Breakout"] = bb_strength * weight
 
-    # ── VOLUME SURGE ──────────────────────────────────────────────────────────────
+    # ── VOLUME SURGE ─────────────────────────────────────────────────────────────────
     # Current bar volume >= 3x 20-bar average AND price is up.
-    # A volume surge this strong is itself a breakout signal regardless of price level.
     if "Volume" in df.columns and n >= 21:
         vol_now = float(df["Volume"].iloc[-1])
         vol_avg = float(df["Volume"].tail(20).mean())
 
         if vol_avg > 0 and vol_now >= 3.0 * vol_avg and close > float(df["Open"].iloc[-1]):
-            signals.append("Volume Surge")
+            # Strength = how much above volume average (as multiple)
+            vol_strength = (vol_now / vol_avg - 1.0) * 100  # Convert to %
+            weight = BREAKOUT_WEIGHTS.get("Volume Surge", 1.3)
+            signals["Volume Surge"] = vol_strength * weight
 
     return signals
+
+
+def get_signal_names(signals: dict[str, float]) -> list[str]:
+    """Convenience function: extract signal names from weighted scores dict."""
+    return list(signals.keys())
+
+
+def get_signal_strength(signals: dict[str, float], signal_name: str) -> float:
+    """Convenience function: get strength score for a specific signal."""
+    return signals.get(signal_name, 0.0)
+
+
+def get_total_signal_strength(signals: dict[str, float]) -> float:
+    """Convenience function: sum of all signal strengths."""
+    return sum(signals.values()) if signals else 0.0
