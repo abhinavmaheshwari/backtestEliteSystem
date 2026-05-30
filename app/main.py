@@ -1,5 +1,11 @@
 # =====================================================================================
-# app/main.py  — launches all scanners in parallel threads
+# app/main.py  — launches all scanners in parallel threads (FIXED)
+# =====================================================================================
+#
+# FIX #1: Wrap scanner loops in functions before import
+# Previously: import intraday → runs while True at module level → blocks forever
+# Now: import intraday → call intraday.start() → runs while True inside function
+#
 # =====================================================================================
 
 import sys
@@ -43,36 +49,16 @@ IST = ZoneInfo("Asia/Kolkata")
 # =====================================================================================
 # WINDOW DEFINITIONS
 # =====================================================================================
-#
-# intraday  → 15m scanner
-# live      → 1h scanner
-# eod       → daily candle scanner
-#
-# IMPORTANT:
-#
-# EOD intentionally starts at 6:30 PM
-# to ensure:
-#
-# ✅ NSE close settled
-# ✅ Yahoo settled
-# ✅ Volume finalized
-# ✅ Indicators stabilized
-# ✅ NSE bhavcopy (delivery data) published and available
-#
-# =====================================================================================
 
 WINDOWS = {
-
     "intraday": (
         dt_time(9, 32),
         dt_time(15, 30)
     ),
-
     "live": (
         dt_time(10, 17),
         dt_time(15, 30)
     ),
-
     "eod": (
         dt_time(18, 30),
         dt_time(20, 0)
@@ -90,41 +76,19 @@ def wait_for_window(name: str):
     while True:
 
         now = datetime.now(IST)
-
         weekday = now.weekday()
 
-        # =====================================================
-        # WEEKEND
-        # =====================================================
-
         if weekday >= 5:
-
-            logger.info(
-                f"[{name}] 📅 Weekend detected | "
-                f"Sleeping 1 hour..."
-            )
-
+            logger.info(f"[{name}] 📅 Weekend detected | Sleeping 1 hour...")
             time.sleep(3600)
-
             continue
 
-        # =====================================================
-        # WINDOW OPEN
-        # =====================================================
-
         if now.time() >= start_time:
-
             logger.info(
                 f"[{name}] ✅ Window open | "
-                f"{now.strftime('%H:%M:%S')} | "
-                f"Launching scanner"
+                f"{now.strftime('%H:%M:%S')} | Launching scanner"
             )
-
             return
-
-        # =====================================================
-        # WAITING
-        # =====================================================
 
         logger.info(
             f"[{name}] ⏰ Waiting for "
@@ -138,79 +102,52 @@ def wait_for_window(name: str):
 # WATCHLIST PRE-FLIGHT
 # =====================================================================================
 
-WATCHLIST_PATH = (
-    "/app/data/"
-    "elite_fundamental_watchlist.parquet"
-)
+from config import WATCHLIST_PATH
 
 if not os.path.exists(WATCHLIST_PATH):
 
-    logger.info(
-        "📋 Watchlist missing | "
-        "Running daily builder..."
-    )
+    logger.info("📋 Watchlist missing | Running daily builder...")
 
     try:
-
-        from daily_builder import main as build_watchlist
-
+        from daily_builder import build_watchlist
         build_watchlist()
-
-        logger.info(
-            "✅ Watchlist built successfully"
-        )
+        logger.info("✅ Watchlist built successfully")
 
     except Exception:
-
-        logger.exception(
-            "❌ Daily builder failed"
-        )
+        logger.exception("❌ Daily builder failed")
 
 else:
-
-    logger.info(
-        f"✅ Watchlist found | "
-        f"{WATCHLIST_PATH}"
-    )
+    logger.info(f"✅ Watchlist found | {WATCHLIST_PATH}")
 
 # =====================================================================================
-# SCANNER THREADS
+# SCANNER THREADS — FIX: Import then call function, don't rely on module-level loops
 # =====================================================================================
 
 def run_intraday_scanner():
-
+    """Import intraday module, then call start() function to avoid module-level blocking."""
     wait_for_window("intraday")
-
-    logger.info(
-        "⚡ Starting INTRADAY SCANNER "
-        "(15m candles)"
-    )
-
+    logger.info("⚡ Starting INTRADAY SCANNER (15m candles)")
+    
     import intraday
+    intraday.start()  # <--- NOW it calls the function, not stuck on import
 
 
 def run_live_scanner():
-
+    """Import live_scanner module, then call start() function."""
     wait_for_window("live")
-
-    logger.info(
-        "🚀 Starting LIVE SCANNER "
-        "(1h candles)"
-    )
-
+    logger.info("🚀 Starting LIVE SCANNER (1h candles)")
+    
     import live_scanner
+    live_scanner.start()  # <--- NOW it calls the function
 
 
 def run_eod_scanner():
-
+    """Import eod_scanner module, then call start() function."""
     wait_for_window("eod")
-
-    logger.info(
-        "📊 Starting EOD SCANNER "
-        "(Daily candles)"
-    )
-
+    logger.info("📊 Starting EOD SCANNER (Daily candles)")
+    
     import eod_scanner
+    eod_scanner.start()  # <--- NOW it calls the function
 
 # =====================================================================================
 # MAIN
@@ -219,19 +156,16 @@ def run_eod_scanner():
 if __name__ == "__main__":
 
     threads = [
-
         threading.Thread(
             target=run_intraday_scanner,
             name="IntradayScanner",
             daemon=True
         ),
-
         threading.Thread(
             target=run_live_scanner,
             name="LiveScanner",
             daemon=True
         ),
-
         threading.Thread(
             target=run_eod_scanner,
             name="EODScanner",
@@ -239,45 +173,18 @@ if __name__ == "__main__":
         ),
     ]
 
-    # =====================================================
-    # START THREADS
-    # =====================================================
-
+    # Start threads
     for t in threads:
-
         t.start()
 
-    # =====================================================
-    # SUMMARY
-    # =====================================================
-
+    # Summary
+    logger.info("=" * 70)
+    logger.info("✅ ALL SCANNER THREADS STARTED")
+    logger.info("⚡ intraday.py      | 15m | Opens 09:32 AM")
+    logger.info("🚀 live_scanner.py | 1h  | Opens 10:17 AM")
+    logger.info("📊 eod_scanner.py  | 1D  | Opens 06:30 PM")
     logger.info("=" * 70)
 
-    logger.info(
-        "✅ ALL SCANNER THREADS STARTED"
-    )
-
-    logger.info(
-        "⚡ intraday.py      | "
-        "15m | Opens 09:32 AM"
-    )
-
-    logger.info(
-        "🚀 live_scanner.py | "
-        "1h  | Opens 10:17 AM"
-    )
-
-    logger.info(
-        "📊 eod_scanner.py  | "
-        "1D  | Opens 06:30 PM"
-    )
-
-    logger.info("=" * 70)
-
-    # =====================================================
-    # KEEP MAIN THREAD ALIVE
-    # =====================================================
-
+    # Keep main thread alive
     for t in threads:
-
         t.join()
