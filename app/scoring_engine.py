@@ -528,14 +528,28 @@ def calculate_score(
     score += category_pts
     logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")
 
-    # ── STEP 3: BREAKOUT SIGNALS ─────────────────────────────────────────────────────
-    signal_pts = min(breakout_count, 3) * 8
-    if breakout_signals and any("52W" in s for s in breakout_signals):
-        signal_pts += 1
-        logger.debug(f"  +1 {tag}52W breakout signal bonus")
+    # ── STEP 3: BREAKOUT SIGNALS (WEIGHTED STRENGTH) ─────────────────────────────────
+    #
+    # breakout_signals is now a dict {signal_name: strength_score} from breakout_engine.
+    # Each score = breakout magnitude (%) × signal weight. Summing them rewards a 12%
+    # 52W breakout far more than a 0.1% daily breakout — which is the whole point.
+    # We cap at 24 pts to preserve the overall scoring scale.
+    # Fallback to flat counter (×8 per signal, max 3) handles any legacy callers that
+    # still pass a list or None.
+    #
+    if isinstance(breakout_signals, dict) and breakout_signals:
+        signal_pts = min(sum(breakout_signals.values()), 24)
+        if any("52W" in s for s in breakout_signals):
+            signal_pts = min(signal_pts + 1, 24)
+            logger.debug(f"  +1 {tag}52W breakout signal bonus")
+    else:
+        signal_pts = min(breakout_count, 3) * 8
+        if breakout_signals and any("52W" in s for s in breakout_signals):
+            signal_pts += 1
+            logger.debug(f"  +1 {tag}52W breakout signal bonus")
 
-    score += signal_pts
-    logger.debug(f"  Score after signals ({breakout_count} signals): {score} (+{signal_pts})")
+    score += int(signal_pts)
+    logger.debug(f"  Score after signals ({breakout_count} signals, strength_pts={signal_pts:.1f}): {score} (+{int(signal_pts)})")
 
     # ── STEP 4: RSI QUALITY ──────────────────────────────────────────────────────────
     if 58 <= rsi <= 72:
