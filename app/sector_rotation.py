@@ -245,6 +245,110 @@ NSE_SECTOR_MAP: dict[str, str] = {
 }
 
 # =====================================================================================
+# TV_SECTOR_TO_ROTATION
+#
+# TradingView Screener returns sector names that do NOT match SECTOR_ETF_MAP keys.
+# Example: TV returns "Technology" but our ETF map key is "IT".
+#
+# This dict translates TV sector strings → SECTOR_ETF_MAP keys so that stocks
+# whose sector comes directly from the watchlist parquet (built by daily_builder.py)
+# can be matched correctly without relying on NSE_SECTOR_MAP symbol lookups.
+#
+# Unmapped TV sectors produce no bonus (return 0) — safe and explicit.
+# =====================================================================================
+
+TV_SECTOR_TO_ROTATION: dict[str, str] = {
+    # Technology
+    "Technology":               "IT",
+    "Software":                 "IT",
+
+    # Healthcare / Pharma
+    "Health Technology":        "Pharma",
+    "Health Services":          "Pharma",
+    "Pharmaceuticals":          "Pharma",
+    "Healthcare":               "Pharma",
+
+    # Banking
+    "Banks":                    "Banking",
+    "Commercial Banks":         "Banking",
+    "Public Sector Banks":      "PSU Bank",
+    "PSU Banks":                "PSU Bank",
+
+    # Finance / NBFC / Insurance
+    "Finance":                  "Financials",
+    "Financial Services":       "Financials",
+    "Insurance":                "Financials",
+    "Diversified Financials":   "Financials",
+
+    # FMCG / Consumer
+    "Consumer Non-Durables":    "FMCG",
+    "Food & Beverages":         "FMCG",
+    "Beverages":                "FMCG",
+    "Tobacco":                  "FMCG",
+    "Household Products":       "FMCG",
+
+    # Auto / Ancillaries
+    "Producer Manufacturing":   "Auto",
+    "Consumer Durables":        "Auto",
+    "Automobiles":              "Auto",
+    "Auto Components":          "Auto",
+
+    # Metals / Mining
+    "Non-Energy Minerals":      "Metal",
+    "Metals & Mining":          "Metal",
+    "Steel":                    "Metal",
+    "Aluminum":                 "Metal",
+
+    # Energy / Power / Oil
+    "Energy Minerals":          "Energy",
+    "Oil & Gas":                "Energy",
+    "Utilities":                "Energy",
+    "Power":                    "Energy",
+    "Renewable Energy":         "Energy",
+
+    # Infrastructure / Capital Goods / Engineering
+    "Industrial Services":      "Infrastructure",
+    "Transportation":           "Infrastructure",
+    "Engineering":              "Infrastructure",
+    "Construction":             "Infrastructure",
+
+    # Realty
+    "Real Estate":              "Realty",
+    "Real Estate Investment Trusts": "Realty",
+
+    # Chemicals
+    "Process Industries":       "Chemicals",
+    "Chemicals":                "Chemicals",
+    "Specialty Chemicals":      "Chemicals",
+
+    # Telecom
+    "Communications":           "Telecom",
+    "Telecommunication Services": "Telecom",
+    "Telecom":                  "Telecom",
+
+    # Retail / Consumption
+    "Retail Trade":             "Consumption",
+    "Consumer Services":        "Consumption",
+    "Food Service":             "Consumption",
+
+    # Electronics / EMS
+    "Electronic Technology":    "Electronics",
+    "Electronics":              "Electronics",
+    "Semiconductors":           "Electronics",
+
+    # Capital Goods (direct match)
+    "Capital Goods":            "Capital Goods",
+    "Electrical Equipment":     "Capital Goods",
+    "Industrial Machinery":     "Capital Goods",
+
+    # Defence
+    "Defence":                  "Defence",
+    "Aerospace & Defence":      "Defence",
+
+    # MNC (no direct TV equivalent — left unmapped intentionally)
+}
+
+# =====================================================================================
 # DATA CLASSES
 # =====================================================================================
 
@@ -274,8 +378,8 @@ class SectorRotationResult:
     def sector_for(self, symbol: str) -> Optional[str]:
         return NSE_SECTOR_MAP.get(symbol.strip().upper())
 
-    def score_bonus_for(self, symbol: str) -> int:
-        return get_sector_score_bonus(symbol, self)
+    def score_bonus_for(self, symbol: str, sector: str = None) -> int:
+        return get_sector_score_bonus(symbol, self, sector=sector)
 
 
 # =====================================================================================
@@ -443,13 +547,64 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
 
 _ROTATION_BONUS = {"LEADING": +4, "IMPROVING": +2, "WEAKENING": -2, "LAGGING": -4}
 
-def get_sector_score_bonus(symbol: str, result: SectorRotationResult) -> int:
-    if not result.scores: return 0
-    sector = NSE_SECTOR_MAP.get(symbol.strip().upper())
-    if sector is None: return 0
-    score_obj = result.scores.get(sector)
-    if score_obj is None: return 0
-    
+def get_sector_score_bonus(
+    symbol: str,
+    result: SectorRotationResult,
+    sector: str = None,
+) -> int:
+    """
+    Returns the sector rotation score bonus (or penalty) for a symbol.
+
+    Parameters
+    ----------
+    symbol  : NSE ticker (e.g. "INFY")
+    result  : SectorRotationResult from get_sector_scores()
+    sector  : TV sector string from the watchlist parquet row["Sector"].
+              When provided, this takes priority over NSE_SECTOR_MAP lookup.
+              Translated via TV_SECTOR_TO_ROTATION before matching.
+
+    Lookup order (first match wins):
+      1. sector param → TV_SECTOR_TO_ROTATION → SECTOR_ETF_MAP key
+      2. NSE_SECTOR_MAP[symbol] → SECTOR_ETF_MAP key  (legacy fallback)
+
+    Returns 0 gracefully if sector unavailable, ETF data missing, or any error.
+    """
+    if not result.scores:
+        return 0
+
+    rotation_sector = None
+
+    # Priority 1: watchlist sector column (TV string → rotation key)
+    if sector and sector not in ("Unknown", "", "nan", "None"):
+        rotation_sector = TV_SECTOR_TO_ROTATION.get(sector.strip())
+        if rotation_sector is None:
+            # Try direct match in case TV string already matches SECTOR_ETF_MAP key
+            if sector.strip() in result.scores:
+                rotation_sector = sector.strip()
+
+    # Priority 2: hardcoded NSE_SECTOR_MAP fallback
+    if rotation_sector is None:
+        rotation_sector = NSE_SECTOR_MAP.get(symbol.strip().upper())
+
+    if rotation_sector is None:
+        logger.debug(
+            f"  ○ [{symbol}] sector not mapped "
+            f"(tv_sector={sector!r}) — rotation bonus skipped"
+        )
+        return 0
+
+    score_obj = result.scores.get(rotation_sector)
+    if score_obj is None:
+        logger.debug(
+            f"  ○ [{symbol}] rotation_sector={rotation_sector!r} "
+            f"not in scores (ETF data missing?) — bonus skipped"
+        )
+        return 0
+
     bonus = _ROTATION_BONUS.get(score_obj.classification, 0)
-    logger.info(f"  {'+'if bonus>=0 else ''}{bonus} [{symbol}] sector={sector} | {score_obj.classification} | RS={score_obj.rs_value:.3f}")
+    logger.info(
+        f"  {'+'if bonus>=0 else ''}{bonus} [{symbol}] "
+        f"sector={rotation_sector} | {score_obj.classification} "
+        f"| RS={score_obj.rs_value:.3f} | source={'watchlist' if sector else 'fallback_map'}"
+    )
     return bonus
