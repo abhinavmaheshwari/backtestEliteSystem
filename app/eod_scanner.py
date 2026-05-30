@@ -59,7 +59,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_delivery_data
 
-from sector_rotation import get_sector_scores, get_sector_score_bonus
+from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
 
 # FIX 3: Centralized config — no more hardcoded constants
 from config import (
@@ -580,15 +580,16 @@ def start():
                         delivery_pct=delivery_pct,
                     )
 
-                    # Sector rotation modifier — applied after base score so a sector
-                    # failure cannot suppress an already-disqualified stock (score=0).
+                    # Sector rotation modifier — applied after base score
                     if score > 0:
-                        sector_bonus = get_sector_score_bonus(
-                            symbol=symbol,
-                            result=rotation_result,
-                            sector=sector,
-                        )
-                        score = max(0, min(score + sector_bonus, 100))
+                        # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
+                        try:
+                            safe_sector  = str(sector) if sector else "Unknown"
+                            sector_bonus = rotation_result.score_bonus_for(symbol=symbol, sector=safe_sector)
+                            score = max(0, min(score + sector_bonus, 100))
+                        except Exception as e:
+                            logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
+                            # base score survives — alert still fires
 
                     logger.info(
                         f"  ✅ {symbol} | Score={score} | "
@@ -631,7 +632,7 @@ def start():
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
                         "category":         category,
-                        "breakout_signals": signals,
+                        "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
                         "price":            round(candle_close, 2),
                         "open":             round(candle_open, 2),
                         "day_high":         round(candle_high, 2),
@@ -642,7 +643,7 @@ def start():
                         "close_position":   round(close_position * 100),
                         "score":            score,
                         "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
-                        "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns else None,
+                        "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
                         "above_sma50":      above_sma50,
                         "golden_cross":     golden_cross,
                     })
