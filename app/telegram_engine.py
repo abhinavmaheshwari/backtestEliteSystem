@@ -115,8 +115,8 @@ def send_telegram_message(message: str, scan_type: str = None, retries: int = 3)
 
         except requests.exceptions.Timeout:
             logger.warning(f"⚠️ Timeout (attempt {attempt}/{retries})")
-        except Exception as e:
-            logger.exception(f"❌ Telegram exception: {e}")
+        except Exception:
+            logger.exception("❌ Telegram exception (unexpected)")
 
         if attempt < retries:
             time.sleep(2 * attempt)  # back-off: 2s, 4s
