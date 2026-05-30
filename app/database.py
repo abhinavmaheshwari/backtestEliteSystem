@@ -33,8 +33,8 @@ def get_connection():
 
     try:
         conn.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as e:
+        logger.warning(f"⚠️ WAL mode unavailable (read-only filesystem?): {e}")
 
     return conn
 
