@@ -214,11 +214,17 @@ def start():
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
                 logger.info(f"📋 Watchlist | {len(watchlist)} stocks")
-            except Exception as e:
-                logger.error(f"❌ Watchlist load failed: {e} — rebuilding")
-                from daily_builder import build_watchlist
-                build_watchlist()
-                watchlist = pd.read_parquet(WATCHLIST_PATH)
+            except Exception:
+                logger.exception("❌ Watchlist load failed — attempting rebuild")
+                try:
+                    from daily_builder import build_watchlist
+                    build_watchlist()
+                    watchlist = pd.read_parquet(WATCHLIST_PATH)
+                    logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
+                except Exception:
+                    logger.exception("❌ Watchlist rebuild also failed — aborting scan cycle")
+                    time.sleep(300)
+                    continue
 
             # ── BATCH DOWNLOAD (FIX 2) ──────────────────────────────────────────────
             all_ticker_data = fetch_watchlist_data(watchlist, period="60d", interval="1h")
@@ -314,8 +320,8 @@ def start():
                             if now_naive < candle_end:
                                 ticker = ticker.iloc[:-1].copy()
                                 rejection_counts["forming_candle"] += 1
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ Candle age check error {symbol}: {e}")
+                        except Exception:
+                            logger.exception(f"  ⚠️ Candle age check error {symbol}")
 
                     if len(ticker) < 100:
                         rejection_counts["insufficient_bars"] += 1
