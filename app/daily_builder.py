@@ -694,6 +694,11 @@ def main():
     print(f"💾 PARQUET Saved: {OUTPUT_PARQUET}")
 
 # =====================================================================================
+# ALIAS — main.py and scanners import build_watchlist(); this is the same function.
+
+build_watchlist = main
+
+# =====================================================================================
 
 if __name__ == "__main__":
     main()
