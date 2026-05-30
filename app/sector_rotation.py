@@ -306,8 +306,8 @@ def _download_close(ticker: str) -> Optional[pd.Series]:
         series = df.sort_values(date_col).set_index(date_col)["Close"].dropna()
         if isinstance(series, pd.DataFrame): series = series.iloc[:, 0]
         return series.astype(float)
-    except Exception as e:
-        logger.warning(f"⚠️  _download_close({ticker}): {e}")
+    except Exception:
+        logger.exception(f"⚠️  _download_close({ticker}) failed")
         return None
 
 def _pct_return(series: pd.Series, lookback: int) -> Optional[float]:
