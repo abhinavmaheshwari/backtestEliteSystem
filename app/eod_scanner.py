@@ -59,6 +59,8 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_delivery_data
 
+from sector_rotation import get_sector_scores, get_sector_score_bonus
+
 # FIX 3: Centralized config — no more hardcoded constants
 from config import (
     WATCHLIST_PATH,
@@ -318,6 +320,27 @@ def start():
             # ── BATCH DOWNLOAD (FIX 2) ──────────────────────────────────────────────
             all_ticker_data = fetch_watchlist_data(watchlist, period="1y", interval="1d")
 
+            # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
+            # Fetches sector RS scores for all NSE sectors vs Nifty 50.
+            # Used as a score modifier (+4 LEADING → -4 LAGGING) per stock.
+            # Fully graceful: if sector data unavailable, rotation_result.scores = {}
+            # and get_sector_score_bonus() returns 0 — no impact on existing logic.
+            try:
+                rotation_result = get_sector_scores()
+                if rotation_result.scores:
+                    logger.info(
+                        f"🔄 Sector rotation loaded | "
+                        f"{len(rotation_result.scores)} sectors | "
+                        f"leading={len(rotation_result.strong_sectors)}"
+                    )
+                else:
+                    logger.info("🔄 Sector rotation unavailable — bonus skipped")
+            except Exception:
+                logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
+                from sector_rotation import SectorRotationResult
+                from datetime import date as _date
+                rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
+
             scan_start         = datetime.now(IST)
             total_alerts       = 0
             alerts_by_category = {}
@@ -356,6 +379,7 @@ def start():
                 try:
                     symbol   = row["Stock"]
                     category = row["Category"]
+                    sector   = row.get("Sector", None)   # from daily_builder.py parquet
 
                     # FIX 2: use pre-downloaded batch data
                     if symbol not in all_ticker_data:
@@ -555,6 +579,16 @@ def start():
                         timeframe="1d",
                         delivery_pct=delivery_pct,
                     )
+
+                    # Sector rotation modifier — applied after base score so a sector
+                    # failure cannot suppress an already-disqualified stock (score=0).
+                    if score > 0:
+                        sector_bonus = get_sector_score_bonus(
+                            symbol=symbol,
+                            result=rotation_result,
+                            sector=sector,
+                        )
+                        score = max(0, min(score + sector_bonus, 100))
 
                     logger.info(
                         f"  ✅ {symbol} | Score={score} | "
