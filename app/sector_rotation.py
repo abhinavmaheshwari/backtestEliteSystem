@@ -379,6 +379,13 @@ class SectorRotationResult:
         return NSE_SECTOR_MAP.get(symbol.strip().upper())
 
     def score_bonus_for(self, symbol: str, sector: str = None) -> int:
+        """
+        Returns the sector rotation bonus for a stock.
+        When called as score_bonus_for(safe_sector) from scanners, the safe_sector
+        string is treated as the sector param via the sector= keyword to avoid
+        symbol-lookup path. Scanners should call:
+          rotation_result.score_bonus_for(symbol=symbol, sector=safe_sector)
+        """
         return get_sector_score_bonus(symbol, self, sector=sector)
 
 
