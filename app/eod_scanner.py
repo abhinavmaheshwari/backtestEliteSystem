@@ -47,6 +47,8 @@ import pandas as pd
 import yfinance as yf
 import time
 import logging
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from zoneinfo import ZoneInfo
 from datetime import datetime, time as dt_time, timedelta
@@ -373,8 +375,6 @@ def start():
             #   A 0-min delivery hit + 3-min download = 3 min before; 3 min after.
             #   The common case (delivery available immediately) drops from ~5 min to ~3 min.
             #
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
             def _fetch_delivery_with_retry() -> dict:
                 """Delivery fetch with up to DELIVERY_FETCH_RETRIES attempts."""
                 for attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
