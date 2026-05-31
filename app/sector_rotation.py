@@ -378,15 +378,21 @@ class SectorRotationResult:
     def sector_for(self, symbol: str) -> Optional[str]:
         return NSE_SECTOR_MAP.get(symbol.strip().upper())
 
-    def score_bonus_for(self, symbol: str, sector: str = None) -> int:
+    def score_bonus_for(self, tv_sector: str) -> int:
         """
-        Returns the sector rotation bonus for a stock.
-        When called as score_bonus_for(safe_sector) from scanners, the safe_sector
-        string is treated as the sector param via the sector= keyword to avoid
-        symbol-lookup path. Scanners should call:
-          rotation_result.score_bonus_for(symbol=symbol, sector=safe_sector)
+        Returns the sector rotation score bonus (or penalty) for a given TV sector string.
+
+        Parameters
+        ----------
+        tv_sector : str
+            TradingView sector string from the watchlist parquet (e.g. "Technology",
+            "Finance"). Translated via TV_SECTOR_TO_ROTATION before matching.
+            Pass str(sector) if sector else "Unknown" from scanner call sites.
+
+        Scanners call:
+            rotation_result.score_bonus_for(safe_sector)
         """
-        return get_sector_score_bonus(symbol, self, sector=sector)
+        return get_sector_score_bonus("", self, sector=tv_sector)
 
 
 # =====================================================================================
