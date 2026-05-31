@@ -236,8 +236,8 @@ def start():
                 "rsi_not_rising":    0,
                 "low_score":         0,
                 "duplicate":         0,
-            }
-            total_alerts = 0
+                "stale_data":        0,
+            }            total_alerts = 0
 
             # ── PER-STOCK PROCESSING ────────────────────────────────────────────────
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
@@ -331,13 +331,25 @@ def start():
 
                     latest = ticker.iloc[-1]
 
-                    if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
-                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
-                        continue
+                    # ── STALE DATA GUARD ─────────────────────────────────────────────
+                    # Halted/illiquid stocks return data ending on the last day they
+                    # traded. Without this, a 4-day-old 15m candle fires as live.
+                    _stale_col = next(
+                        (c for c in ["Datetime", "Date"] if c in ticker.columns),
+                        None
+                    )
+                    if _stale_col:
+                        try:
+                            _last_ts = pd.to_datetime(latest[_stale_col])
+                            if _last_ts.tzinfo is not None:
+                                _last_ts = _last_ts.tz_convert("Asia/Kolkata")
+                            if _last_ts.date() != ist_now.date():
+                                rejection_counts["stale_data"] = rejection_counts.get("stale_data", 0) + 1
+                                continue
+                        except Exception:
+                            pass
 
-                    # ── VOLUME ──────────────────────────────────────────────────────
-                    latest_volume = float(latest["Volume"])
-                    # GAP 1 FIX: exclude the current bar from the baseline average.
+
                     # Using tail(20) includes today's breakout candle, which inflates the
                     # average and deflates the ratio (e.g. a true 20x reads as 10x).
                     # iloc[-21:-1] always averages exactly the 20 bars *before* the current one.
