@@ -515,7 +515,7 @@ def start():
                         # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
                             safe_sector  = str(sector) if sector else "Unknown"
-                            sector_bonus = rotation_result.score_bonus_for(symbol=symbol, sector=safe_sector)
+                            sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
                         except Exception as e:
                             logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
@@ -590,7 +590,6 @@ def start():
             else:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-            if fired:
                     chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
                     for chunk_num, chunk in enumerate(chunks, start=1):
@@ -606,6 +605,7 @@ def start():
 
             # Only log rejection reasons that actually fired (Railway log economy)
             fired = {k: v for k, v in rejection_counts.items() if v > 0}
+            if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
             # Dynamic sleep: keep cycle cadence at exactly 300s regardless of scan duration.
