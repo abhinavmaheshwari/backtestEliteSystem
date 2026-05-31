@@ -54,6 +54,7 @@
 
 import os
 import traceback
+import threading
 import pandas as pd
 
 from datetime import datetime
@@ -125,13 +126,15 @@ MAX_YOY = 500.0
 # =====================================================================================
 
 EXCLUSION_LOG: list[dict] = []
+_exclusion_lock = threading.Lock()
 
 def log_exclusion(symbol: str, reason: str) -> None:
-    EXCLUSION_LOG.append({
-        "Stock":     symbol,
-        "Reason":    reason,
-        "Scan Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    })
+    with _exclusion_lock:
+        EXCLUSION_LOG.append({
+            "Stock":     symbol,
+            "Reason":    reason,
+            "Scan Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
     print(f"⛔ SKIP [{symbol}]: {reason}")
 
 # =====================================================================================
@@ -640,7 +643,8 @@ def classify_stock(row: pd.Series) -> dict | None:
 # =====================================================================================
 
 def main():
-    EXCLUSION_LOG.clear()  # Reset on every run — prevents memory bloat and duplicate CSV entries
+    with _exclusion_lock:
+        EXCLUSION_LOG.clear()  # Reset on every run — thread-safe clear
     # when build_watchlist() is called repeatedly in the same long-running process.
     print("\n🚀 ELITE FUNDAMENTAL SCAN STARTED\n")
 
