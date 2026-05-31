@@ -27,7 +27,7 @@ from delivery_data import fetch_previous_day_delivery
 from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
 
 # FIX #3: Import config centrally instead of hardcoding
-from config import WATCHLIST_PATH, SCORE_THRESHOLDS, SCAN_CONFIG
+from config import WATCHLIST_PATH, SCORE_THRESHOLDS, SCAN_CONFIG, DEDUP_DAYS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +57,7 @@ MIN_SCORE        = SCORE_THRESHOLDS["15m"]
 # Download all watchlist symbols in a single/few batches instead of 200 individual calls
 # =====================================================================================
 
-def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "5d", interval: str = "15m") -> dict:
+def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval: str = "15m") -> dict:
     """
     Download OHLCV data for all watchlist symbols in batches.
     
@@ -148,7 +148,7 @@ def start():
     """
     
     init_db()
-    cleanup_old_alerts(days=7)
+    cleanup_old_alerts(days=DEDUP_DAYS)
     
     while True:
         
@@ -190,7 +190,7 @@ def start():
                     continue
             
             # FIX #2: Batch download instead of 200 individual calls
-            all_ticker_data = fetch_watchlist_data(watchlist, period="5d", interval="15m")
+            all_ticker_data = fetch_watchlist_data(watchlist, period="10d", interval="15m")
             logger.info(f"📥 Data downloaded for {len(all_ticker_data)}/{len(watchlist)} symbols")
             
             # Fetch delivery conviction (previous day)
@@ -440,7 +440,7 @@ def start():
                     if score > 0:
                         # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
-                            safe_sector  = str(sector) if sector else "Unknown"
+                            safe_sector  = "Unknown" if pd.isna(sector) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
                         except Exception as e:
