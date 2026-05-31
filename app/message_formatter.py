@@ -64,6 +64,10 @@ _BK_ICON = {
     "Monthly Breakout": "🌕",
     "Weekly Breakout":  "📊",
     "Daily Breakout":   "📉",
+    "Hourly Breakout":  "⏱",   # 1H timeframe signal
+    "Session Breakout": "⚡",   # 15m timeframe signal
+    "BB Breakout":      "🎯",   # Bollinger Band squeeze breakout
+    "Volume Surge":     "📈",   # Volume × 3 confirmation
 }
 
 def breakout_lines(signals):
