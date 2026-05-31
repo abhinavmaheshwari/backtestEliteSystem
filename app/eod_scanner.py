@@ -585,7 +585,7 @@ def start():
                         # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
                             safe_sector  = str(sector) if sector else "Unknown"
-                            sector_bonus = rotation_result.score_bonus_for(symbol=symbol, sector=safe_sector)
+                            sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
                         except Exception as e:
                             logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
