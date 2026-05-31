@@ -421,11 +421,6 @@ def bonus_modifiers(
 
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
     #
-    # Checks if volume has been consistently elevated over the last 3 bars.
-    # On EOD, "last 3 bars" = last 3 trading days. That's an appropriate window —
-    # a breakout day preceded by 2 low-volume days is less convincing than one
-    # preceded by sustained accumulation.
-    #
     if len(ticker) >= 4:
         avg_vol_20   = float(ticker["Volume"].tail(20).mean())
         recent_above = sum(
@@ -433,7 +428,7 @@ def bonus_modifiers(
             if float(ticker["Volume"].iloc[i]) > avg_vol_20 * 0.80
         )
         if recent_above < 2:
-            logger.debug(
+            logger.warning(
                 f"  -8 {tag}Unsustained volume "
                 f"(only {recent_above}/3 recent bars above 80% of avg)"
             )
@@ -441,24 +436,19 @@ def bonus_modifiers(
 
     # ── PENALTY: GAP-UP CHASE — INTRADAY AND 1H ONLY ─────────────────────────────────
     #
-    # NOT applied on EOD (timeframe == "1d") because eod_scanner's ATR filter already
-    # hard-rejects exhaustion moves before scoring. Applying a flat 8% penalty on daily
-    # bars that passed a 3× ATR cap would be double-penalising the same condition
-    # with inconsistent logic (ATR-relative upstream, percentage-based downstream).
-    #
     if timeframe != "1d" and len(ticker) >= 2:
         prev_close = float(ticker["Close"].iloc[-2])
         if prev_close > 0:
             single_move = (float(latest["Close"]) - prev_close) / prev_close * 100
             if single_move > 8:
-                logger.debug(f"  -5 {tag}Gap-up chase ({single_move:.1f}% single-bar move)")
+                logger.warning(f"  -5 {tag}Gap-up chase ({single_move:.1f}% single-bar move)")
                 bonus -= 5
 
     # ── PENALTY: EXTREME OVERBOUGHT RSI ──────────────────────────────────────────────
     if "RSI" in ticker.columns:
         rsi_val = float(latest["RSI"])
         if rsi_val > 78:
-            logger.debug(f"  -5 {tag}Extreme RSI ({rsi_val:.1f} > 78)")
+            logger.warning(f"  -5 {tag}Extreme RSI ({rsi_val:.1f} > 78)")
             bonus -= 5
 
     return bonus
