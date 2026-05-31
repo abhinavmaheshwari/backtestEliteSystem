@@ -666,8 +666,10 @@ def main():
     winners = [r for r in results if r is not None]
 
     if EXCLUSION_LOG:
-        pd.DataFrame(EXCLUSION_LOG).to_csv(EXCLUSION_CSV, index=False)
-        print(f"📋 Exclusion log → {EXCLUSION_CSV}  ({len(EXCLUSION_LOG)} skipped)")
+        with _exclusion_lock:
+            exclusion_snapshot = list(EXCLUSION_LOG)
+        pd.DataFrame(exclusion_snapshot).to_csv(EXCLUSION_CSV, index=False)
+        print(f"📋 Exclusion log → {EXCLUSION_CSV}  ({len(exclusion_snapshot)} skipped)")
 
     if not winners:
         print("❌ No qualifying stocks after classification")
