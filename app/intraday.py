@@ -52,6 +52,10 @@ MIN_RSI          = SCAN_CONFIG["15m"]["MIN_RSI"]
 MAX_RSI          = SCAN_CONFIG["15m"]["MAX_RSI"]
 MIN_SCORE        = SCORE_THRESHOLDS["15m"]
 
+# These constants are 15m-specific — not in config.py (no 1h/EOD equivalent)
+MIN_STOCK_PRICE   = 50.0
+RSI_LOOKBACK_BARS = 3      # moved from inside per-stock loop to module level
+
 # =====================================================================================
 # BATCH DATA DOWNLOAD — FIX #2
 # Download all watchlist symbols in a single/few batches instead of 200 individual calls
@@ -331,6 +335,14 @@ def start():
 
                     latest = ticker.iloc[-1]
 
+                    # ── RSI AVAILABILITY GUARD ───────────────────────────────────────
+                    # Guard before any RSI read — if apply_indicators failed to produce
+                    # RSI (e.g. NaN on all rows), float() would return NaN and silently
+                    # corrupt the RSI filter and scoring downstream.
+                    if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
+                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
+                        continue
+
                     # ── STALE DATA GUARD ─────────────────────────────────────────────
                     # Halted/illiquid stocks return data ending on the last day they
                     # traded. Without this, a 4-day-old 15m candle fires as live.
@@ -353,6 +365,7 @@ def start():
                     # Using tail(20) includes today's breakout candle, which inflates the
                     # average and deflates the ratio (e.g. a true 20x reads as 10x).
                     # iloc[-21:-1] always averages exactly the 20 bars *before* the current one.
+                    latest_volume = float(latest["Volume"])
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
@@ -425,7 +438,6 @@ def start():
                         continue
 
                     # ── FILTER 8: RSI DIRECTION ──────────────────────────────────────
-                    RSI_LOOKBACK_BARS = 3
                     if len(ticker) > RSI_LOOKBACK_BARS:
                         rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
                         if rsi_val <= rsi_prev:
