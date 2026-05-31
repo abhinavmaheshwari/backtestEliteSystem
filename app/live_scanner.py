@@ -339,7 +339,13 @@ def start():
                     )
                     if datetime_col is not None:
                         try:
-                            candle_start = pd.Timestamp(ticker.iloc[-1][datetime_col]).replace(tzinfo=None)
+                            raw_ts = pd.Timestamp(ticker.iloc[-1][datetime_col])
+                            # Convert to IST before stripping tz — yfinance may return
+                            # UTC or IST timestamps. Normalising ensures the naive
+                            # comparison is always in IST wall-clock time.
+                            if raw_ts.tzinfo is not None:
+                                raw_ts = raw_ts.tz_convert("Asia/Kolkata")
+                            candle_start = raw_ts.replace(tzinfo=None)
                             candle_end   = candle_start + pd.Timedelta(minutes=60)
                             now_naive    = datetime.now(IST).replace(tzinfo=None)
                             if now_naive < candle_end:
