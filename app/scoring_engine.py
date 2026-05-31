@@ -29,6 +29,24 @@
 #   7. 3 doji/narrow candles in last 4 bars (pre-breakout exhaustion)
 #
 # CHANGES FROM PREVIOUS VERSION:
+#   + FIX GAP 1: SCORE_CATEGORY expanded to include all Financial path categories
+#     produced by daily_builder.py. Previously "Financial Compounder", "Financial High
+#     Growth", "Financial Mature Quality", and "Financial Turnaround" all scored 0
+#     category points, putting every Financial sector stock at a ~30-point disadvantage
+#     vs non-financial peers at the same quality tier.
+#
+#     Financial weights are set equal to their non-financial analogues:
+#       "Financial High Growth"    → 22 pts  (same as "High Growth")
+#       "Financial Compounder"     → 30 pts  (same as "Elite Compounder")
+#       "Financial Mature Quality" → 14 pts  (same as "Mature Quality")
+#       "Financial Turnaround"     →  8 pts  (same as "Turnaround")
+#       "Turnaround"               →  8 pts  (added; was also missing from old map)
+#       "Steady Compounder"        → 18 pts  (between High Growth and Mature Quality)
+#
+#     Matching is still first-match-wins (dict ordered highest-points-first) so a
+#     stock categorised "Financial Compounder + Financial Mature Quality" earns only
+#     30 pts (the Financial Compounder score) — no double-counting.
+#
 #   + timeframe parameter added to calculate_score() — scoring engine now knows which
 #     scanner called it and adjusts behaviour accordingly
 #   + EOD disqualifier #5 (RSI divergence) aligned with eod_scanner hidden divergence
@@ -57,15 +75,42 @@ logger = logging.getLogger(__name__)
 # =====================================================================================
 # CATEGORY WEIGHTS
 #
-# Matching is exact: category string must contain the key as a substring, and the
-# FIRST matching key wins. Keys are ordered highest-points-first so an "Elite
-# Compounder" stock never accidentally also earns "High Growth" points.
+# FIX GAP 1: Expanded from 3 keys to 10 to cover all categories daily_builder.py
+# can produce (both PATH A non-financial and PATH B financial).
+#
+# Matching uses substring search so "Financial Compounder + Financial Mature Quality"
+# hits "Financial Compounder" first (highest points) and stops — no double-counting.
+# Keys are ordered highest-points-first to make first-match = best-match.
+#
+# Why these point values?
+#   Financial Compounder = Elite Compounder (30): both represent the highest-quality
+#     compounding businesses — one in manufacturing/tech, the other in banking/NBFC.
+#     HDFC Bank meets the same quality bar as INFY; the scoring engine should treat them
+#     equivalently. Using a lower weight would systematically undercount financial
+#     sector breakouts for no fundamental reason.
+#   Financial High Growth = High Growth (22): same logic — fast NII/profit growth for
+#     a bank is equivalent to fast gross-profit growth for a tech company.
+#   Financial Mature Quality = Mature Quality (14): large stable bank, same archetype
+#     as a large stable conglomerate or blue-chip manufacturer.
+#   Steady Compounder (18): positioned between High Growth and Mature Quality because
+#     it implies consistent double-digit growth without the acceleration of High Growth.
+#   Financial Turnaround = Turnaround (8): recovery plays — rewards real earnings
+#     improvement without over-rewarding turnarounds (which carry more uncertainty).
 # =====================================================================================
 
 SCORE_CATEGORY = {
-    "Elite Compounder": 30,
-    "High Growth":      22,
-    "Mature Quality":   14,
+    # ── Non-financial (PATH A) ────────────────────────────────────────────────────
+    "Elite Compounder":     30,   # High ROE + clean growth + low debt
+    "High Growth":          22,   # YoY sales + profit > 15%
+    "Steady Compounder":    18,   # YoY sales + profit > 10% with solid ROE
+    "Mature Quality":       14,   # Large cap, ROE ≥ 15%, low debt
+    "Turnaround":            8,   # Profit recovery ≥ 30% with improving margins
+
+    # ── Financial (PATH B) — set equal to non-financial analogues ─────────────────
+    "Financial Compounder":     30,   # Steady NII growth + ROE ≥ 15% + ROA ≥ 1%
+    "Financial High Growth":    22,   # NII YoY ≥ 15% + net income YoY ≥ 15%
+    "Financial Mature Quality": 14,   # Large-cap bank, ROE ≥ 15%, ROA ≥ 1%
+    "Financial Turnaround":      8,   # Profit recovery ≥ 25% YoY with stable NII
 }
 
 # =====================================================================================
@@ -477,7 +522,8 @@ def calculate_score(
 
     Parameters
     ----------
-    category         : str           — stock category ("Elite Compounder", etc.)
+    category         : str           — stock category (e.g. "Elite Compounder",
+                                       "Financial Compounder", "Turnaround", etc.)
     breakout_count   : int           — number of breakout signals from detect_breakouts()
     rsi              : float         — current RSI value
     volume_ratio     : float         — current bar volume / 20-bar average volume
@@ -505,9 +551,14 @@ def calculate_score(
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
     #
-    # Iterate in order (highest-points-first) and stop at the FIRST match.
+    # FIX GAP 1: Iterate in order (highest-points-first) and stop at the FIRST match.
     # This prevents a category string that contains multiple key substrings
-    # (e.g. "Elite Compounder & High Growth Fund") from double-counting.
+    # (e.g. "Elite Compounder + High Growth") from double-counting.
+    #
+    # The expanded SCORE_CATEGORY dict now covers all 9 categories from daily_builder:
+    #   PATH A: Elite Compounder, High Growth, Steady Compounder, Mature Quality, Turnaround
+    #   PATH B: Financial Compounder, Financial High Growth, Financial Mature Quality,
+    #           Financial Turnaround
     #
     category_pts = 0
     for label, pts in SCORE_CATEGORY.items():
