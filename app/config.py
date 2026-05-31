@@ -120,6 +120,8 @@ YAHOO_TIMEOUT = 30        # Timeout for yfinance requests (seconds)
 # =====================================================================================
 
 DEDUP_DAYS = 7  # Don't re-alert the same stock + breakout_type combo within 7 days
+# NOTE: Import this constant in each scanner and pass it to cleanup_old_alerts(days=DEDUP_DAYS)
+# and save_alert_if_new — all three scanners previously hardcoded 7 independently.
 
 # =====================================================================================
 # TELEGRAM SETTINGS
