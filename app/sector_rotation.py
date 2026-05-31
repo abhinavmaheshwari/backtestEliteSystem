@@ -399,7 +399,102 @@ class SectorRotationResult:
 # INTERNAL HELPERS
 # =====================================================================================
 
-def _download_close(ticker: str) -> Optional[pd.Series]:
+def _parse_close_series(df: pd.DataFrame, label: str) -> Optional[pd.Series]:
+    """Extract a Close price series from a yfinance DataFrame (flat or MultiIndex)."""
+    if df is None or df.empty:
+        return None
+    df = df.copy()
+    df.reset_index(inplace=True)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.columns = [c.strip() for c in df.columns]
+    date_col = next((c for c in ["Date", "Datetime", "index"] if c in df.columns), None)
+    if date_col is None or "Close" not in df.columns:
+        return None
+    df[date_col] = pd.to_datetime(df[date_col])
+    series = df.sort_values(date_col).set_index(date_col)["Close"].dropna()
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    return series.astype(float)
+
+
+def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]:
+    """
+    FIX GAP 4: Download all sector ETFs + Nifty benchmark in ONE yfinance batch call
+    instead of 20 sequential individual calls.
+
+    Previously: 20 calls × ~1–2s each = 20–40s total (plus rate-limit risk).
+    Now:        1 batch call = ~2–4s total regardless of universe size.
+
+    Returns {ticker_symbol: close_series_or_None}.
+    Falls back to individual _download_close() for any ticker missing from the batch
+    response so a single delisted ETF can't silently null out the entire dataset.
+    """
+    results: dict[str, Optional[pd.Series]] = {}
+
+    if not tickers:
+        return results
+
+    tickers_str = " ".join(tickers)
+    logger.info(
+        f"🔄 Sector rotation: batch downloading {len(tickers)} tickers "        f"({DOWNLOAD_PERIOD} daily)..."
+    )
+
+    try:
+        raw = yf.download(
+            tickers_str,
+            period=DOWNLOAD_PERIOD,
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+            group_by="ticker",
+        )
+
+        if raw is None or raw.empty:
+            logger.warning("⚠️  Sector batch download returned empty — falling back to individual calls")
+            for t in tickers:
+                results[t] = _download_close_single(t)
+            return results
+
+        if not isinstance(raw.columns, pd.MultiIndex):
+            # Only one ticker survived (others delisted/halted) — yfinance returns flat DF.
+            # We can only safely assign it if we requested exactly 1 ticker.
+            if len(tickers) == 1:
+                results[tickers[0]] = _parse_close_series(raw, tickers[0])
+            else:
+                # Can't determine which ticker this belongs to — fall back individually.
+                logger.warning(
+                    "⚠️  Sector batch returned flat DF for multi-ticker request "                    "— falling back to individual calls"
+                )
+                for t in tickers:
+                    results[t] = _download_close_single(t)
+            return results
+
+        # MultiIndex: columns are (Ticker, OHLCV).
+        for t in tickers:
+            try:
+                level0 = raw.columns.get_level_values(0)
+                if t in level0:
+                    results[t] = _parse_close_series(raw[t], t)
+                else:
+                    # Ticker absent from batch response (delisted / no data for period).
+                    logger.warning(f"⚠️  {t} absent from sector batch — fetching individually")
+                    results[t] = _download_close_single(t)
+            except Exception:
+                logger.exception(f"⚠️  Slice error for {t} in sector batch")
+                results[t] = None
+
+    except Exception:
+        logger.exception("⚠️  Sector batch download failed — falling back to individual calls")
+        for t in tickers:
+            results[t] = _download_close_single(t)
+
+    return results
+
+
+def _download_close_single(ticker: str) -> Optional[pd.Series]:
+    """Individual ticker fallback — used only when batch download fails for a ticker."""
     try:
         df = yf.download(
             ticker,
@@ -409,23 +504,15 @@ def _download_close(ticker: str) -> Optional[pd.Series]:
             auto_adjust=True,
             threads=False,
         )
-        if df.empty: return None
-
-        df.reset_index(inplace=True)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = [c.strip() for c in df.columns]
-
-        date_col = next((c for c in ["Date", "Datetime", "index"] if c in df.columns), None)
-        if date_col is None or "Close" not in df.columns: return None
-
-        df[date_col] = pd.to_datetime(df[date_col])
-        series = df.sort_values(date_col).set_index(date_col)["Close"].dropna()
-        if isinstance(series, pd.DataFrame): series = series.iloc[:, 0]
-        return series.astype(float)
+        return _parse_close_series(df, ticker)
     except Exception:
-        logger.exception(f"⚠️  _download_close({ticker}) failed")
+        logger.exception(f"⚠️  _download_close_single({ticker}) failed")
         return None
+
+
+# Legacy alias — keeps any external callers working unchanged.
+def _download_close(ticker: str) -> Optional[pd.Series]:
+    return _download_close_single(ticker)
 
 def _pct_return(series: pd.Series, lookback: int) -> Optional[float]:
     if len(series) < lookback + 1: return None
@@ -503,8 +590,13 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
     errors = []
     sector_scores = {}
 
-    logger.info("🔄 Sector Rotation Engine: downloading Nifty 50 benchmark...")
-    nifty_close = _download_close(BENCHMARK_TICKER)
+    # FIX GAP 4: Download Nifty + all sector ETFs in ONE batch call.
+    # Previously: 20 sequential yf.download() calls (20–40s + rate-limit risk).
+    # Now: 1 batch call for all 20 tickers simultaneously (~3s total).
+    all_tickers = [BENCHMARK_TICKER] + list(SECTOR_ETF_MAP.values())
+    close_map   = _batch_download_closes(all_tickers)
+
+    nifty_close = close_map.get(BENCHMARK_TICKER)
 
     if nifty_close is None or len(nifty_close) < MIN_BARS_REQUIRED:
         logger.error("❌ Sector Rotation: Nifty 50 download failed")
@@ -522,7 +614,7 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
     nifty_base = nifty_return if abs(nifty_return) > 0.001 else 0.001
 
     for sector_name, etf_ticker in SECTOR_ETF_MAP.items():
-        close = _download_close(etf_ticker)
+        close = close_map.get(etf_ticker)
         if close is None or len(close) < MIN_BARS_REQUIRED:
             errors.append(sector_name)
             continue
