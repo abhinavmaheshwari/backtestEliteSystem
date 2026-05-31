@@ -207,8 +207,11 @@ def start():
         current_time = ist_now.time()
         weekday      = ist_now.weekday()
 
+        # GAP 3 FIX: Extended to 15:35 (was 15:30).
+        # The final 1H bar closes at 15:30. Without this extension the scanner wakes
+        # at 15:31, sees current_time > 15:30, and misses the last BTST sweep entirely.
         # Start at 10:17 — first complete 1H bar (9:15–10:14) must have closed
-        market_open = dt_time(10, 17) <= current_time <= dt_time(15, 30)
+        market_open = dt_time(10, 17) <= current_time <= dt_time(15, 35)
 
         if weekday >= 5 or not market_open:
             logger.info(
@@ -391,7 +394,9 @@ def start():
 
                     # ── VOLUME ──────────────────────────────────────────────────────
                     latest_volume = float(latest["Volume"])
-                    avg_volume    = float(ticker["Volume"].tail(20).mean())
+                    # GAP 1 FIX: exclude the current bar from the baseline average.
+                    # Using tail(20) includes today's breakout candle, deflating the ratio.
+                    avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
                         logger.warning(f"  ❌ Zero avg volume: {symbol}")
@@ -526,6 +531,7 @@ def start():
                         symbol=symbol,
                         timeframe="1h",
                         delivery_pct=delivery_pct,
+                        min_vol=MIN_AVG_VOLUME_SHARES,
                     )
 
                     if score > 0:
