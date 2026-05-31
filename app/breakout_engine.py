@@ -27,7 +27,7 @@ WINDOW_MAP = {
     "15m": [
         ("Weekly Breakout",  104),
         ("Daily Breakout",   52),
-        ("Session Breakout", 26),
+        ("Session Breakout", 25),  # NSE session = 375 min = exactly 25 fifteen-minute bars
     ],
 }
 
