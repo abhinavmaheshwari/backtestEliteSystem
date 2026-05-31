@@ -18,7 +18,7 @@
 #
 # FILTER PIPELINE (in order — a stock must pass ALL of these):
 #   1.  Data quality       — 200 candles minimum, no missing columns
-#   2.  Signal count       — at least 3 breakout signals (strictest confluence)
+#   2.  Signal count       — at least 1 breakout signal (MIN_SIGNALS from config.py)
 #   3.  Candle body        — body ≥ 60% of range (tightest of the three scanners)
 #   4.  Bullish close      — close strictly above open
 #   5.  Close position     — close in top 25% of daily range
@@ -67,6 +67,7 @@ from config import (
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
+    DEDUP_DAYS,
 )
 
 # =====================================================================================
@@ -106,11 +107,12 @@ MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]
 MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]
 MIN_SCORE               = SCORE_THRESHOLDS["1d"]
 
-# These constants are EOD-specific — no intraday/1H equivalent
+# NOTE: MIN_SIGNALS = 1 for daily timeframe (config.py — a single 52W Breakout is
+# high-conviction enough for EOD. Intraday uses 2 to compensate for noise).
 MIN_STOCK_PRICE             = 50.0
 RSI_LOOKBACK_BARS           = 5      # 5 days = 1 week of rising momentum
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
-MAX_SINGLE_DAY_MOVE_PCT     = 8.0
+MAX_SINGLE_DAY_MOVE_PCT     = 15.0   # Raised from 8% to catch upper circuit breakouts
 
 
 # =====================================================================================
@@ -238,8 +240,8 @@ def start():
 
     # FIX 4: DB init inside start(), not at module level
     init_db()
-    cleanup_old_alerts(days=7)
-    logger.info("✅ EOD scanner ready | DB initialized | 7-day dedup window active")
+    cleanup_old_alerts(days=DEDUP_DAYS)
+    logger.info(f"✅ EOD scanner ready | DB initialized | {DEDUP_DAYS}-day dedup window active")
 
     # Tracks the last date a scan completed — prevents double-scanning on the same day
     last_scan_date = None
@@ -394,7 +396,7 @@ def start():
 
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="eod_prefetch") as pool:
                 future_delivery = pool.submit(_fetch_delivery_with_retry)
-                future_prices   = pool.submit(fetch_watchlist_data, watchlist, "1y", "1d")
+                future_prices   = pool.submit(fetch_watchlist_data, watchlist, "2y", "1d")
 
                 for future in as_completed([future_delivery, future_prices]):
                     if future is future_delivery:
@@ -528,7 +530,9 @@ def start():
 
                     # ── VOLUME ──────────────────────────────────────────────────────
                     latest_volume = float(latest["Volume"])
-                    avg_volume    = float(ticker["Volume"].tail(20).mean())
+                    # Exclude the current (breakout) candle from the baseline so it
+                    # can't inflate its own average and understate the surge multiple.
+                    avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
                         logger.warning(f"  ❌ Zero avg volume: {symbol}")
@@ -672,13 +676,14 @@ def start():
                         timeframe="1d",
                         atr_val=atr_val_eod,
                         delivery_pct=delivery_pct,
+                        min_vol=MIN_AVG_VOLUME_SHARES,
                     )
 
                     # Sector rotation modifier — applied after base score
                     if score > 0:
                         # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
-                            safe_sector  = str(sector) if sector else "Unknown"
+                            safe_sector  = "Unknown" if pd.isna(sector) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
                         except Exception as e:
