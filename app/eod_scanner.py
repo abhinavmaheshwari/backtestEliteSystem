@@ -279,6 +279,7 @@ def start():
         logger.info(f"📊 EOD SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info("=" * 70)
 
+        scan_start = datetime.now(IST)  # defined BEFORE try so except block can safely use it
         try:
             # ── LOAD WATCHLIST ──────────────────────────────────────────────────────
             try:
@@ -341,7 +342,7 @@ def start():
                 from datetime import date as _date
                 rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
 
-            scan_start         = datetime.now(IST)
+            scan_start_inner   = scan_start   # alias for clarity — already set before try
             total_alerts       = 0
             alerts_by_category = {}
 
@@ -566,6 +567,13 @@ def start():
                     # ── DELIVERY DATA ────────────────────────────────────────────────
                     delivery_pct = delivery_map.get(symbol, None)
 
+                    # ── ATR for EOD quality bonus ────────────────────────────────────
+                    atr_val_eod = (
+                        float(latest["ATR"])
+                        if "ATR" in ticker.columns and not pd.isna(latest.get("ATR"))
+                        else None
+                    )
+
                     # ── SCORE ────────────────────────────────────────────────────────
                     score = calculate_score(
                         category=category,
@@ -577,6 +585,7 @@ def start():
                         latest=latest,
                         symbol=symbol,
                         timeframe="1d",
+                        atr_val=atr_val_eod,
                         delivery_pct=delivery_pct,
                     )
 
