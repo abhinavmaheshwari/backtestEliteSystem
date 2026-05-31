@@ -299,6 +299,7 @@ def start():
                 "gap_candle":        0,
                 "low_score":         0,
                 "duplicate":         0,
+                "stale_data":        0,
             }
 
             # ── PER-STOCK PROCESSING ────────────────────────────────────────────────
@@ -387,6 +388,27 @@ def start():
                         continue
 
                     latest = ticker.iloc[-1]
+
+                    # ── STALE DATA GUARD ─────────────────────────────────────────────
+                    # Halted / illiquid stocks return data ending on the last day they
+                    # traded. 1H fetches 60 days of history so stale bars are especially
+                    # likely to survive all filters and fire a false alert.
+                    # We compare the last bar's date against today's IST date and skip
+                    # the stock entirely if it doesn't match.
+                    _stale_col = next(
+                        (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
+                        None
+                    )
+                    if _stale_col:
+                        try:
+                            _last_ts = pd.to_datetime(latest[_stale_col])
+                            if _last_ts.tzinfo is not None:
+                                _last_ts = _last_ts.tz_convert("Asia/Kolkata")
+                            if _last_ts.date() != ist_now.date():
+                                rejection_counts["stale_data"] += 1
+                                continue
+                        except Exception:
+                            pass  # unparseable timestamp — allow through, don't crash
 
                     if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
                         logger.warning(f"  ❌ RSI unavailable: {symbol}")
@@ -554,9 +576,13 @@ def start():
                         continue
 
                     # ── DEDUP ────────────────────────────────────────────────────────
-                    breakout_type = ", ".join(signals)
-                    today_str     = datetime.now(IST).strftime("%Y-%m-%d")
-                    dedup_key     = f"{breakout_type}|{today_str}|1H"
+                    # Key encodes Category + Signals + Date + Timeframe.
+                    # If ANY of these change (e.g. stock upgrades to a stronger category
+                    # or fires a new signal mid-day), the key changes and a fresh alert
+                    # fires. The date component ensures full eligibility resets each day.
+                    signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
+                    today_str  = datetime.now(IST).strftime("%Y-%m-%d")
+                    dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
                     saved = save_alert_if_new(
                         symbol,
