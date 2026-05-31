@@ -469,9 +469,13 @@ def start():
                         continue
 
                     # ── DEDUP ────────────────────────────────────────────────────────
-                    breakout_type = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
-                    today_str     = datetime.now(IST).strftime("%Y-%m-%d")
-                    dedup_key     = f"{breakout_type}|{today_str}|INTRADAY"
+                    # Key encodes Category + Signals + Date + Timeframe.
+                    # If ANY of these change (e.g. stock upgrades category or fires a
+                    # new signal mid-day), the key changes and a fresh alert fires.
+                    # The date component ensures full eligibility resets each day.
+                    signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
+                    today_str  = datetime.now(IST).strftime("%Y-%m-%d")
+                    dedup_key  = f"{category}|{signal_str}|{today_str}|INTRADAY"
 
                     saved = save_alert_if_new(
                         symbol,
