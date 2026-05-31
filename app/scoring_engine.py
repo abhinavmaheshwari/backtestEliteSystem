@@ -343,7 +343,10 @@ def bonus_modifiers(
     if len(ticker) >= 23:
         # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
         avg_20 = float(ticker["Volume"].iloc[-21:-1].mean())
-        avg_3  = float(ticker["Volume"].tail(3).mean())
+        # FIX: use iloc[-4:-1] (3 bars before current) to exclude the breakout candle
+        # from the "sustained" average. tail(3) includes the current bar, which inflates
+        # avg_3 with the very volume spike being tested — making this bonus fire too easily.
+        avg_3  = float(ticker["Volume"].iloc[-4:-1].mean())
         if avg_20 > 0 and (avg_3 / avg_20) >= 1.5:
             logger.debug(f"  +3 {tag}Sustained volume (3-bar avg {avg_3/avg_20:.1f}x 20-bar baseline)")
             bonus += 3
