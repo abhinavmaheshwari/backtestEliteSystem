@@ -279,7 +279,7 @@ def start():
             rejection_counts = {
                 "no_data":           0,
                 "missing_col":       0,
-                "forming_candle":    0,
+                "forming_candle_stripped": 0,  # bar dropped but stock still evaluated
                 "insufficient_bars": 0,
                 "indicator_fail":    0,
                 "weak_signals":      0,
@@ -366,7 +366,7 @@ def start():
                             now_naive    = datetime.now(IST).replace(tzinfo=None)
                             if now_naive < candle_end:
                                 ticker = ticker.iloc[:-1].copy()
-                                rejection_counts["forming_candle"] += 1
+                                rejection_counts["forming_candle_stripped"] += 1
                         except Exception:
                             logger.exception(f"  ⚠️ Candle age check error {symbol}")
 
