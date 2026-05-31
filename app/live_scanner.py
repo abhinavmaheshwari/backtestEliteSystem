@@ -142,14 +142,25 @@ def fetch_watchlist_data(
 
             # Detect actual structure returned — don't trust len(batch).
             # If 29 of 30 tickers are suspended/delisted, yfinance returns a flat
-            # DataFrame for the one survivor instead of a MultiIndex, so checking
-            # len(batch)==1 would misroute it into the MultiIndex branch and drop it.
+            # DataFrame for the one survivor instead of a MultiIndex.
             if not isinstance(raw.columns, pd.MultiIndex):
-                # Flat DataFrame — only one ticker survived in this batch
-                sym = batch[0]
-                df  = raw.reset_index().copy()
-                if not df.empty:
-                    all_data[sym] = df
+                # Flat DataFrame — yfinance returned a single-ticker result.
+                if len(batch) == 1:
+                    # We only requested 1 ticker, so batch[0] is safely the correct stock.
+                    sym = batch[0]
+                    df  = raw.reset_index().copy()
+                    if not df.empty:
+                        all_data[sym] = df
+                else:
+                    # We requested a multi-ticker batch but only 1 survived (others
+                    # delisted/suspended). Assigning to batch[0] would map the wrong
+                    # symbol to a survivor's data — skip the batch entirely instead.
+                    logger.warning(
+                        f"⚠️ YF returned flat DF for multi-ticker batch "
+                        f"(batch {i // batch_size + 1}, {len(batch)} requested). "
+                        f"Skipping to prevent symbol→data mismatch."
+                    )
+                    continue
 
             else:
                 # Multi-ticker: MultiIndex columns (Ticker, OHLCV) with group_by='ticker'
