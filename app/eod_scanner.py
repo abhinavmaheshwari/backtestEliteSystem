@@ -244,6 +244,22 @@ def start():
     # Tracks the last date a scan completed — prevents double-scanning on the same day
     last_scan_date = None
 
+    # FIX GAP 6: Weekly watchlist rebuild tracker.
+    # The parquet is built once at first startup and never refreshed unless the file is
+    # manually deleted. Fundamentals (ROE, EPS growth, OPM) shift every quarter;
+    # a watchlist from 3 months ago may include companies whose quality has deteriorated
+    # or exclude recent improvers. A weekly rebuild keeps the universe current.
+    #
+    # Rebuild policy: every Sunday at 7 PM IST (just before the EOD scan window opens).
+    # Sunday is a non-trading day so the rebuild runs without competing for resources.
+    # We use a date string (last_rebuild_week) rather than a timestamp so the rebuild
+    # happens at most once per week even if the scanner restarts mid-Sunday.
+    #
+    # IMPORTANT: The rebuild runs synchronously inside the EOD thread — it takes 30–60s
+    # and blocks this thread but not the intraday or 1H scanner threads. The EOD window
+    # is 6:30–8:00 PM; a 60s rebuild on Sunday at 7 PM is well within budget.
+    last_rebuild_week: str = ""   # ISO week string, e.g. "2025-W21"
+
     while True:
 
         ist_now      = datetime.now(IST)
@@ -257,6 +273,27 @@ def start():
 
         # ── WEEKEND ─────────────────────────────────────────────────────────────────
         if not is_weekday:
+            # FIX GAP 6: Weekly watchlist rebuild — runs on Sunday in the EOD window.
+            # Triggers at most once per ISO week. Runs synchronously here (≤60s)
+            # because there are no intraday scans on weekends to conflict with.
+            current_week = ist_now.strftime("%G-W%V")   # ISO year + week number
+            is_sunday    = (weekday == 6)
+            in_rebuild_window = dt_time(19, 0) <= current_time <= dt_time(19, 30)
+
+            if is_sunday and in_rebuild_window and last_rebuild_week != current_week:
+                logger.info(
+                    f"📋 Weekly watchlist rebuild | Week={current_week} | "                    f"Trigger: Sunday {ist_now.strftime('%H:%M')} IST"
+                )
+                try:
+                    from daily_builder import build_watchlist
+                    build_watchlist()
+                    last_rebuild_week = current_week
+                    logger.info(f"✅ Watchlist rebuilt for week {current_week}")
+                except Exception:
+                    logger.exception(
+                        f"❌ Weekly rebuild failed for week {current_week} — "                        "existing watchlist retained; will retry next Sunday"
+                    )
+
             sleep_secs = seconds_until_eod()
             logger.info(
                 f"📅 {ist_now.strftime('%A')} | Next EOD scan in "
@@ -312,29 +349,62 @@ def start():
                     time.sleep(300)
                     continue
 
-            # ── FETCH DELIVERY DATA (with retry) ─────────────────────────────────────
-            # NSE bhavcopy typically published by 5–6 PM; we start at 6:30 PM.
-            # Retry up to 5× (10-min gaps) in case of NSE delays.
-            delivery_map: dict[str, float] = {}
-            for attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
-                delivery_map = fetch_delivery_data(ist_now.date())
-                if delivery_map:
-                    logger.info(f"📦 Delivery data | {len(delivery_map)} symbols | attempt {attempt}")
-                    break
-                if attempt < DELIVERY_FETCH_RETRIES:
-                    logger.warning(
-                        f"⚠️ Delivery fetch empty (attempt {attempt}/{DELIVERY_FETCH_RETRIES}) "
-                        f"| retry in {DELIVERY_RETRY_INTERVAL_S // 60}m"
-                    )
-                    time.sleep(DELIVERY_RETRY_INTERVAL_S)
-                else:
-                    logger.warning(
-                        f"⚠️ Delivery data unavailable after {DELIVERY_FETCH_RETRIES} attempts "
-                        "| proceeding without delivery scoring"
-                    )
+            # ── FETCH DELIVERY DATA + BATCH DOWNLOAD IN PARALLEL (FIX GAP 3) ─────────
+            #
+            # WHY PARALLEL:
+            #   Previously these two tasks ran sequentially: delivery retry could burn
+            #   up to 5 × 10 min = 50 minutes before the price download even started.
+            #   Delivery and price data are completely independent — there is no reason
+            #   one has to wait for the other.
+            #
+            # HOW IT WORKS:
+            #   Both tasks are submitted to a ThreadPoolExecutor simultaneously.
+            #   _fetch_delivery_with_retry() wraps the original retry loop but blocks
+            #   only in its own thread. fetch_watchlist_data() runs concurrently.
+            #   The main thread joins both futures before proceeding to per-stock logic.
+            #   Worst-case time: max(delivery_time, download_time) instead of their sum.
+            #   A 50-min delivery wait + 3-min download = 50 min before; 50 min after.
+            #   A 0-min delivery hit + 3-min download = 3 min before; 3 min after.
+            #   The common case (delivery available immediately) drops from ~5 min to ~3 min.
+            #
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            # ── BATCH DOWNLOAD (FIX 2) ──────────────────────────────────────────────
-            all_ticker_data = fetch_watchlist_data(watchlist, period="1y", interval="1d")
+            def _fetch_delivery_with_retry() -> dict:
+                """Delivery fetch with up to DELIVERY_FETCH_RETRIES attempts."""
+                for attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
+                    result = fetch_delivery_data(ist_now.date())
+                    if result:
+                        logger.info(f"📦 Delivery data | {len(result)} symbols | attempt {attempt}")
+                        return result
+                    if attempt < DELIVERY_FETCH_RETRIES:
+                        logger.warning(
+                            f"⚠️ Delivery fetch empty (attempt {attempt}/{DELIVERY_FETCH_RETRIES}) "
+                            f"| retry in {DELIVERY_RETRY_INTERVAL_S // 60}m"
+                        )
+                        time.sleep(DELIVERY_RETRY_INTERVAL_S)
+                    else:
+                        logger.warning(
+                            f"⚠️ Delivery data unavailable after {DELIVERY_FETCH_RETRIES} attempts "
+                            "| proceeding without delivery scoring"
+                        )
+                return {}
+
+            delivery_map:    dict[str, float] = {}
+            all_ticker_data: dict = {}
+
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="eod_prefetch") as pool:
+                future_delivery = pool.submit(_fetch_delivery_with_retry)
+                future_prices   = pool.submit(fetch_watchlist_data, watchlist, "1y", "1d")
+
+                for future in as_completed([future_delivery, future_prices]):
+                    if future is future_delivery:
+                        delivery_map    = future.result()
+                    else:
+                        all_ticker_data = future.result()
+
+            logger.info(
+                f"📥 Parallel prefetch complete | "                f"delivery={len(delivery_map)} symbols | "                f"prices={len(all_ticker_data)} symbols"
+            )
 
             # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
             # Fetches sector RS scores for all NSE sectors vs Nifty 50.
