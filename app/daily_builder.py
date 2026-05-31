@@ -640,6 +640,8 @@ def classify_stock(row: pd.Series) -> dict | None:
 # =====================================================================================
 
 def main():
+    EXCLUSION_LOG.clear()  # Reset on every run — prevents memory bloat and duplicate CSV entries
+    # when build_watchlist() is called repeatedly in the same long-running process.
     print("\n🚀 ELITE FUNDAMENTAL SCAN STARTED\n")
 
     os.makedirs(os.path.dirname(OUTPUT_PARQUET), exist_ok=True)
