@@ -32,7 +32,7 @@ IST    = ZoneInfo("Asia/Kolkata")
 
 SECTOR_ETF_MAP: dict[str, str] = {
     "IT":             "ITETF.NS",
-    "Pharma":         "PHARMABEES.NS",
+    "Pharma":         "PHARMIETF.NS",    # was PHARMABEES.NS (delisted/renamed)
     "Banking":        "BANKBEES.NS",
     "FMCG":           "FMCGIETF.NS",
     "Auto":           "AUTOIETF.NS",
@@ -47,7 +47,10 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Financials":     "FINIETF.NS",       
     "Capital Goods":  "CGIETF.NS",        
     "Chemicals":      "CHEMIETF.NS",      
-    "Telecom":        "TELE.NS",          
+    # "Telecom": intentionally omitted — TELE.NS is delisted and no liquid standalone
+    #            telecom sector ETF exists on NSE. Telecom stocks receive sector_bonus=0,
+    #            which is neutral (no penalty). Re-add if a valid ETF is listed.
+
     "Railways":       "INFRAIETF.NS",     # Proxy
     "Electronics":    "MANUIETF.NS",      # Proxy
 }
