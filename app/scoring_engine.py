@@ -59,10 +59,11 @@
 #   + NEW BONUS: Delivery conviction bonus (up to +6 pts EOD, +3 pts intraday/1H).
 #     EOD uses same-day bhavcopy; intraday/1H use previous day's bhavcopy as a proxy
 #     for overnight positional conviction. Requires delivery_pct passed from scanners.
-#   + FIX: SCORE_CATEGORY now uses exact key matching instead of substring matching.
-#     Previously, a category string containing multiple labels (e.g. "Elite Compounder
-#     & High Growth") would have matched both keys and double-counted the points.
-#     Now only the first matching key is used (highest points wins, dict is ordered).
+#   + FIX: SCORE_CATEGORY now uses ordered first-match-wins iteration instead of
+#     summing all matching keys. Matching is still substring-based (label in category)
+#     so multi-label strings like "Elite Compounder + High Growth" work naturally:
+#     "Elite Compounder" matches first (30 pts, highest) and the loop stops — no
+#     double-counting. Dict is ordered highest-points-first to guarantee this.
 #   + Disqualifier #8 (unsustained volume hard block) removed — was already softened
 #     to -8 penalty in previous version; now lives only in bonus_modifiers as penalty
 #   + All disqualifiers now log the specific value that triggered them
