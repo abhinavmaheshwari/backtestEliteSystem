@@ -156,7 +156,11 @@ def start():
         current_time = ist_now.time()
         weekday      = ist_now.weekday()
         
-        market_open  = dt_time(9, 32) <= current_time <= dt_time(15, 30)
+        # GAP 3 FIX: Extended to 15:35 (was 15:30).
+        # The 15:15–15:30 candle closes at 15:30. Without this extension the scanner
+        # wakes at 15:31, sees current_time > 15:30, and skips the entire final sweep —
+        # permanently missing the last (often most volatile) BTST candle of the day.
+        market_open  = dt_time(9, 32) <= current_time <= dt_time(15, 35)
         
         if weekday >= 5 or not market_open:
             logger.info("📅 Outside market hours | Sleeping 5 minutes")
@@ -302,7 +306,12 @@ def start():
                         except Exception:
                             logger.exception(f"  ⚠️ Candle age check error {symbol}")
 
-                    if len(ticker) < 26:
+                    # GAP 5 FIX: minimum bar guard must equal max lookback window used by
+                    # breakout_engine for this timeframe. For 15m, that is 104 bars
+                    # ("Weekly Breakout" window). A guard of 26 (1 day) allowed stocks
+                    # with only 75 bars to pass, causing the 104-bar rolling max to return
+                    # NaN — silently preventing any Weekly Breakout signal from ever firing.
+                    if len(ticker) < 105:
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
@@ -328,7 +337,11 @@ def start():
 
                     # ── VOLUME ──────────────────────────────────────────────────────
                     latest_volume = float(latest["Volume"])
-                    avg_volume    = float(ticker["Volume"].tail(20).mean())
+                    # GAP 1 FIX: exclude the current bar from the baseline average.
+                    # Using tail(20) includes today's breakout candle, which inflates the
+                    # average and deflates the ratio (e.g. a true 20x reads as 10x).
+                    # iloc[-21:-1] always averages exactly the 20 bars *before* the current one.
+                    avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
                         logger.warning(f"  ❌ Zero avg volume: {symbol}")
@@ -421,6 +434,7 @@ def start():
                         symbol=symbol,
                         timeframe=TIMEFRAME,
                         delivery_pct=delivery_pct,
+                        min_vol=MIN_VOLUME_AVG,
                     )
 
                     if score > 0:
