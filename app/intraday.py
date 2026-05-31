@@ -241,7 +241,8 @@ def start():
                 "low_score":         0,
                 "duplicate":         0,
                 "stale_data":        0,
-            }            total_alerts = 0
+            }
+            total_alerts = 0
 
             # ── PER-STOCK PROCESSING ────────────────────────────────────────────────
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
@@ -356,7 +357,7 @@ def start():
                             if _last_ts.tzinfo is not None:
                                 _last_ts = _last_ts.tz_convert("Asia/Kolkata")
                             if _last_ts.date() != ist_now.date():
-                                rejection_counts["stale_data"] = rejection_counts.get("stale_data", 0) + 1
+                                rejection_counts["stale_data"] += 1
                                 continue
                         except Exception:
                             pass
@@ -428,7 +429,7 @@ def start():
                     # micro-cap could pass all 15m filters and fire an alert.
                     # The ₹50 floor matches daily_builder's MIN_PRICE and both other
                     # scanners, keeping the universe consistent across all timeframes.
-                    if candle_close < 50.0:
+                    if candle_close < MIN_STOCK_PRICE:
                         rejection_counts["penny_stock"] += 1
                         continue
 
