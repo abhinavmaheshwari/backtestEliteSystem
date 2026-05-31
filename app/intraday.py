@@ -95,9 +95,12 @@ def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "5d", interval: 
                 logger.warning(f"⚠️ Empty response for batch {i // batch_size + 1}")
                 continue
 
-            # Parse batch results — yfinance returns different structures for single vs multi-ticker
-            if len(batch) == 1:
-                # Single ticker: plain DataFrame (group_by has no effect)
+            # Detect actual structure returned — don't trust len(batch).
+            # If 29 of 30 tickers are suspended/delisted, yfinance returns a flat
+            # DataFrame for the one survivor instead of a MultiIndex, so checking
+            # len(batch)==1 would misroute it into the MultiIndex branch and drop it.
+            if not isinstance(batch_data.columns, pd.MultiIndex):
+                # Flat DataFrame — only one ticker survived in this batch
                 all_data[batch[0]] = batch_data.reset_index()
             else:
                 # Multi-ticker: MultiIndex columns (Ticker, OHLCV) with group_by='ticker'
@@ -150,9 +153,9 @@ def start():
         logger.info("=" * 80)
         logger.info(f"⚡ INTRADAY SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
-        
+
+        sleep_time = 300  # default; replaced with precise dynamic value after scan completes
         try:
-            # Load watchlist
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
                 logger.info(f"📋 Watchlist loaded | {len(watchlist)} stocks")
@@ -474,10 +477,17 @@ def start():
             if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
-            logger.info("💤 Next scan in 5 minutes")
+            # Dynamic sleep: keep cycle cadence at exactly 300s regardless of scan duration.
+            # Without this, a 45s scan causes the loop to fire every 345s, drifting 45s
+            # per cycle — a full 5-minute lag accumulates over a 6-hour trading day.
+            elapsed     = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time  = max(0, 300 - elapsed)
+            logger.info(f"💤 Scan took {elapsed:.1f}s — sleeping {sleep_time:.1f}s to hit 5-min cadence")
             logger.info("=" * 80)
-        
+
         except Exception:
             logger.exception("❌ CRITICAL SCAN ERROR")
-        
-        time.sleep(300)  # 5 minute sleep
+            elapsed    = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time = max(0, 300 - elapsed)
+
+        time.sleep(sleep_time)
