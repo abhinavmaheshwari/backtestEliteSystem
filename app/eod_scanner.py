@@ -141,7 +141,7 @@ def seconds_until_eod() -> int:
 
 def fetch_watchlist_data(
     watchlist: pd.DataFrame,
-    period: str = "1y",
+    period: str = "2y",
     interval: str = "1d"
 ) -> dict[str, pd.DataFrame]:
     """
@@ -152,6 +152,10 @@ def fetch_watchlist_data(
     dict[str, pd.DataFrame]  — {symbol: ohlcv_df}, only successfully downloaded symbols
 
     Each DataFrame has columns: Date, Open, High, Low, Close, Volume (reset index).
+
+    NOTE: period defaults to "2y" (not "1y") because the 52W Breakout signal requires
+    252 bars of daily data. With 2 years of history (~504 bars) there is sufficient
+    buffer even after dropna() removes a few rows — ensuring HIGH_252D is never NaN.
     """
     symbols    = watchlist["Stock"].tolist()
     all_data   = {}
