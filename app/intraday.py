@@ -227,6 +227,7 @@ def start():
                 "upper_wick":        0,
                 "low_volume":        0,
                 "low_avg_volume":    0,
+                "penny_stock":       0,   # FIX GAP 2: added — sub-₹50 gate was missing
                 "rsi_range":         0,
                 "rsi_not_rising":    0,
                 "low_score":         0,
@@ -381,6 +382,16 @@ def start():
                     # ── FILTER 6: AVG VOLUME FLOOR ───────────────────────────────────
                     if avg_volume < MIN_VOLUME_AVG:
                         rejection_counts["low_avg_volume"] += 1
+                        continue
+
+                    # ── FILTER 6B: MINIMUM PRICE (penny stock gate) ──────────────────
+                    # FIX GAP 2: live_scanner and eod_scanner both hard-reject stocks
+                    # below ₹50. intraday.py was missing this gate entirely — a ₹12
+                    # micro-cap could pass all 15m filters and fire an alert.
+                    # The ₹50 floor matches daily_builder's MIN_PRICE and both other
+                    # scanners, keeping the universe consistent across all timeframes.
+                    if candle_close < 50.0:
+                        rejection_counts["penny_stock"] += 1
                         continue
 
                     # ── FILTER 7: RSI RANGE ──────────────────────────────────────────
