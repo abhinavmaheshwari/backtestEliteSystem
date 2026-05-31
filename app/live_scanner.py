@@ -48,6 +48,7 @@ from config import (
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
+    DEDUP_DAYS,
 )
 
 # =====================================================================================
@@ -198,8 +199,8 @@ def start():
 
     # FIX 4: DB init inside start(), not at module level
     init_db()
-    cleanup_old_alerts(days=7)
-    logger.info("✅ 1H scanner ready | DB initialized | 7-day dedup window active")
+    cleanup_old_alerts(days=DEDUP_DAYS)
+    logger.info(f"✅ 1H scanner ready | DB initialized | {DEDUP_DAYS}-day dedup window active")
 
     while True:
 
