@@ -104,20 +104,46 @@ def wait_for_window(name: str):
 
 from config import WATCHLIST_PATH
 
-if not os.path.exists(WATCHLIST_PATH):
+# ── WATCHLIST PRE-FLIGHT — FIX GAP 5: non-blocking ──────────────────────────
+#
+# PROBLEM: the original synchronous build_watchlist() call (30–60s) blocked ALL
+# three scanner threads at t.start() until it finished. Railway's health check
+# or process monitor could interpret this silent pause as a hang and restart.
+#
+# FIX: Run the initial build in a background thread so main.py reaches the
+# thread-start loop and the alive-monitor loop immediately. The build thread logs
+# clearly when it finishes (or fails). Scanners that need the watchlist and find
+# it missing will trigger their own inline rebuild at first scan attempt.
+#
+# A threading.Event lets the alive-monitor log a one-time notice if the scanners
+# start before the build finishes, rather than silently racing.
+#
+import threading as _threading
 
-    logger.info("📋 Watchlist missing | Running daily builder...")
+_watchlist_ready = _threading.Event()
 
+def _build_watchlist_background():
+    """Runs build_watchlist() in a daemon thread at startup (non-blocking)."""
+    if os.path.exists(WATCHLIST_PATH):
+        logger.info(f"✅ Watchlist found | {WATCHLIST_PATH}")
+        _watchlist_ready.set()
+        return
+    logger.info("📋 Watchlist missing | Running daily builder in background thread...")
     try:
         from daily_builder import build_watchlist
         build_watchlist()
-        logger.info("✅ Watchlist built successfully")
-
+        logger.info("✅ Watchlist built successfully (background)")
     except Exception:
-        logger.exception("❌ Daily builder failed")
+        logger.exception("❌ Daily builder failed — scanners will rebuild at first scan cycle")
+    finally:
+        _watchlist_ready.set()   # release even on failure so nothing waits forever
 
-else:
-    logger.info(f"✅ Watchlist found | {WATCHLIST_PATH}")
+_watchlist_thread = _threading.Thread(
+    target=_build_watchlist_background,
+    name="WatchlistBuilder",
+    daemon=True,
+)
+_watchlist_thread.start()
 
 # =====================================================================================
 # SCANNER THREADS — FIX: Import then call function, don't rely on module-level loops
@@ -204,8 +230,13 @@ if __name__ == "__main__":
     logger.info("📊 eod_scanner.py  | 1D  | Opens 06:30 PM")
     logger.info("=" * 70)
 
-    # Keep main thread alive — also monitor for dead threads and log clearly
+    # Keep main thread alive — also monitor for dead threads and log clearly.
+    # Log once when the background watchlist build completes (Gap 5 FIX).
+    _logged_ready = False
     while True:
+        if not _logged_ready and _watchlist_ready.is_set():
+            logger.info("✅ Watchlist build complete — all scanners can proceed")
+            _logged_ready = True
         for t in threads:
             if not t.is_alive():
                 logger.critical(
