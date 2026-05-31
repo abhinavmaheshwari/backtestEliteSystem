@@ -154,7 +154,7 @@ def start():
         logger.info(f"⚡ INTRADAY SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
 
-        sleep_time = 300  # default; replaced with precise dynamic value after scan completes
+        sleep_time = 300  # default; always defined before the try so except can use it safely
         try:
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
