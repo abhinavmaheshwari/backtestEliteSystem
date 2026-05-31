@@ -429,7 +429,6 @@ def start():
                 from datetime import date as _date
                 rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
 
-            scan_start_inner   = scan_start   # alias for clarity — already set before try
             total_alerts       = 0
             alerts_by_category = {}
 
@@ -525,6 +524,11 @@ def start():
 
                     latest = ticker.iloc[-1]
 
+                    # ── RSI AVAILABILITY GUARD ───────────────────────────────────────
+                    if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
+                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
+                        continue
+
                     # ── STALE DATA GUARD ─────────────────────────────────────────────
                     # A halted or illiquid stock may return daily data ending several
                     # days ago. The EOD scan runs at 6:30 PM so any candle not dated
@@ -539,13 +543,14 @@ def start():
                             if _last_ts.tzinfo is not None:
                                 _last_ts = _last_ts.tz_convert("Asia/Kolkata")
                             if _last_ts.date() != ist_now.date():
-                                rejection_counts["stale_data"] = rejection_counts.get("stale_data", 0) + 1
+                                rejection_counts["stale_data"] += 1
                                 continue
                         except Exception:
                             pass
 
 
                     # can't inflate its own average and understate the surge multiple.
+                    latest_volume = float(latest["Volume"])
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
