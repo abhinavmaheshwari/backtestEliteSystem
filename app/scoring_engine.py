@@ -1,714 +1,725 @@
 # =====================================================================================
-# app/scoring_engine.py
+# app/sector_rotation.py
+# SECTOR ROTATION ENGINE
 #
 # WHAT THIS FILE DOES:
-#   Calculates a composite quality score (0–100) for each candidate stock that has
-#   passed the scanner's upstream filter stack. The score is used as a final gate —
-#   only stocks above the scanner-specific threshold (72/75/78) generate alerts.
+#   Computes relative strength of each NSE sector vs the Nifty 50 benchmark.
+#   Called ONCE per scan attempt (outside the per-stock loop) to build a
+#   sector → RS classification map.  Each stock in the watchlist is then looked
+#   up by symbol at zero extra cost — no additional downloads per stock.
 #
-#   The score has two layers:
-#     1. HARD DISQUALIFIERS — if any fire, score returns 0 immediately (no partial credit)
-#     2. ADDITIVE SCORING — five independent components, each with a max point budget
-#
-# SCORING BREAKDOWN (max 100 + bonuses):
-#   Category weight   — 30 pts   (stock quality tier: Elite/High Growth/Mature)
-#   Breakout signals  — 25 pts   (signal count × 8, capped at 3; +1 for 52W signal)
-#   RSI quality       — 15 pts   (sweet-spot band + direction bonus)
-#   Volume quality    — 20 pts   (surge intensity)
-#   Trend strength    — 10 pts   (MA alignment + ADX + MACD)
-#   Bonus modifiers   — up to +21 pts (sustained vol, bull stack, RSI accel, close pos,
-#                                      climax, ATR quality, delivery conviction)
-#
-# HARD DISQUALIFIERS (returns 0 immediately):
-#   1. Avg volume < 50K (illiquid — unreliable fills)
-#   2. Volume spike on bearish close (distribution — smart money selling)
-#   3. Upper wick > 40% of range (rejection candle — buyers lost control)
-#   4. ADX < 22 (no directional trend — choppy market)
-#   5. RSI divergence: price ↑ but RSI ↓ over lookback window (hidden weakness)
-#   6. Price above BB upper with volume ratio < 1.8 (overextension without conviction)
-#   7. 3 doji/narrow candles in last 4 bars (pre-breakout exhaustion)
-#
-# CHANGES FROM PREVIOUS VERSION:
-#   + FIX GAP 1: SCORE_CATEGORY expanded to include all Financial path categories
-#     produced by daily_builder.py. Previously "Financial Compounder", "Financial High
-#     Growth", "Financial Mature Quality", and "Financial Turnaround" all scored 0
-#     category points, putting every Financial sector stock at a ~30-point disadvantage
-#     vs non-financial peers at the same quality tier.
-#
-#     Financial weights are set equal to their non-financial analogues:
-#       "Financial High Growth"    → 22 pts  (same as "High Growth")
-#       "Financial Compounder"     → 30 pts  (same as "Elite Compounder")
-#       "Financial Mature Quality" → 14 pts  (same as "Mature Quality")
-#       "Financial Turnaround"     →  8 pts  (same as "Turnaround")
-#       "Turnaround"               →  8 pts  (added; was also missing from old map)
-#       "Steady Compounder"        → 18 pts  (between High Growth and Mature Quality)
-#
-#     Matching is still first-match-wins (dict ordered highest-points-first) so a
-#     stock categorised "Financial Compounder + Financial Mature Quality" earns only
-#     30 pts (the Financial Compounder score) — no double-counting.
-#
-#   + timeframe parameter added to calculate_score() — scoring engine now knows which
-#     scanner called it and adjusts behaviour accordingly
-#   + EOD disqualifier #5 (RSI divergence) aligned with eod_scanner hidden divergence
-#     check: uses 5-bar lookback on daily, 6-bar on intraday/1H (was always 6-bar)
-#   + Gap-up chase penalty (-5) skipped for EOD timeframe — the ATR filter in
-#     eod_scanner already hard-rejects exhaustion moves before scoring. Keeping the
-#     flat 8% penalty on daily would double-penalise a condition already upstream-gated
-#   + NEW BONUS: ATR quality bonus (+3) — move of 1.0–2.0× ATR on high volume is the
-#     ideal breakout signature. Rewards sustainable breakouts over marginal ones
-#   + NEW BONUS: Delivery conviction bonus (up to +6 pts EOD, +3 pts intraday/1H).
-#     EOD uses same-day bhavcopy; intraday/1H use previous day's bhavcopy as a proxy
-#     for overnight positional conviction. Requires delivery_pct passed from scanners.
-#   + FIX: SCORE_CATEGORY now uses ordered first-match-wins iteration instead of
-#     summing all matching keys. Matching is still substring-based (label in category)
-#     so multi-label strings like "Elite Compounder + High Growth" work naturally:
-#     "Elite Compounder" matches first (30 pts, highest) and the loop stops — no
-#     double-counting. Dict is ordered highest-points-first to guarantee this.
-#   + Disqualifier #8 (unsustained volume hard block) removed — was already softened
-#     to -8 penalty in previous version; now lives only in bonus_modifiers as penalty
-#   + All disqualifiers now log the specific value that triggered them
+# DESIGN PRINCIPLES:
+#   • NEVER hard-filters stocks. Rotation status is a score modifier only.
+#   • Fully graceful degradation.
+#   • Sector lookup is symbol-driven, not category-driven.
 # =====================================================================================
 
 import logging
+import threading
+import yfinance as yf
+import pandas as pd
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+IST    = ZoneInfo("Asia/Kolkata")
 
 # =====================================================================================
-# CATEGORY WEIGHTS
-#
-# FIX GAP 1: Expanded from 3 keys to 10 to cover all categories daily_builder.py
-# can produce (both PATH A non-financial and PATH B financial).
-#
-# Matching uses substring search so "Financial Compounder + Financial Mature Quality"
-# hits "Financial Compounder" first (highest points) and stops — no double-counting.
-# Keys are ordered highest-points-first to make first-match = best-match.
-#
-# Why these point values?
-#   Financial Compounder = Elite Compounder (30): both represent the highest-quality
-#     compounding businesses — one in manufacturing/tech, the other in banking/NBFC.
-#     HDFC Bank meets the same quality bar as INFY; the scoring engine should treat them
-#     equivalently. Using a lower weight would systematically undercount financial
-#     sector breakouts for no fundamental reason.
-#   Financial High Growth = High Growth (22): same logic — fast NII/profit growth for
-#     a bank is equivalent to fast gross-profit growth for a tech company.
-#   Financial Mature Quality = Mature Quality (14): large stable bank, same archetype
-#     as a large stable conglomerate or blue-chip manufacturer.
-#   Steady Compounder (18): positioned between High Growth and Mature Quality because
-#     it implies consistent double-digit growth without the acceleration of High Growth.
-#   Financial Turnaround = Turnaround (8): recovery plays — rewards real earnings
-#     improvement without over-rewarding turnarounds (which carry more uncertainty).
+# SECTOR ETF MAP
 # =====================================================================================
 
-SCORE_CATEGORY = {
-    # ── Non-financial (PATH A) ────────────────────────────────────────────────────
-    "Elite Compounder":     30,   # High ROE + clean growth + low debt
-    "High Growth":          22,   # YoY sales + profit > 15%
-    "Steady Compounder":    18,   # YoY sales + profit > 10% with solid ROE
-    "Mature Quality":       14,   # Large cap, ROE ≥ 15%, low debt
-    "Turnaround":            8,   # Profit recovery ≥ 30% with improving margins
+SECTOR_ETF_MAP: dict[str, str] = {
+    "IT":             "ITETF.NS",
+    "Pharma":         "PHARMIETF.NS",    # was PHARMABEES.NS (delisted/renamed)
+    "Banking":        "BANKBEES.NS",
+    "FMCG":           "FMCGIETF.NS",
+    "Auto":           "AUTOIETF.NS",
+    "Metal":          "METALIETF.NS",
+    "Realty":         "REAIETF.NS",
+    "Energy":         "ENERGIETF.NS",
+    "Infrastructure": "INFRAIETF.NS",
+    "PSU Bank":       "PSUBNKIETF.NS",
+    "Defence":        "DEFEFIETF.NS",
+    "MNC":            "MNCIETF.NS",
+    "Consumption":    "CONSIETF.NS",
+    "Financials":     "FINIETF.NS",       
+    "Capital Goods":  "CGIETF.NS",        
+    "Chemicals":      "CHEMIETF.NS",      
+    # "Telecom": intentionally omitted — TELE.NS is delisted and no liquid standalone
+    #            telecom sector ETF exists on NSE. Telecom stocks receive sector_bonus=0,
+    #            which is neutral (no penalty). Re-add if a valid ETF is listed.
 
-    # ── Financial (PATH B) — set equal to non-financial analogues ─────────────────
-    "Financial Compounder":     30,   # Steady NII growth + ROE ≥ 15% + ROA ≥ 1%
-    "Financial High Growth":    22,   # NII YoY ≥ 15% + net income YoY ≥ 15%
-    "Financial Mature Quality": 14,   # Large-cap bank, ROE ≥ 15%, ROA ≥ 1%
-    "Financial Turnaround":      8,   # Profit recovery ≥ 25% YoY with stable NII
+    "Railways":       "INFRAIETF.NS",     # Proxy
+    "Electronics":    "MANUIETF.NS",      # Proxy
+}
+
+BENCHMARK_TICKER      = "^NSEI"
+RS_LOOKBACK_DAYS      = 20    
+MOMENTUM_LOOKBACK_DAYS = 5    
+DOWNLOAD_PERIOD       = "60d"
+MIN_BARS_REQUIRED     = RS_LOOKBACK_DAYS + MOMENTUM_LOOKBACK_DAYS + 5
+HIGHLIGHT_THRESHOLD_PCT = 5.0  
+
+# =====================================================================================
+# NSE SYMBOL → SECTOR MAP (SYNCHRONIZED WITH DAILY_BUILDER)
+# =====================================================================================
+
+NSE_SECTOR_MAP: dict[str, str] = {
+    # ── IT ───────────────────────────────────────────────────────────────────────────
+    "TCS": "IT", "INFY": "IT", "WIPRO": "IT", "HCLTECH": "IT", "TECHM": "IT",
+    "LTIM": "IT", "MPHASIS": "IT", "PERSISTENT": "IT", "COFORGE": "IT",
+    "OFSS": "IT", "KPITTECH": "IT", "TATAELXSI": "IT", "MASTEK": "IT",
+    "HEXAWARE": "IT", "NIITTECH": "IT", "RATEGAIN": "IT", "NEWGEN": "IT",
+    "ZENSARTECH": "IT", "BIRLASOFT": "IT",
+    "SONATSOFTW": "IT", "HAPPSTMNDS": "IT", "INTELLECT": "IT",
+    "TANLA": "IT", "ECLERX": "IT", "ROUTE": "IT",
+    "DATAMATICS": "IT", "CYIENT": "IT",
+
+    # ── Pharma ───────────────────────────────────────────────────────────────────────
+    "SUNPHARMA": "Pharma", "DRREDDY": "Pharma", "CIPLA": "Pharma",
+    "DIVISLAB": "Pharma", "AUROPHARMA": "Pharma", "TORNTPHARM": "Pharma",
+    "ALKEM": "Pharma", "LUPIN": "Pharma", "ABBOTINDIA": "Pharma",
+    "GLAXO": "Pharma", "PFIZER": "Pharma", "SANOFI": "Pharma",
+    "LALPATHLAB": "Pharma", "METROPOLIS": "Pharma", "POLYMED": "Pharma",
+    "GRANULES": "Pharma", "AJANTPHARM": "Pharma", "NATCOPHARM": "Pharma",
+    "IPCALAB": "Pharma", "GLAND": "Pharma", "ERIS": "Pharma",
+    "SYNGENE": "Pharma", "LAURUSLABS": "Pharma",
+    "BIOCON": "Pharma", "ZYDUSLIFE": "Pharma",
+    "CAPLIPOINT": "Pharma", "SUVENPHAR": "Pharma",
+    "WOCKPHARMA": "Pharma", "KIMS": "Pharma",
+    "MEDANTA": "Pharma", "RAINBOW": "Pharma",
+    "VIJAYA": "Pharma", "THYROCARE": "Pharma",
+    "STARHEALTH": "Pharma",
+
+    # ── Banking ───────────────────────────────────────────────────────────────────────
+    "HDFCBANK": "Banking", "ICICIBANK": "Banking", "KOTAKBANK": "Banking",
+    "AXISBANK": "Banking", "INDUSINDBK": "Banking", "FEDERALBNK": "Banking",
+    "BANDHANBNK": "Banking", "IDFCFIRSTB": "Banking", "RBLBANK": "Banking",
+    "AUBANK": "Banking", "YESBANK": "Banking", "DCBBANK": "Banking",
+    "KARNATAKA": "Banking", "CSBBANK": "Banking",
+    "CUB": "Banking", "KVB": "Banking",
+
+    # ── PSU Bank ──────────────────────────────────────────────────────────────────────
+    "SBIN": "PSU Bank", "BANKBARODA": "PSU Bank", "PNB": "PSU Bank",
+    "CANBK": "PSU Bank", "UNIONBANK": "PSU Bank", "INDIANB": "PSU Bank",
+    "BANKINDIA": "PSU Bank", "MAHABANK": "PSU Bank", "IOB": "PSU Bank",
+    "UCOBANK": "PSU Bank", "CENTRALBK": "PSU Bank",
+
+    # ── Financials ───────────────────────────────────────────────────────────────────
+    "BAJFINANCE": "Financials", "BAJAJFINSV": "Financials",
+    "CHOLAFIN": "Financials", "SHRIRAMFIN": "Financials",
+    "MUTHOOTFIN": "Financials", "MANAPPURAM": "Financials",
+    "LICHSGFIN": "Financials", "HDFCAMC": "Financials",
+    "NAM-INDIA": "Financials", "360ONE": "Financials",
+    "ANGELONE": "Financials", "MOTILALOFS": "Financials",
+    "CDSL": "Financials", "BSE": "Financials",
+    "KFINTECH": "Financials", "MCX": "Financials",
+    "SBICARD": "Financials",
+
+    # ── FMCG ──────────────────────────────────────────────────────────────────────────
+    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG",
+    "BRITANNIA": "FMCG", "DABUR": "FMCG", "MARICO": "FMCG",
+    "COLPAL": "FMCG", "GODREJCP": "FMCG", "EMAMILTD": "FMCG",
+    "VBL": "FMCG", "UBL": "FMCG", "MCDOWELL-N": "FMCG",
+    "RADICO": "FMCG", "TATACONSUM": "FMCG", "JYOTHYLAB": "FMCG",
+    "PAGEIND": "FMCG",
+
+    # ── Auto ──────────────────────────────────────────────────────────────────────────
+    "MARUTI": "Auto", "TATAMOTORS": "Auto", "M&M": "Auto",
+    "BAJAJ-AUTO": "Auto", "HEROMOTOCO": "Auto", "EICHERMOT": "Auto",
+    "TVSMOTORS": "Auto", "ASHOKLEY": "Auto", "TIINDIA": "Auto",
+    "MOTHERSON": "Auto", "BOSCHLTD": "Auto", "BHARATFORG": "Auto",
+    "BALKRISIND": "Auto", "APOLLOTYRE": "Auto", "MRF": "Auto",
+    "CEATLTD": "Auto", "EXIDEIND": "Auto", "AMARARAJA": "Auto",
+    "SUNDRMFAST": "Auto", "SUBROS": "Auto",
+    "SONACOMS": "Auto", "UNOMINDA": "Auto",
+    "SUPRAJIT": "Auto", "ENDURANCE": "Auto",
+    "GABRIEL": "Auto", "SCHAEFFLER": "Auto",
+    "FIEMIND": "Auto", "OLECTRA": "Auto",
+    "GREAVESCOT": "Auto",
+
+    # ── Metal ─────────────────────────────────────────────────────────────────────────
+    "TATASTEEL": "Metal", "JSWSTEEL": "Metal", "SAIL": "Metal",
+    "HINDALCO": "Metal", "VEDL": "Metal", "NMDC": "Metal",
+    "NATIONALUM": "Metal", "APLAPOLLO": "Metal", "RATNAMANI": "Metal",
+    "WELSPUNLIV": "Metal", "JINDALSTEL": "Metal", "JSWISPL": "Metal",
+    "HINDZINC": "Metal", "MOIL": "Metal", "SHYAMMETL": "Metal",
+
+    # ── Energy ───────────────────────────────────────────────────────────────────────
+    "RELIANCE": "Energy", "ONGC": "Energy", "BPCL": "Energy",
+    "IOC": "Energy", "HINDPETRO": "Energy", "GAIL": "Energy",
+    "PETRONET": "Energy", "NTPC": "Energy", "POWERGRID": "Energy",
+    "TATAPOWER": "Energy", "ADANIPOWER": "Energy",
+    "ADANIGREEN": "Energy", "TORNTPOWER": "Energy",
+    "CESC": "Energy", "JSWENERGY": "Energy",
+    "NHPC": "Energy", "SJVN": "Energy",
+    "IREDA": "Energy", "SUZLON": "Energy",
+    "KPIGREEN": "Energy", "INDOXWIND": "Energy",
+    "WAAREEENER": "Energy", "INOXGREEN": "Energy",
+
+    # ── Realty ───────────────────────────────────────────────────────────────────────
+    "DLF": "Realty", "GODREJPROP": "Realty",
+    "OBEROIRLTY": "Realty", "PRESTIGE": "Realty",
+    "BRIGADE": "Realty", "SOBHA": "Realty",
+    "PHOENIXLTD": "Realty", "MAHLIFE": "Realty",
+    "LODHA": "Realty", "SUNTECK": "Realty",
+    "KOLTEPATIL": "Realty", "ARVIND": "Realty",
+
+    # ── Infrastructure ────────────────────────────────────────────────────────────────
+    "LT": "Infrastructure", "LTTS": "Infrastructure",
+    "IRCON": "Infrastructure", "RVNL": "Infrastructure",
+    "IRFC": "Infrastructure", "RECLTD": "Infrastructure",
+    "PFC": "Infrastructure", "ADANIPORTS": "Infrastructure",
+    "GMRINFRA": "Infrastructure", "AIAENGLTD": "Infrastructure",
+    "CUMMINSIND": "Infrastructure", "ABB": "Infrastructure",
+    "SIEMENS": "Infrastructure", "HAVELLS": "Infrastructure",
+    "KEI": "Infrastructure", "POLYCAB": "Infrastructure",
+    "KALPATPOWR": "Infrastructure", "KEC": "Infrastructure",
+    "ENGINERSIN": "Infrastructure", "NBCC": "Infrastructure",
+    "PSPPROJECT": "Infrastructure",
+
+    # ── Capital Goods ────────────────────────────────────────────────────────────────
+    "SKFINDIA": "Capital Goods",
+    "THERMAX": "Capital Goods",
+    "KAYNES": "Capital Goods",
+    "DIXON": "Capital Goods",
+    "SYRMA": "Capital Goods",
+    "CGPOWER": "Capital Goods",
+    "VOLTAS": "Capital Goods",
+    "BLUESTARCO": "Capital Goods",
+
+    # ── Railways ─────────────────────────────────────────────────────────────────────
+    "RAILTEL": "Railways",
+    "TITAGARH": "Railways",
+    "TEXRAIL": "Railways",
+    "JWL": "Railways",
+    "CONCOR": "Railways",
+
+    # ── Defence ──────────────────────────────────────────────────────────────────────
+    "HAL": "Defence", "BEL": "Defence",
+    "COCHINSHIP": "Defence", "MAZDOCK": "Defence",
+    "GRSE": "Defence", "MIDHANI": "Defence",
+    "PARAS": "Defence", "DATAPATTNS": "Defence",
+    "BHEL": "Defence", "BEML": "Defence",
+    "ASTRA": "Defence", "MTAR": "Defence",
+    "BDL": "Defence", "ZENTECH": "Defence",
+    "IDEAFORGE": "Defence",
+    "DCXINDIA": "Defence",
+    "SOLARINDS": "Defence",
+    "CYIENTDLM": "Defence",
+
+    # ── MNC ───────────────────────────────────────────────────────────────────────────
+    "ASIANPAINT": "MNC", "PIDILITIND": "MNC",
+    "3MINDIA": "MNC", "HONAUT": "MNC",
+    "SCHNEIDER": "MNC", "GILLETTE": "MNC",
+
+    # ── Consumption ──────────────────────────────────────────────────────────────────
+    "DMART": "Consumption", "TRENT": "Consumption",
+    "ZOMATO": "Consumption", "NYKAA": "Consumption",
+    "INDIAMART": "Consumption", "IRCTC": "Consumption",
+    "JUBLFOOD": "Consumption", "DEVYANI": "Consumption",
+    "SAPPHIRE": "Consumption", "WESTLIFE": "Consumption",
+    "BARBEQUE": "Consumption", "EASEMYTRIP": "Consumption",
+    "ABFRL": "Consumption", "VMART": "Consumption",
+    "SHOPERSTOP": "Consumption", "ETHOSLTD": "Consumption",
+    "MANYAVAR": "Consumption", "REDTAPE": "Consumption",
+    "MEDPLUS": "Consumption",
+
+    # ── Chemicals ────────────────────────────────────────────────────────────────────
+    "DEEPAKNTR": "Chemicals",
+    "SRF": "Chemicals",
+    "NAVINFLUOR": "Chemicals",
+    "FLUOROCHEM": "Chemicals",
+    "TATACHEM": "Chemicals",
+    "AARTIIND": "Chemicals",
+    "ALKYLAMINE": "Chemicals",
+
+    # ── Telecom ──────────────────────────────────────────────────────────────────────
+    "BHARTIARTL": "Telecom",
+    "INDUSTOWER": "Telecom",
+    "TEJASNET": "Telecom",
+    "HFCL": "Telecom",
+
+    # ── Electronics ──────────────────────────────────────────────────────────────────
+    "PGEL": "Electronics",
+    "AVALON": "Electronics",
 }
 
 # =====================================================================================
-# RSI DIVERGENCE LOOKBACK — per timeframe
+# TV_SECTOR_TO_ROTATION
 #
-# EOD uses 5 bars (= 1 trading week) to match eod_scanner's hidden divergence check.
-# Intraday and 1H use 6 bars — the previous default, appropriate for shorter bars
-# where 5 bars is too short a window to be statistically meaningful.
+# TradingView Screener returns sector names that do NOT match SECTOR_ETF_MAP keys.
+# Example: TV returns "Technology" but our ETF map key is "IT".
+#
+# This dict translates TV sector strings → SECTOR_ETF_MAP keys so that stocks
+# whose sector comes directly from the watchlist parquet (built by daily_builder.py)
+# can be matched correctly without relying on NSE_SECTOR_MAP symbol lookups.
+#
+# Unmapped TV sectors produce no bonus (return 0) — safe and explicit.
 # =====================================================================================
 
-RSI_DIVERGENCE_LOOKBACK = {
-    "1d":  5,
-    "1h":  6,
-    "15m": 6,
+TV_SECTOR_TO_ROTATION: dict[str, str] = {
+    # Technology
+    "Technology":               "IT",
+    "Software":                 "IT",
+
+    # Healthcare / Pharma
+    "Health Technology":        "Pharma",
+    "Health Services":          "Pharma",
+    "Pharmaceuticals":          "Pharma",
+    "Healthcare":               "Pharma",
+
+    # Banking
+    "Banks":                    "Banking",
+    "Commercial Banks":         "Banking",
+    "Public Sector Banks":      "PSU Bank",
+    "PSU Banks":                "PSU Bank",
+
+    # Finance / NBFC / Insurance
+    "Finance":                  "Financials",
+    "Financial Services":       "Financials",
+    "Insurance":                "Financials",
+    "Diversified Financials":   "Financials",
+
+    # FMCG / Consumer
+    "Consumer Non-Durables":    "FMCG",
+    "Food & Beverages":         "FMCG",
+    "Beverages":                "FMCG",
+    "Tobacco":                  "FMCG",
+    "Household Products":       "FMCG",
+
+    # Auto / Ancillaries
+    "Producer Manufacturing":   "Auto",
+    "Consumer Durables":        "Auto",
+    "Automobiles":              "Auto",
+    "Auto Components":          "Auto",
+
+    # Metals / Mining
+    "Non-Energy Minerals":      "Metal",
+    "Metals & Mining":          "Metal",
+    "Steel":                    "Metal",
+    "Aluminum":                 "Metal",
+
+    # Energy / Power / Oil
+    "Energy Minerals":          "Energy",
+    "Oil & Gas":                "Energy",
+    "Utilities":                "Energy",
+    "Power":                    "Energy",
+    "Renewable Energy":         "Energy",
+
+    # Infrastructure / Capital Goods / Engineering
+    "Industrial Services":      "Infrastructure",
+    "Transportation":           "Infrastructure",
+    "Engineering":              "Infrastructure",
+    "Construction":             "Infrastructure",
+
+    # Realty
+    "Real Estate":              "Realty",
+    "Real Estate Investment Trusts": "Realty",
+
+    # Chemicals
+    "Process Industries":       "Chemicals",
+    "Chemicals":                "Chemicals",
+    "Specialty Chemicals":      "Chemicals",
+
+    # Telecom
+    "Communications":           "Telecom",
+    "Telecommunication Services": "Telecom",
+    "Telecom":                  "Telecom",
+
+    # Retail / Consumption
+    "Retail Trade":             "Consumption",
+    "Consumer Services":        "Consumption",
+    "Food Service":             "Consumption",
+
+    # Electronics / EMS
+    "Electronic Technology":    "Electronics",
+    "Electronics":              "Electronics",
+    "Semiconductors":           "Electronics",
+
+    # Capital Goods (direct match)
+    "Capital Goods":            "Capital Goods",
+    "Electrical Equipment":     "Capital Goods",
+    "Industrial Machinery":     "Capital Goods",
+
+    # Defence
+    "Defence":                  "Defence",
+    "Aerospace & Defence":      "Defence",
+
+    # MNC (no direct TV equivalent — left unmapped intentionally)
 }
 
 # =====================================================================================
-# DELIVERY CONVICTION THRESHOLDS
-#
-# EOD: same-day bhavcopy — full bonus (max +6 pts)
-# Intraday / 1H: previous-day bhavcopy — halved bonus (max +3 pts)
-#
-# These bands determine how many base points a stock earns based on its NSE
-# delivery percentage. The intraday/1H bonus is halved because prior-day data
-# is one session stale.
-#
-# Why these thresholds?
-#   < 25%: The day's volume was dominated by intraday traders and F&O hedgers.
-#          The volume ratio looks impressive but doesn't represent real buyers
-#          accumulating stock. No bonus — the volume signal is partially misleading.
-#   25–39%: Mixed participation. Some positional interest but not institutional-grade.
-#           Small bonus to acknowledge the partial confirmation.
-#   40–59%: Solid delivery. More than one-third of the day's volume was positional.
-#           This is the threshold most experienced swing traders look for. Good bonus.
-#   ≥ 60%:  High conviction delivery. Institutions and HNIs took delivery aggressively.
-#           Combined with 2× volume and strong candle structure, this is as good as it
-#           gets for a daily breakout setup. Maximum bonus.
+# DATA CLASSES
 # =====================================================================================
 
-DELIVERY_BONUS_TIERS = [
-    (60.0, 6),   # ≥ 60% delivery → +6 pts (institutional conviction)
-    (40.0, 4),   # ≥ 40% delivery → +4 pts (solid positional interest)
-    (25.0, 2),   # ≥ 25% delivery → +2 pts (moderate delivery)
-    (0.0,  0),   # < 25% delivery → +0 pts (intraday churn, no bonus)
-]
+@dataclass
+class SectorScore:
+    name:               str
+    etf_ticker:         str
+    rs_value:           float    # sector_return / nifty_return  (1.0 = inline with Nifty)
+    rs_momentum:        float    # RS change over MOMENTUM_LOOKBACK_DAYS (+ve = accelerating)
+    outperformance_pct: float    # (rs_value - 1) * 100  — human-readable
+    classification:     str      # LEADING / IMPROVING / WEAKENING / LAGGING
+    sector_return_pct:  float
+    nifty_return_pct:   float
+    bars_available:     int
+
+
+@dataclass
+class SectorRotationResult:
+    scores:           dict[str, SectorScore]   # sector_name → SectorScore
+    strong_sectors:   set[str]                 # LEADING + IMPROVING
+    weak_sectors:     set[str]                 # WEAKENING + LAGGING
+    rotation_report:  str                      # Telegram-ready summary
+    scan_date:        date
+    nifty_return_pct: float
+    errors:           list[str] = field(default_factory=list)
+
+    def sector_for(self, symbol: str) -> Optional[str]:
+        return NSE_SECTOR_MAP.get(symbol.strip().upper())
+
+    def score_bonus_for(self, tv_sector: str) -> int:
+        """
+        Returns the sector rotation score bonus (or penalty) for a given TV sector string.
+
+        Parameters
+        ----------
+        tv_sector : str
+            TradingView sector string from the watchlist parquet (e.g. "Technology",
+            "Finance"). Translated via TV_SECTOR_TO_ROTATION before matching.
+            Pass str(sector) if sector else "Unknown" from scanner call sites.
+
+        Scanners call:
+            rotation_result.score_bonus_for(safe_sector)
+        """
+        return get_sector_score_bonus("", self, sector=tv_sector)
+
 
 # =====================================================================================
-# HARD DISQUALIFIER CHECK
+# INTERNAL HELPERS
 # =====================================================================================
 
-def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timeframe="15m", min_vol=50_000):
+def _parse_close_series(df: pd.DataFrame, label: str) -> Optional[pd.Series]:
+    """Extract a Close price series from a yfinance DataFrame (flat or MultiIndex)."""
+    if df is None or df.empty:
+        return None
+    df = df.copy()
+    df.reset_index(inplace=True)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.columns = [c.strip() for c in df.columns]
+    date_col = next((c for c in ["Date", "Datetime", "index"] if c in df.columns), None)
+    if date_col is None or "Close" not in df.columns:
+        return None
+    df[date_col] = pd.to_datetime(df[date_col])
+    series = df.sort_values(date_col).set_index(date_col)["Close"].dropna()
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    return series.astype(float)
+
+
+def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]:
     """
-    Checks for hard structural flaws that invalidate a breakout signal.
+    FIX GAP 4: Download all sector ETFs + Nifty benchmark in ONE yfinance batch call
+    instead of 20 sequential individual calls.
 
-    Parameters
-    ----------
-    ticker       : pd.DataFrame — full OHLCV + indicator data
-    latest       : pd.Series   — ticker.iloc[-1] (the bar being evaluated)
-    volume_ratio : float       — current bar volume / 20-bar average
-    symbol       : str         — used only for logging (optional)
-    timeframe    : str         — "1d", "1h", or "15m" — affects RSI divergence lookback
-    min_vol      : int         — minimum 20-bar average volume threshold (timeframe-aware).
-                                 Pass from config.SCAN_CONFIG[timeframe]["MIN_VOLUME_AVG"]
-                                 so the daily 50K floor isn't applied to 15m bars.
+    Previously: 20 calls × ~1–2s each = 20–40s total (plus rate-limit risk).
+    Now:        1 batch call = ~2–4s total regardless of universe size.
 
-    Returns
-    -------
-    (True, reason_string)  if the stock is disqualified
-    (False, None)          if all checks pass
+    Returns {ticker_symbol: close_series_or_None}.
+    Falls back to individual _download_close() for any ticker missing from the batch
+    response so a single delisted ETF can't silently null out the entire dataset.
     """
+    results: dict[str, Optional[pd.Series]] = {}
 
-    tag = f"[{symbol}] " if symbol else ""
+    if not tickers:
+        return results
 
-    # ── DISQUALIFIER 1: ILLIQUID STOCK ──────────────────────────────────────────────
-    # GAP 1 FIX: Use iloc[-21:-1] (20 bars before current) to avoid including the
-    # current breakout candle in the average, which deflates the ratio.
-    # GAP 2 FIX: Use caller-supplied min_vol instead of hardcoded 50K, so the same
-    # function works correctly for 15m bars (where 50K/bar = ~1.25M shares/day).
-    avg_vol_20 = float(ticker["Volume"].iloc[-21:-1].mean())
-    if avg_vol_20 < min_vol:
-        reason = f"Avg vol {avg_vol_20:,.0f} < {min_vol:,} (illiquid)"
-        logger.warning(f"🚫 {tag}DISQ: {reason}")
-        return True, reason
+    tickers_str = " ".join(tickers)
+    logger.info(
+        f"🔄 Sector rotation: batch downloading {len(tickers)} tickers "        f"({DOWNLOAD_PERIOD} daily)..."
+    )
 
-    # ── DISQUALIFIER 2: DISTRIBUTION CANDLE ─────────────────────────────────────────
-    candle_mid = (float(latest["High"]) + float(latest["Low"])) / 2
-    if float(latest["Close"]) < candle_mid and volume_ratio >= 2.0:
-        reason = f"High volume ({volume_ratio:.1f}x) on bearish close (distribution candle)"
-        logger.warning(f"🚫 {tag}DISQ: {reason}")
-        return True, reason
+    try:
+        raw = yf.download(
+            tickers_str,
+            period=DOWNLOAD_PERIOD,
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+            group_by="ticker",
+        )
 
-    # ── DISQUALIFIER 3: REJECTION CANDLE ────────────────────────────────────────────
-    candle_range = float(latest["High"]) - float(latest["Low"])
-    upper_wick   = float(latest["High"]) - float(latest["Close"])
-    if candle_range > 0 and (upper_wick / candle_range) > 0.40:
-        wick_pct = upper_wick / candle_range
-        reason = f"Upper wick {wick_pct:.0%} of range > 40% (rejection candle)"
-        logger.warning(f"🚫 {tag}DISQ: {reason}")
-        return True, reason
+        if raw is None or raw.empty:
+            logger.warning("⚠️  Sector batch download returned empty — falling back to individual calls")
+            for t in tickers:
+                results[t] = _download_close_single(t)
+            return results
 
-    # ── DISQUALIFIER 4: NO DIRECTIONAL TREND (ADX) ──────────────────────────────────
-    if "ADX" in ticker.columns:
-        adx_val = float(latest.get("ADX", 0) or 0)
-        if 0 < adx_val < 22:
-            reason = f"ADX {adx_val:.1f} < 22 (no directional trend — ranging market)"
-            logger.warning(f"🚫 {tag}DISQ: {reason}")
-            return True, reason
-
-    # ── DISQUALIFIER 5: RSI BEARISH DIVERGENCE ──────────────────────────────────────
-    #
-    # Lookback is timeframe-aware:
-    #   EOD (1d): 5 bars = 1 trading week — matches eod_scanner's hidden divergence check.
-    #             Any RSI decline while price rises = hard reject (no tolerance buffer).
-    #             A stock reaching this point already passed eod_scanner Filter 9B, so
-    #             this is a redundant safety net — still correct to reject.
-    #   1H / 15m: 6 bars. RSI must be down ≥ 3 points — small oscillations on short
-    #             bars are noise, not divergence. The buffer prevents false rejections.
-    #
-    if "RSI" in ticker.columns:
-        lookback = RSI_DIVERGENCE_LOOKBACK.get(timeframe, 6)
-        if len(ticker) > lookback:
-            rsi_now    = float(latest["RSI"])
-            rsi_prev   = float(ticker["RSI"].iloc[-1 - lookback])
-            close_now  = float(latest["Close"])
-            close_prev = float(ticker["Close"].iloc[-1 - lookback])
-
-            if timeframe == "1d":
-                if close_now > close_prev and rsi_now < rsi_prev:
-                    reason = (
-                        f"RSI bearish divergence [EOD]: price "
-                        f"+{(close_now/close_prev-1)*100:.1f}% "
-                        f"but RSI {rsi_prev:.1f} → {rsi_now:.1f} "
-                        f"(↓{rsi_prev-rsi_now:.1f} pts over {lookback} days)"
-                    )
-                    logger.warning(f"🚫 {tag}DISQ: {reason}")
-                    return True, reason
+        if not isinstance(raw.columns, pd.MultiIndex):
+            # Only one ticker survived (others delisted/halted) — yfinance returns flat DF.
+            # We can only safely assign it if we requested exactly 1 ticker.
+            if len(tickers) == 1:
+                results[tickers[0]] = _parse_close_series(raw, tickers[0])
             else:
-                if close_now > close_prev * 1.005 and rsi_now < rsi_prev - 3:
-                    reason = (
-                        f"RSI bearish divergence: price +{(close_now/close_prev-1)*100:.1f}% "
-                        f"but RSI {rsi_prev:.1f} → {rsi_now:.1f} "
-                        f"(↓{rsi_prev-rsi_now:.1f} pts)"
-                    )
-                    logger.warning(f"🚫 {tag}DISQ: {reason}")
-                    return True, reason
-
-    # ── DISQUALIFIER 6: OVEREXTENSION WITHOUT VOLUME ────────────────────────────────
-    if "BB_UPPER" in ticker.columns:
-        bb_upper = float(latest.get("BB_UPPER", 0) or 0)
-        if bb_upper > 0 and float(latest["Close"]) > bb_upper and volume_ratio < 1.8:
-            reason = (
-                f"Price above BB upper (₹{float(latest['Close']):.2f} > ₹{bb_upper:.2f}) "
-                f"with weak volume ({volume_ratio:.1f}x < 1.8x) — overextension risk"
-            )
-            logger.warning(f"🚫 {tag}DISQ: {reason}")
-            return True, reason
-
-    # ── DISQUALIFIER 7: PRE-BREAKOUT EXHAUSTION (DOJI CLUSTER) ─────────────────────
-    if len(ticker) >= 4:
-        exhaustion_count = 0
-        for i in range(-4, -1):
-            c    = float(ticker["Close"].iloc[i])
-            o    = float(ticker["Open"].iloc[i])
-            h    = float(ticker["High"].iloc[i])
-            l    = float(ticker["Low"].iloc[i])
-            rng  = h - l
-            body = abs(c - o)
-            if rng > 0 and (body / rng) < 0.25:
-                exhaustion_count += 1
-        if exhaustion_count >= 3:
-            reason = f"{exhaustion_count} doji/narrow candles in last 4 bars (exhaustion before breakout)"
-            logger.warning(f"🚫 {tag}DISQ: {reason}")
-            return True, reason
-
-    return False, None
-
-
-# =====================================================================================
-# BONUS SCORE MODIFIERS
-# =====================================================================================
-
-def bonus_modifiers(
-    ticker,
-    latest,
-    volume_ratio,
-    symbol=None,
-    timeframe="15m",
-    atr_val=None,
-    delivery_pct=None,
-):
-    """
-    Returns an integer bonus (can be negative) to add to the base score.
-
-    Parameters
-    ----------
-    ticker       : pd.DataFrame — full OHLCV + indicator data
-    latest       : pd.Series   — ticker.iloc[-1]
-    volume_ratio : float       — current bar volume / 20-bar average
-    symbol       : str         — for logging only
-    timeframe    : str         — "1d", "1h", or "15m"
-    atr_val      : float|None  — ATR(14) in price units, pre-computed by eod_scanner
-                                 None for intraday/1H (ATR bonus skipped)
-    delivery_pct : float|None  — NSE delivery % for the relevant session.
-                                 EOD: today's bhavcopy (same-day, max +6 pts).
-                                 Intraday/1H: previous day's bhavcopy (max +3 pts).
-                                 None means data unavailable — bonus skipped cleanly
-
-    Bonuses:
-      +3  Sustained volume (3-bar avg ≥ 1.5× 20-bar baseline)
-      +3  Full MA bull stack (EMA20 > SMA50 > SMA200)
-      +2  RSI accelerating (RSI now > RSI 3 bars ago + 2)
-      +2  Top-of-range close (≥ 80% of bar range)
-      +2  Volume climax (≥ 5× average)
-      +2  Near 52W high (≥ 97% of 52W high)
-      +3  ATR quality move (1.0–2.0× ATR on high volume) — EOD only
-      +6  Delivery conviction EOD (same-day bhavcopy, up to +6 pts)
-      +3  Delivery conviction intraday/1H (prev-day bhavcopy, up to +3 pts)
-
-    Penalties:
-      -8  Unsustained volume (fewer than 2 of last 3 bars above 80% of avg)
-      -5  Gap-up chase (>8% single-bar move) — INTRADAY/1H ONLY (EOD uses ATR filter)
-      -5  Extreme overbought RSI (> 78)
-    """
-
-    bonus = 0
-    tag   = f"[{symbol}] " if symbol else ""
-
-    # ── BONUS: SUSTAINED VOLUME ───────────────────────────────────────────────────────
-    if len(ticker) >= 23:
-        # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
-        avg_20 = float(ticker["Volume"].iloc[-21:-1].mean())
-        # FIX: use iloc[-4:-1] (3 bars before current) to exclude the breakout candle
-        # from the "sustained" average. tail(3) includes the current bar, which inflates
-        # avg_3 with the very volume spike being tested — making this bonus fire too easily.
-        avg_3  = float(ticker["Volume"].iloc[-4:-1].mean())
-        if avg_20 > 0 and (avg_3 / avg_20) >= 1.5:
-            logger.debug(f"  +3 {tag}Sustained volume (3-bar avg {avg_3/avg_20:.1f}x 20-bar baseline)")
-            bonus += 3
-
-    # ── BONUS: FULL MA BULL STACK ─────────────────────────────────────────────────────
-    if all(c in ticker.columns for c in ["EMA20", "SMA50", "SMA200"]):
-        e20  = float(latest.get("EMA20", 0) or 0)
-        s50  = float(latest.get("SMA50", 0) or 0)
-        s200 = float(latest.get("SMA200", 0) or 0)
-        if e20 > 0 and s50 > 0 and s200 > 0 and e20 > s50 > s200:
-            logger.debug(f"  +3 {tag}Full bull stack (EMA20 > SMA50 > SMA200)")
-            bonus += 3
-
-    # ── BONUS: RSI ACCELERATING ───────────────────────────────────────────────────────
-    if "RSI" in ticker.columns and len(ticker) >= 4:
-        rsi_now  = float(latest["RSI"])
-        rsi_3ago = float(ticker["RSI"].iloc[-4])
-        if rsi_now > rsi_3ago + 2:
-            logger.debug(f"  +2 {tag}RSI accelerating ({rsi_3ago:.1f} → {rsi_now:.1f})")
-            bonus += 2
-
-    # ── BONUS: TOP-OF-RANGE CLOSE ─────────────────────────────────────────────────────
-    candle_range = float(latest["High"]) - float(latest["Low"])
-    if candle_range > 0:
-        close_position = (float(latest["Close"]) - float(latest["Low"])) / candle_range
-        if close_position >= 0.80:
-            logger.debug(f"  +2 {tag}Top-of-range close ({close_position:.0%} of range)")
-            bonus += 2
-
-    # ── BONUS: VOLUME CLIMAX ──────────────────────────────────────────────────────────
-    if volume_ratio >= 5.0:
-        logger.debug(f"  +2 {tag}Volume climax ({volume_ratio:.1f}x avg)")
-        bonus += 2
-
-    # ── BONUS: NEAR 52-WEEK HIGH ──────────────────────────────────────────────────────
-    if "HIGH_52W" in ticker.columns:
-        high52 = float(latest.get("HIGH_52W", 0) or 0)
-        if high52 > 0:
-            proximity = float(latest["Close"]) / high52
-            if proximity >= 0.97:
-                logger.debug(f"  +2 {tag}Near 52W high ({proximity:.1%} of high ₹{high52:.2f})")
-                bonus += 2
-
-    # ── BONUS: ATR QUALITY MOVE — EOD ONLY ───────────────────────────────────────────
-    #
-    # Rewards the ideal breakout signature: a move that is large enough to confirm
-    # institutional buying (≥ 1.0× ATR) but not so extreme that it signals exhaustion
-    # (< 2.0× ATR, which is below the 3× hard reject in eod_scanner).
-    #
-    # Why 1.0–2.0× ATR is the sweet spot:
-    #   < 1.0× ATR: the day's move is within normal noise — not a clean breakout
-    #   1.0–2.0× ATR: meaningful directional move, sustainable, room for follow-through
-    #   2.0–3.0× ATR: strong move, still valid (eod_scanner allows up to 3×), but
-    #                  approaching exhaustion territory — no bonus
-    #   > 3.0× ATR: already blocked by eod_scanner before scoring is called
-    #
-    # atr_val is only passed by eod_scanner.py; intraday/1H pass None.
-    #
-    if timeframe == "1d" and atr_val is not None and atr_val > 0:
-        if len(ticker) >= 2:
-            prev_close      = float(ticker["Close"].iloc[-2])
-            candle_close    = float(latest["Close"])
-            single_move_abs = abs(candle_close - prev_close)
-            atr_multiple    = single_move_abs / atr_val
-
-            if 1.0 <= atr_multiple < 2.0:
-                logger.debug(
-                    f"  +3 {tag}ATR quality move ({atr_multiple:.2f}× ATR — "
-                    f"sustainable breakout signature)"
+                # Can't determine which ticker this belongs to — fall back individually.
+                logger.warning(
+                    "⚠️  Sector batch returned flat DF for multi-ticker request "                    "— falling back to individual calls"
                 )
-                bonus += 3
-            elif atr_multiple < 1.0:
-                logger.debug(
-                    f"  ○ {tag}Move below 1× ATR ({atr_multiple:.2f}×) — no ATR bonus"
-                )
-            else:
-                logger.debug(
-                    f"  ○ {tag}Move {atr_multiple:.2f}× ATR — above sweet spot, no bonus"
-                )
+                for t in tickers:
+                    results[t] = _download_close_single(t)
+            return results
 
-    # ── BONUS: DELIVERY CONVICTION ────────────────────────────────────────────────────
-    #
-    # EOD (timeframe == "1d"):
-    #   Uses today's bhavcopy delivery % — same-day, highest confidence signal.
-    #   Rewards up to +6 pts.
-    #
-    # Intraday / 1H (timeframe != "1d"):
-    #   Uses previous trading day's delivery % as a proxy for positional conviction.
-    #   High prior-day delivery = institutions held overnight and are still positioned
-    #   long — a meaningful tailwind for today's momentum setup.
-    #   Bonus is halved vs EOD (max +3 pts) because prior-day data is one day stale
-    #   and can't speak to what institutions are doing today specifically.
-    #
-    # delivery_pct is None if bhavcopy unavailable or symbol not in file → skip cleanly.
-    #
-    if delivery_pct is not None:
-        if timeframe == "1d":
-            # Same-day delivery — full bonus tiers
-            delivery_bonus = 0
-            for threshold, pts in DELIVERY_BONUS_TIERS:
-                if delivery_pct >= threshold:
-                    delivery_bonus = pts
-                    break
-            label = "same-day"
-        else:
-            # Previous-day delivery — halved tiers (max +3)
-            delivery_bonus = 0
-            for threshold, pts in DELIVERY_BONUS_TIERS:
-                if delivery_pct >= threshold:
-                    delivery_bonus = pts // 2   # 6→3, 4→2, 2→1, 0→0
-                    break
-            label = "prev-day"
+        # MultiIndex: columns are (Ticker, OHLCV).
+        for t in tickers:
+            try:
+                level0 = raw.columns.get_level_values(0)
+                if t in level0:
+                    results[t] = _parse_close_series(raw[t], t)
+                else:
+                    # Ticker absent from batch response (delisted / no data for period).
+                    logger.warning(f"⚠️  {t} absent from sector batch — fetching individually")
+                    results[t] = _download_close_single(t)
+            except Exception:
+                logger.exception(f"⚠️  Slice error for {t} in sector batch")
+                results[t] = None
 
-        if delivery_bonus > 0:
-            conviction = "institutional" if delivery_pct >= 60 else "positional" if delivery_pct >= 40 else "moderate"
-            logger.info(
-                f"  +{delivery_bonus} {tag}Delivery conviction "
-                f"({delivery_pct:.1f}% [{label}] — {conviction})"
-            )
-            bonus += delivery_bonus
-        else:
-            logger.debug(
-                f"  ○ {tag}Low delivery ({delivery_pct:.1f}% < 25% [{label}]) — no bonus"
-            )
-    elif timeframe == "1d":
-        logger.debug(f"  ○ {tag}Delivery data unavailable — bonus skipped (no penalty)")
+    except Exception:
+        logger.exception("⚠️  Sector batch download failed — falling back to individual calls")
+        for t in tickers:
+            results[t] = _download_close_single(t)
+
+    return results
+
+
+def _download_close_single(ticker: str) -> Optional[pd.Series]:
+    """Individual ticker fallback — used only when batch download fails for a ticker."""
+    try:
+        df = yf.download(
+            ticker,
+            period=DOWNLOAD_PERIOD,
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+        )
+        return _parse_close_series(df, ticker)
+    except Exception:
+        logger.exception(f"⚠️  _download_close_single({ticker}) failed")
+        return None
+
+
+# Legacy alias — keeps any external callers working unchanged.
+def _download_close(ticker: str) -> Optional[pd.Series]:
+    return _download_close_single(ticker)
+
+def _pct_return(series: pd.Series, lookback: int) -> Optional[float]:
+    if len(series) < lookback + 1: return None
+    start = float(series.iloc[-(lookback + 1)])
+    end   = float(series.iloc[-1])
+    return None if start <= 0 else (end / start - 1.0) * 100.0
+
+def _classify(rs_value: float, rs_momentum: float) -> str:
+    strong   = rs_value  >= 1.0
+    positive = rs_momentum >= 0.0
+    if strong and positive:     return "LEADING"
+    if not strong and positive: return "IMPROVING"
+    if strong and not positive: return "WEAKENING"
+    return                      "LAGGING"
+
+def _build_report(scores, strong_sectors, nifty_return_pct, scan_date, errors) -> str:
+    buckets = {k: [] for k in ("LEADING", "IMPROVING", "WEAKENING", "LAGGING")}
+    for s in scores.values(): buckets[s.classification].append(s)
+    for v in buckets.values(): v.sort(key=lambda x: x.outperformance_pct, reverse=True)
+
+    def fmt(s):
+        sign = "+" if s.outperformance_pct >= 0 else ""
+        flag = " 🔥" if s.outperformance_pct >= HIGHLIGHT_THRESHOLD_PCT else ""
+        return f"   • {s.name} {sign}{s.outperformance_pct:.1f}% vs Nifty{flag}"
+
+    lines = [
+        "= = = = = = = = = = = = = = = = =",
+        f"🔄 SECTOR ROTATION | {scan_date.strftime('%d %b %Y')}",
+        f"📊 Nifty 50: {'+' if nifty_return_pct >= 0 else ''}{nifty_return_pct:.1f}% ({RS_LOOKBACK_DAYS}d)",
+        "= = = = = = = = = = = = = = = = =",
+    ]
+
+    icons = {"LEADING": "✅", "IMPROVING": "📈", "WEAKENING": "📉", "LAGGING": "❌"}
+    labels = {
+        "LEADING":   "LEADING — Strong & Strengthening",
+        "IMPROVING": "IMPROVING — Weak but Recovering",
+        "WEAKENING": "WEAKENING — Strong but Fading",
+        "LAGGING":   "LAGGING — Weak & Weakening",
+    }
+    for k in ("LEADING", "IMPROVING", "WEAKENING", "LAGGING"):
+        if buckets[k]:
+            lines.append(f"{icons[k]} {labels[k]}:")
+            lines.extend(fmt(s) for s in buckets[k])
+
+    focus = sorted(strong_sectors, key=lambda n: scores[n].outperformance_pct, reverse=True)
+    lines.append("")
+    if focus:
+        lines.append(f"🎯 Scan focus: {', '.join(focus)}")
+        lines.append("ℹ️  Score +4 (Leading) / +2 (Improving) / -2 (Weakening) / -4 (Lagging)")
     else:
-        logger.debug(f"  ○ {tag}Prev-day delivery unavailable — bonus skipped (no penalty)")
+        lines.append("⚠️  No leading sectors — full universe scan, no sector bonus applied")
 
-    # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
-    #
-    if len(ticker) >= 4:
-        # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
-        avg_vol_20   = float(ticker["Volume"].iloc[-21:-1].mean())
-        recent_above = sum(
-            1 for i in range(-3, 0)
-            if float(ticker["Volume"].iloc[i]) > avg_vol_20 * 0.80
+    if errors: lines.append(f"⚠️  ETF data missing: {', '.join(errors)}")
+
+    return "\n".join(lines)
+
+
+# =====================================================================================
+# PUBLIC API
+# =====================================================================================
+_cache:      Optional[SectorRotationResult] = None
+_cache_time: Optional[datetime]             = None
+_cache_lock: threading.Lock                 = threading.Lock()
+CACHE_TTL_MINUTES = 30
+
+def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_LOOKBACK_DAYS, force_refresh=False):
+    global _cache, _cache_time
+
+    # Fast path: check under lock to avoid a race between the TTL check and the write
+    with _cache_lock:
+        if not force_refresh and _cache is not None and _cache_time is not None:
+            elapsed = (datetime.now(IST) - _cache_time).total_seconds()
+            if elapsed < CACHE_TTL_MINUTES * 60:
+                logger.info(f"🔄 Sector rotation: using cached result ({elapsed/60:.1f}m old, TTL={CACHE_TTL_MINUTES}m)")
+                return _cache
+
+    today  = date.today()
+    errors = []
+    sector_scores = {}
+
+    # FIX GAP 4: Download Nifty + all sector ETFs in ONE batch call.
+    # Previously: 20 sequential yf.download() calls (20–40s + rate-limit risk).
+    # Now: 1 batch call for all 20 tickers simultaneously (~3s total).
+    all_tickers = [BENCHMARK_TICKER] + list(SECTOR_ETF_MAP.values())
+    close_map   = _batch_download_closes(all_tickers)
+
+    nifty_close = close_map.get(BENCHMARK_TICKER)
+
+    if nifty_close is None or len(nifty_close) < MIN_BARS_REQUIRED:
+        logger.error("❌ Sector Rotation: Nifty 50 download failed")
+        result = SectorRotationResult({}, set(), set(), "⚠️ Unavailable", today, 0.0, ["Nifty 50"])
+        with _cache_lock:
+            _cache, _cache_time = result, datetime.now(IST)
+        return result
+
+    nifty_return = _pct_return(nifty_close, rs_lookback)
+    if nifty_return is None:
+        logger.error("❌ Sector Rotation: insufficient Nifty bars")
+        result = SectorRotationResult({}, set(), set(), "⚠️ Insufficient data", today, 0.0, ["Nifty 50 bars"])
+        with _cache_lock:
+            _cache, _cache_time = result, datetime.now(IST)
+        return result
+
+    nifty_base = nifty_return if abs(nifty_return) > 0.001 else 0.001
+
+    for sector_name, etf_ticker in SECTOR_ETF_MAP.items():
+        close = close_map.get(etf_ticker)
+        if close is None or len(close) < MIN_BARS_REQUIRED:
+            errors.append(sector_name)
+            continue
+
+        sec_return = _pct_return(close, rs_lookback)
+        if sec_return is None:
+            errors.append(sector_name)
+            continue
+
+        rs_value = (1 + sec_return / 100) / (1 + nifty_base / 100)
+        
+        sec_lagged   = _pct_return(close.iloc[:-momentum_lookback], rs_lookback)
+        nifty_lagged = _pct_return(nifty_close.iloc[:-momentum_lookback], rs_lookback)
+        if sec_lagged is not None and nifty_lagged is not None:
+            nb_lagged   = nifty_lagged if abs(nifty_lagged) > 0.001 else 0.001
+            rs_lagged   = (1 + sec_lagged / 100) / (1 + nb_lagged / 100)
+            rs_momentum = rs_value - rs_lagged
+        else:
+            rs_momentum = 0.0
+
+        classification = _classify(rs_value, rs_momentum)
+        sector_scores[sector_name] = SectorScore(
+            sector_name, etf_ticker, round(rs_value, 4), round(rs_momentum, 4),
+            round((rs_value - 1.0) * 100, 2), classification, round(sec_return, 2),
+            round(nifty_return, 2), len(close)
         )
-        if recent_above < 2:
-            logger.warning(
-                f"  -8 {tag}Unsustained volume "
-                f"(only {recent_above}/3 recent bars above 80% of avg)"
-            )
-            bonus -= 8
 
-    # ── PENALTY: GAP-UP CHASE — INTRADAY AND 1H ONLY ─────────────────────────────────
-    #
-    if timeframe != "1d" and len(ticker) >= 2:
-        prev_close = float(ticker["Close"].iloc[-2])
-        if prev_close > 0:
-            single_move = (float(latest["Close"]) - prev_close) / prev_close * 100
-            if single_move > 8:
-                logger.warning(f"  -5 {tag}Gap-up chase ({single_move:.1f}% single-bar move)")
-                bonus -= 5
+    strong_sectors = {n for n, s in sector_scores.items() if s.classification in ("LEADING", "IMPROVING")}
+    weak_sectors   = {n for n, s in sector_scores.items() if s.classification in ("WEAKENING", "LAGGING")}
+    report = _build_report(sector_scores, strong_sectors, nifty_return, today, errors)
 
-    # ── PENALTY: EXTREME OVERBOUGHT RSI ──────────────────────────────────────────────
-    if "RSI" in ticker.columns:
-        rsi_val = float(latest["RSI"])
-        if rsi_val > 78:
-            logger.warning(f"  -5 {tag}Extreme RSI ({rsi_val:.1f} > 78)")
-            bonus -= 5
+    result = SectorRotationResult(sector_scores, strong_sectors, weak_sectors, report, today, round(nifty_return, 2), errors)
+    with _cache_lock:
+        _cache, _cache_time = result, datetime.now(IST)
+    return result
 
-    return bonus
+_ROTATION_BONUS = {"LEADING": +4, "IMPROVING": +2, "WEAKENING": -2, "LAGGING": -4}
 
-
-# =====================================================================================
-# MAIN SCORING FUNCTION
-# =====================================================================================
-
-def calculate_score(
-    category,
-    breakout_count,
-    rsi,
-    volume_ratio,
-    breakout_signals=None,
-    ticker=None,
-    latest=None,
-    symbol=None,
-    timeframe="15m",
-    atr_val=None,
-    delivery_pct=None,
-    min_vol=50_000,
-):
+def get_sector_score_bonus(
+    symbol: str,
+    result: SectorRotationResult,
+    sector: str = None,
+) -> int:
     """
-    Returns an integer score from 0 to 100 (plus bonuses, capped at 100).
-    Returns 0 if any hard disqualifier fires.
+    Returns the sector rotation score bonus (or penalty) for a symbol.
 
     Parameters
     ----------
-    category         : str           — stock category (e.g. "Elite Compounder",
-                                       "Financial Compounder", "Turnaround", etc.)
-    breakout_count   : int           — number of breakout signals from detect_breakouts()
-    rsi              : float         — current RSI value
-    volume_ratio     : float         — current bar volume / 20-bar average volume
-    breakout_signals : list[str]     — signal name strings, used to check for 52W signal
-    ticker           : pd.DataFrame  — full OHLCV + indicator DataFrame
-    latest           : pd.Series     — ticker.iloc[-1]
-    symbol           : str           — ticker symbol, used only for log messages
-    timeframe        : str           — "1d", "1h", or "15m" — controls divergence lookback,
-                                       ATR bonus eligibility, delivery bonus eligibility,
-                                       and gap-up chase penalty applicability
-    atr_val          : float|None    — ATR(14) in ₹, passed by eod_scanner only (intraday/1H pass None)
-    delivery_pct     : float|None    — NSE delivery %. EOD: same-day bhavcopy. Intraday/1H: prev-day bhavcopy.
+    symbol  : NSE ticker (e.g. "INFY")
+    result  : SectorRotationResult from get_sector_scores()
+    sector  : TV sector string from the watchlist parquet row["Sector"].
+              When provided, this takes priority over NSE_SECTOR_MAP lookup.
+              Translated via TV_SECTOR_TO_ROTATION before matching.
+
+    Lookup order (first match wins):
+      1. sector param → TV_SECTOR_TO_ROTATION → SECTOR_ETF_MAP key
+      2. NSE_SECTOR_MAP[symbol] → SECTOR_ETF_MAP key  (legacy fallback)
+
+    Returns 0 gracefully if sector unavailable, ETF data missing, or any error.
     """
+    if not result.scores:
+        return 0
 
-    score = 0
-    tag   = f"[{symbol}] " if symbol else ""
+    rotation_sector = None
 
-    # ── STEP 1: HARD DISQUALIFIERS ───────────────────────────────────────────────────
-    if ticker is not None and latest is not None:
-        disq, reason = check_hard_disqualifiers(
-            ticker, latest, volume_ratio, symbol, timeframe=timeframe, min_vol=min_vol
-        )
-        if disq:
-            return 0
+    # Priority 1: watchlist sector column (TV string → rotation key)
+    if sector and sector not in ("Unknown", "", "nan", "None"):
+        rotation_sector = TV_SECTOR_TO_ROTATION.get(sector.strip())
+        if rotation_sector is None:
+            # Try direct match in case TV string already matches SECTOR_ETF_MAP key
+            if sector.strip() in result.scores:
+                rotation_sector = sector.strip()
 
-    # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
-    #
-    # FIX GAP 1: Iterate in order (highest-points-first) and stop at the FIRST match.
-    # This prevents a category string that contains multiple key substrings
-    # (e.g. "Elite Compounder + High Growth") from double-counting.
-    #
-    # The expanded SCORE_CATEGORY dict now covers all 9 categories from daily_builder:
-    #   PATH A: Elite Compounder, High Growth, Steady Compounder, Mature Quality, Turnaround
-    #   PATH B: Financial Compounder, Financial High Growth, Financial Mature Quality,
-    #           Financial Turnaround
-    #
-    category_pts = 0
-    for label, pts in SCORE_CATEGORY.items():
-        if label in category:
-            category_pts = pts
-            break   # first (highest-value) match wins — no double-counting
+    # Priority 2: hardcoded NSE_SECTOR_MAP fallback
+    if rotation_sector is None:
+        rotation_sector = NSE_SECTOR_MAP.get(symbol.strip().upper())
 
-    score += category_pts
-    logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")
-
-    # ── STEP 3: BREAKOUT SIGNALS (WEIGHTED STRENGTH) ─────────────────────────────────
-    #
-    # breakout_signals is a dict {signal_name: strength_score} from breakout_engine,
-    # where each score = breakout magnitude (%) × signal weight.
-    #
-    # SCALE PROBLEM: windowed breakouts produce small scores (0.1–9 pts typical) but
-    # Volume Surge produces 200–500+ pts (vol_surge % × 1.3 — entirely different unit).
-    # A raw sum() would let a single volume spike claim all 24 pts every time, making
-    # the per-signal differentiation completely meaningless.
-    #
-    # FIX: cap each individual signal at 8 pts before summing, then cap the total at 24.
-    # This matches the old flat-counter ceiling (8 pts per signal, max 3 signals = 24)
-    # while still rewarding a strong 52W breakout (e.g. 9 → capped 8) more than a weak
-    # daily breakout (e.g. 0.9 → contributes 0.9). Differentiation is preserved within
-    # each signal type; the volume unit mismatch can no longer blow the budget.
-    #
-    # Fallback to flat counter handles legacy callers passing a list or None.
-    #
-    PER_SIGNAL_CAP = 8.0
-
-    if isinstance(breakout_signals, dict) and breakout_signals:
-        signal_pts = min(
-            sum(min(v, PER_SIGNAL_CAP) for v in breakout_signals.values()),
-            24.0
-        )
-        if any("52W" in s for s in breakout_signals):
-            signal_pts = min(signal_pts + 1, 24.0)
-            logger.debug(f"  +1 {tag}52W breakout signal bonus")
+    if rotation_sector is None:
         logger.debug(
-            f"  {tag}Signal breakdown: "
-            + ", ".join(f"{k}={min(v, PER_SIGNAL_CAP):.2f}" for k, v in breakout_signals.items())
+            f"  ○ [{symbol}] sector not mapped "
+            f"(tv_sector={sector!r}) — rotation bonus skipped"
         )
-    else:
-        signal_pts = min(breakout_count, 3) * 8
-        if breakout_signals and any("52W" in s for s in breakout_signals):
-            signal_pts += 1
-            logger.debug(f"  +1 {tag}52W breakout signal bonus")
+        return 0
 
-    score += int(signal_pts)
-    logger.debug(f"  Score after signals ({breakout_count} signals, pts={signal_pts:.1f}): {score} (+{int(signal_pts)})")
-
-    # ── STEP 4: RSI QUALITY ──────────────────────────────────────────────────────────
-    if 58 <= rsi <= 72:
-        rsi_pts = 15
-    elif 72 < rsi <= 75:
-        rsi_pts = 10
-    elif 55 <= rsi < 58:
-        rsi_pts = 6
-    elif 75 < rsi <= 78:
-        rsi_pts = 3
-    elif 78 < rsi <= 82:
-        rsi_pts = 1
-    else:
-        rsi_pts = 0
-
-    score += rsi_pts
-    logger.debug(f"  Score after RSI ({rsi:.1f}): {score} (+{rsi_pts})")
-
-    # ── STEP 5: VOLUME QUALITY ───────────────────────────────────────────────────────
-    if volume_ratio >= 4.0:
-        vol_pts = 20
-    elif volume_ratio >= 3.0:
-        vol_pts = 17
-    elif volume_ratio >= 2.5:
-        vol_pts = 14
-    elif volume_ratio >= 2.0:
-        vol_pts = 10
-    elif volume_ratio >= 1.5:
-        vol_pts = 5
-    elif volume_ratio >= 1.2:
-        vol_pts = 2
-    else:
-        vol_pts = 0
-
-    score += vol_pts
-    logger.debug(f"  Score after volume ({volume_ratio:.2f}x): {score} (+{vol_pts})")
-
-    # ── STEP 6: TREND STRENGTH ───────────────────────────────────────────────────────
-    if ticker is not None and latest is not None:
-        trend_pts = 0
-
-        e20 = float(latest.get("EMA20", 0) or 0)
-        s50 = float(latest.get("SMA50", 0) or 0)
-        if e20 > 0 and s50 > 0 and e20 > s50:
-            trend_pts += 3
-            logger.debug(f"  +3 {tag}EMA20 > SMA50 (bull alignment)")
-
-        s200 = float(latest.get("SMA200", 0) or 0)
-        if s50 > 0 and s200 > 0 and s50 > s200:
-            trend_pts += 3
-            logger.debug(f"  +3 {tag}SMA50 > SMA200 (golden cross)")
-
-        if "ADX" in ticker.columns:
-            adx_val = float(latest.get("ADX", 0) or 0)
-            if adx_val >= 25:
-                trend_pts += 2
-                logger.debug(f"  +2 {tag}ADX {adx_val:.1f} ≥ 25 (strong trend)")
-            elif adx_val >= 22:
-                trend_pts += 1
-                logger.debug(f"  +1 {tag}ADX {adx_val:.1f} ≥ 22 (established trend)")
-
-        if "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns:
-            macd_val = float(latest.get("MACD", 0) or 0)
-            macd_sig = float(latest.get("MACD_SIGNAL", 0) or 0)
-            if macd_val > macd_sig:
-                trend_pts += 2
-                logger.debug(f"  +2 {tag}MACD bullish ({macd_val:.4f} > {macd_sig:.4f})")
-
-        trend_pts = min(trend_pts, 10)
-        score += trend_pts
-        logger.debug(f"  Score after trend: {score} (+{trend_pts})")
-
-    # ── STEP 7: BONUS MODIFIERS ───────────────────────────────────────────────────────
-    if ticker is not None and latest is not None:
-        bonuses = bonus_modifiers(
-            ticker=ticker,
-            latest=latest,
-            volume_ratio=volume_ratio,
-            symbol=symbol,
-            timeframe=timeframe,
-            atr_val=atr_val,
-            delivery_pct=delivery_pct,
+    score_obj = result.scores.get(rotation_sector)
+    if score_obj is None:
+        logger.debug(
+            f"  ○ [{symbol}] rotation_sector={rotation_sector!r} "
+            f"not in scores (ETF data missing?) — bonus skipped"
         )
-        score += bonuses
-        logger.debug(f"  Score after bonuses: {score} ({'+' if bonuses >= 0 else ''}{bonuses})")
+        return 0
 
-    final_score = max(0, min(score, 100))
-    logger.info(f"  📊 Final score: {final_score}")
-    return final_score
+    bonus = _ROTATION_BONUS.get(score_obj.classification, 0)
+    logger.info(
+        f"  {'+'if bonus>=0 else ''}{bonus} [{symbol}] "
+        f"sector={rotation_sector} | {score_obj.classification} "
+        f"| RS={score_obj.rs_value:.3f} | source={'watchlist' if sector else 'fallback_map'}"
+    )
+    return bonus
