@@ -132,7 +132,9 @@ def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> dict[str, floa
     # Current bar volume >= 3x 20-bar average AND price is up.
     if "Volume" in df.columns and n >= 21:
         vol_now = float(df["Volume"].iloc[-1])
-        vol_avg = float(df["Volume"].tail(20).mean())
+        # GAP 1 FIX: exclude the current bar from the baseline to avoid the breakout
+        # candle inflating its own average and understating the surge multiple.
+        vol_avg = float(df["Volume"].iloc[-21:-1].mean())
 
         if vol_avg > 0 and vol_now >= 3.0 * vol_avg and close > float(df["Open"].iloc[-1]):
             # Strength = how much above volume average (as multiple)
