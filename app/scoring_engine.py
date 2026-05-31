@@ -161,7 +161,7 @@ DELIVERY_BONUS_TIERS = [
 # HARD DISQUALIFIER CHECK
 # =====================================================================================
 
-def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timeframe="15m"):
+def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timeframe="15m", min_vol=50_000):
     """
     Checks for hard structural flaws that invalidate a breakout signal.
 
@@ -172,6 +172,9 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
     volume_ratio : float       — current bar volume / 20-bar average
     symbol       : str         — used only for logging (optional)
     timeframe    : str         — "1d", "1h", or "15m" — affects RSI divergence lookback
+    min_vol      : int         — minimum 20-bar average volume threshold (timeframe-aware).
+                                 Pass from config.SCAN_CONFIG[timeframe]["MIN_VOLUME_AVG"]
+                                 so the daily 50K floor isn't applied to 15m bars.
 
     Returns
     -------
@@ -182,9 +185,13 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
     tag = f"[{symbol}] " if symbol else ""
 
     # ── DISQUALIFIER 1: ILLIQUID STOCK ──────────────────────────────────────────────
-    avg_vol_20 = float(ticker["Volume"].tail(20).mean())
-    if avg_vol_20 < 50_000:
-        reason = f"Avg vol {avg_vol_20:,.0f} < 50K (illiquid)"
+    # GAP 1 FIX: Use iloc[-21:-1] (20 bars before current) to avoid including the
+    # current breakout candle in the average, which deflates the ratio.
+    # GAP 2 FIX: Use caller-supplied min_vol instead of hardcoded 50K, so the same
+    # function works correctly for 15m bars (where 50K/bar = ~1.25M shares/day).
+    avg_vol_20 = float(ticker["Volume"].iloc[-21:-1].mean())
+    if avg_vol_20 < min_vol:
+        reason = f"Avg vol {avg_vol_20:,.0f} < {min_vol:,} (illiquid)"
         logger.warning(f"🚫 {tag}DISQ: {reason}")
         return True, reason
 
@@ -333,7 +340,8 @@ def bonus_modifiers(
 
     # ── BONUS: SUSTAINED VOLUME ───────────────────────────────────────────────────────
     if len(ticker) >= 23:
-        avg_20 = float(ticker["Volume"].tail(20).mean())
+        # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
+        avg_20 = float(ticker["Volume"].iloc[-21:-1].mean())
         avg_3  = float(ticker["Volume"].tail(3).mean())
         if avg_20 > 0 and (avg_3 / avg_20) >= 1.5:
             logger.debug(f"  +3 {tag}Sustained volume (3-bar avg {avg_3/avg_20:.1f}x 20-bar baseline)")
@@ -467,7 +475,8 @@ def bonus_modifiers(
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
     #
     if len(ticker) >= 4:
-        avg_vol_20   = float(ticker["Volume"].tail(20).mean())
+        # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
+        avg_vol_20   = float(ticker["Volume"].iloc[-21:-1].mean())
         recent_above = sum(
             1 for i in range(-3, 0)
             if float(ticker["Volume"].iloc[i]) > avg_vol_20 * 0.80
@@ -515,6 +524,7 @@ def calculate_score(
     timeframe="15m",
     atr_val=None,
     delivery_pct=None,
+    min_vol=50_000,
 ):
     """
     Returns an integer score from 0 to 100 (plus bonuses, capped at 100).
@@ -544,7 +554,7 @@ def calculate_score(
     # ── STEP 1: HARD DISQUALIFIERS ───────────────────────────────────────────────────
     if ticker is not None and latest is not None:
         disq, reason = check_hard_disqualifiers(
-            ticker, latest, volume_ratio, symbol, timeframe=timeframe
+            ticker, latest, volume_ratio, symbol, timeframe=timeframe, min_vol=min_vol
         )
         if disq:
             return 0
