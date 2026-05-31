@@ -127,33 +127,52 @@ def run_intraday_scanner():
     """Import intraday module, then call start() function to avoid module-level blocking."""
     wait_for_window("intraday")
     logger.info("⚡ Starting INTRADAY SCANNER (15m candles)")
-    
-    import intraday
-    intraday.start()  # <--- NOW it calls the function, not stuck on import
+    try:
+        import intraday
+        intraday.start()
+    except Exception:
+        logger.exception("💀 INTRADAY SCANNER THREAD CRASHED — thread is dead")
+        raise  # re-raise so Railway/systemd can detect the failure
 
 
 def run_live_scanner():
     """Import live_scanner module, then call start() function."""
     wait_for_window("live")
     logger.info("🚀 Starting LIVE SCANNER (1h candles)")
-    
-    import live_scanner
-    live_scanner.start()  # <--- NOW it calls the function
+    try:
+        import live_scanner
+        live_scanner.start()
+    except Exception:
+        logger.exception("💀 LIVE SCANNER THREAD CRASHED — thread is dead")
+        raise
 
 
 def run_eod_scanner():
     """Import eod_scanner module, then call start() function."""
     wait_for_window("eod")
     logger.info("📊 Starting EOD SCANNER (Daily candles)")
-    
-    import eod_scanner
-    eod_scanner.start()  # <--- NOW it calls the function
+    try:
+        import eod_scanner
+        eod_scanner.start()
+    except Exception:
+        logger.exception("💀 EOD SCANNER THREAD CRASHED — thread is dead")
+        raise
 
 # =====================================================================================
 # MAIN
 # =====================================================================================
 
 if __name__ == "__main__":
+
+    # ── STARTUP VALIDATION ────────────────────────────────────────────────────────
+    _missing_env = [v for v in ("BOT_TOKEN", "CHAT_ID") if not os.getenv(v)]
+    if _missing_env:
+        logger.error(
+            f"❌ FATAL: Missing required env vars: {_missing_env} — "
+            "Telegram alerts will fail immediately. Set them in Railway Variables."
+        )
+    else:
+        logger.info("✅ BOT_TOKEN and CHAT_ID present")
 
     threads = [
         threading.Thread(
@@ -185,6 +204,12 @@ if __name__ == "__main__":
     logger.info("📊 eod_scanner.py  | 1D  | Opens 06:30 PM")
     logger.info("=" * 70)
 
-    # Keep main thread alive
-    for t in threads:
-        t.join()
+    # Keep main thread alive — also monitor for dead threads and log clearly
+    while True:
+        for t in threads:
+            if not t.is_alive():
+                logger.critical(
+                    f"💀 THREAD DEAD: {t.name} has stopped running. "
+                    "Check above for the crash traceback."
+                )
+        time.sleep(60)
