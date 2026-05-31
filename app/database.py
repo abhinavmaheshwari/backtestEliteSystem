@@ -44,10 +44,11 @@ def get_connection():
 
 def init_db():
 
-    os.makedirs(
-        os.path.dirname(DB_PATH),
-        exist_ok=True
-    )
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    else:
+        logger.warning(f"⚠️ DB_PATH has no directory component: {DB_PATH!r} — using current directory")
 
     with get_connection() as conn:
 
