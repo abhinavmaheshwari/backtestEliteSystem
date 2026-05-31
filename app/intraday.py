@@ -225,7 +225,7 @@ def start():
             rejection_counts   = {
                 "no_data":           0,
                 "missing_col":       0,
-                "forming_candle":    0,
+                "forming_candle_stripped": 0,  # bar dropped but stock still evaluated
                 "insufficient_bars": 0,
                 "indicator_fail":    0,
                 "weak_signals":      0,
@@ -307,7 +307,7 @@ def start():
                             now_naive    = datetime.now(IST).replace(tzinfo=None)
                             if now_naive < candle_end:
                                 ticker = ticker.iloc[:-1].copy()
-                                rejection_counts["forming_candle"] += 1
+                                rejection_counts["forming_candle_stripped"] += 1
                         except Exception:
                             logger.exception(f"  ⚠️ Candle age check error {symbol}")
 
@@ -465,7 +465,7 @@ def start():
                     if score > 0:
                         # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
-                            safe_sector  = "Unknown" if pd.isna(sector) else str(sector).strip()
+                            safe_sector  = "Unknown" if (sector is None or (isinstance(sector, float) and pd.isna(sector))) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
                         except Exception as e:
