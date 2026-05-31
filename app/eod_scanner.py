@@ -456,6 +456,7 @@ def start():
                 "gap_day":           0,
                 "low_score":         0,
                 "duplicate":         0,
+                "stale_data":        0,
             }
 
             logger.info(f"🔍 Scanning {len(watchlist)} stocks...")
@@ -524,13 +525,26 @@ def start():
 
                     latest = ticker.iloc[-1]
 
-                    if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
-                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
-                        continue
+                    # ── STALE DATA GUARD ─────────────────────────────────────────────
+                    # A halted or illiquid stock may return daily data ending several
+                    # days ago. The EOD scan runs at 6:30 PM so any candle not dated
+                    # today is stale and should not fire as a breakout alert.
+                    _stale_col = next(
+                        (c for c in ["Date", "Datetime"] if c in ticker.columns),
+                        None
+                    )
+                    if _stale_col:
+                        try:
+                            _last_ts = pd.to_datetime(latest[_stale_col])
+                            if _last_ts.tzinfo is not None:
+                                _last_ts = _last_ts.tz_convert("Asia/Kolkata")
+                            if _last_ts.date() != ist_now.date():
+                                rejection_counts["stale_data"] = rejection_counts.get("stale_data", 0) + 1
+                                continue
+                        except Exception:
+                            pass
 
-                    # ── VOLUME ──────────────────────────────────────────────────────
-                    latest_volume = float(latest["Volume"])
-                    # Exclude the current (breakout) candle from the baseline so it
+
                     # can't inflate its own average and understate the surge multiple.
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
@@ -700,7 +714,7 @@ def start():
                         continue
 
                     # ── DEDUP ────────────────────────────────────────────────────────
-                    breakout_type = ", ".join(signals)
+                    breakout_type = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     dedup_key     = f"{breakout_type}|{today_str}|EOD"
 
                     saved = save_alert_if_new(
