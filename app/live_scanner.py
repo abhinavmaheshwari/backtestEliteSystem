@@ -140,8 +140,12 @@ def fetch_watchlist_data(
                 logger.warning(f"⚠️ Empty response for batch {i // batch_size + 1}")
                 continue
 
-            if len(batch) == 1:
-                # Single ticker: plain DataFrame (group_by has no effect here)
+            # Detect actual structure returned — don't trust len(batch).
+            # If 29 of 30 tickers are suspended/delisted, yfinance returns a flat
+            # DataFrame for the one survivor instead of a MultiIndex, so checking
+            # len(batch)==1 would misroute it into the MultiIndex branch and drop it.
+            if not isinstance(raw.columns, pd.MultiIndex):
+                # Flat DataFrame — only one ticker survived in this batch
                 sym = batch[0]
                 df  = raw.reset_index().copy()
                 if not df.empty:
@@ -211,6 +215,7 @@ def start():
         logger.info(f"🚀 1H SCAN | {scan_start.strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info("=" * 70)
 
+        sleep_time = 300  # default; replaced with precise dynamic value after scan completes
         try:
             # ── LOAD WATCHLIST ──────────────────────────────────────────────────────
             try:
@@ -585,6 +590,7 @@ def start():
             else:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
+            if fired:
                     chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
                     for chunk_num, chunk in enumerate(chunks, start=1):
@@ -600,13 +606,19 @@ def start():
 
             # Only log rejection reasons that actually fired (Railway log economy)
             fired = {k: v for k, v in rejection_counts.items() if v > 0}
-            if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
-            logger.info("💤 Next scan in 5 minutes")
+            # Dynamic sleep: keep cycle cadence at exactly 300s regardless of scan duration.
+            # Without this, a 45s scan causes the loop to fire every 345s — a full
+            # 5-minute lag accumulates over a 6-hour trading day.
+            elapsed    = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time = max(0, 300 - elapsed)
+            logger.info(f"💤 Scan took {elapsed:.1f}s — sleeping {sleep_time:.1f}s to hit 5-min cadence")
             logger.info("=" * 70)
 
         except Exception:
             logger.exception("❌ CRITICAL 1H SCAN ERROR — will retry next cycle")
+            elapsed    = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time = max(0, 300 - elapsed)
 
-        time.sleep(300)
+        time.sleep(sleep_time)
