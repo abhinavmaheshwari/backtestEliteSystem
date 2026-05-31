@@ -30,9 +30,15 @@ def score_bar(score):
 # =====================================================================================
 
 _CAT_ICON = {
-    "Elite Compounder": "💎",
-    "High Growth":      "📈",
-    "Mature Quality":   "🏛",
+    "Elite Compounder":         "💎",
+    "Financial Compounder":     "💎",
+    "High Growth":              "📈",
+    "Financial High Growth":    "📈",
+    "Steady Compounder":        "📊",
+    "Mature Quality":           "🏛",
+    "Financial Mature Quality": "🏛",
+    "Turnaround":               "🔄",
+    "Financial Turnaround":     "🔄",
 }
 
 def category_icons(category):
