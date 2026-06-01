@@ -32,27 +32,25 @@ IST    = ZoneInfo("Asia/Kolkata")
 
 SECTOR_ETF_MAP: dict[str, str] = {
     "IT":             "ITETF.NS",
-    "Pharma":         "PHARMABEES.NS",    # Nippon India ETF Pharma BeES (PHARMIETF not on Yahoo)
+    "Pharma":         "PHARMABEES.NS",    # Nippon India ETF Pharma BeES
     "Banking":        "BANKBEES.NS",
     "FMCG":           "FMCGIETF.NS",
     "Auto":           "AUTOIETF.NS",
     "Metal":          "METALIETF.NS",
-    "Realty":         "NIFTYRIT.NS",      # Mirae Nifty Realty ETF (REAIETF not on Yahoo)
-    "Energy":         "ENERGYBEES.NS",    # Nippon India ETF Energy (ENERGIETF not on Yahoo)
+    "Realty":         "NIFTYREALTY.NS",   # UPDATED: NIFTYRIT.NS delisted → Kotak Nifty Realty ETF
+    "Energy":         "ENERGYIETF.NS",    # UPDATED: ENERGYBEES.NS delisted → HDFC Nifty Energy ETF
     "Infrastructure": "INFRAIETF.NS",
     "PSU Bank":       "PSUBNKIETF.NS",
-    "Defence":        "NIFTYDEF.NS",      # Motilal Nifty Defence ETF (DEFEFIETF not on Yahoo)
-    "MNC":            "NIFTYMNCG.NS",     # Motilal Nifty MNC ETF (MNCIETF not on Yahoo)
-    "Consumption":    "CONSUMBEES.NS",    # Nippon India ETF Consumption (CONSIETF not on Yahoo)
+    "Defence":        "DEFEFIETF.NS",     # UPDATED: NIFTYDEF.NS delisted → HDFC Defence ETF
+    "MNC":            "MNCIETF.NS",       # UPDATED: NIFTYMNCG.NS delisted → Mirae MNC ETF
+    "Consumption":    "CONSUMBEES.NS",    # Nippon India ETF Consumption
     "Financials":     "FINIETF.NS",
-    "Capital Goods":  "CAPIETF.NS",       # Mirae Capital Goods ETF (CGIETF not on Yahoo)
-    "Chemicals":      "NIFTYCHML.NS",     # Motilal Nifty Chemicals ETF (CHEMIETF not on Yahoo)
-    # "Telecom": intentionally omitted — TELE.NS is delisted and no liquid standalone
-    #            telecom sector ETF exists on NSE. Telecom stocks receive sector_bonus=0,
-    #            which is neutral (no penalty). Re-add if a valid ETF is listed.
+    "Capital Goods":  "CAPIETF.NS",       # Mirae Capital Goods ETF — kept, may be delisted; fallback below
+    "Chemicals":      "CHEMIETF.NS",      # UPDATED: NIFTYCHML.NS delisted → Mirae Nifty Chemicals ETF
+    # "Telecom": intentionally omitted — no liquid standalone telecom sector ETF on NSE.
 
     "Railways":       "INFRAIETF.NS",     # Proxy
-    "Electronics":    "MANUIETF.NS",      # Proxy
+    "Electronics":    "MANIETF.NS",       # UPDATED: MANUIETF.NS delisted → Mirae Manufacturing ETF
 }
 
 BENCHMARK_TICKER      = "^NSEI"
@@ -455,9 +453,9 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
         )
 
         if raw is None or raw.empty:
-            logger.warning("⚠️  Sector batch download returned empty — falling back to individual calls")
+            logger.warning("⚠️  Sector batch download returned empty — all sectors will be skipped")
             for t in tickers:
-                results[t] = _download_close_single(t)
+                results[t] = None
             return results
 
         if not isinstance(raw.columns, pd.MultiIndex):
@@ -466,12 +464,14 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
             if len(tickers) == 1:
                 results[tickers[0]] = _parse_close_series(raw, tickers[0])
             else:
-                # Can't determine which ticker this belongs to — fall back individually.
+                # Can't determine which ticker this belongs to — mark all as None.
+                # Individual fallback would repeat the same delisted errors; skip it.
                 logger.warning(
-                    "⚠️  Sector batch returned flat DF for multi-ticker request "                    "— falling back to individual calls"
+                    "⚠️  Sector batch returned flat DF for multi-ticker request "
+                    "— skipping to avoid symbol→data mismatch"
                 )
                 for t in tickers:
-                    results[t] = _download_close_single(t)
+                    results[t] = None
             return results
 
         # MultiIndex: columns are (Ticker, OHLCV).
@@ -481,17 +481,17 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
                 if t in level0:
                     results[t] = _parse_close_series(raw[t], t)
                 else:
-                    # Ticker absent from batch response (delisted / no data for period).
-                    logger.warning(f"⚠️  {t} absent from sector batch — fetching individually")
-                    results[t] = _download_close_single(t)
+                    # Ticker absent from batch (delisted / no data for period) — not an error.
+                    logger.debug(f"⚠️  {t} absent from sector batch (likely delisted) — skipped")
+                    results[t] = None
             except Exception:
                 logger.exception(f"⚠️  Slice error for {t} in sector batch")
                 results[t] = None
 
     except Exception:
-        logger.exception("⚠️  Sector batch download failed — falling back to individual calls")
+        logger.exception("⚠️  Sector batch download failed — all sectors will be skipped")
         for t in tickers:
-            results[t] = _download_close_single(t)
+            results[t] = None
 
     return results
 
