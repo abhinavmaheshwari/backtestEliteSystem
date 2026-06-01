@@ -51,7 +51,7 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from zoneinfo import ZoneInfo
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, date, time as dt_time, timedelta
 
 from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
@@ -169,7 +169,7 @@ def fetch_watchlist_data(
         tickers_str = " ".join(f"{sym}.NS" for sym in batch)
         batch_end   = min(i + batch_size, total)
 
-        logger.info(f"📥 Batch {i // batch_size + 1} | symbols {i+1}–{batch_end}/{total}")
+        logger.info(f"📥 Batch downloading {len(batch)} symbols ({i}–{batch_end}/{total})")
 
         try:
             # group_by='ticker' locks MultiIndex to (Ticker, OHLCV) — prevents breakage
@@ -229,7 +229,7 @@ def fetch_watchlist_data(
         except Exception:
             logger.exception(f"❌ Batch download failed (batch {i // batch_size + 1})")
 
-    logger.info(f"📥 Download complete | {len(all_data)}/{total} symbols fetched")
+    logger.info(f"📥 Data downloaded for {len(all_data)}/{total} symbols")
     return all_data
 
 
@@ -430,8 +430,7 @@ def start():
             except Exception:
                 logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
                 from sector_rotation import SectorRotationResult
-                from datetime import date as _date
-                rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
+                rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
 
             total_alerts       = 0
             alerts_by_category = {}
@@ -507,6 +506,11 @@ def start():
                         continue
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+
+                    # Guard: dropna may empty the DataFrame (all rows had NaN OHLCV)
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
 
                     if len(ticker) < 200:
                         rejection_counts["insufficient_bars"] += 1
