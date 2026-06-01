@@ -32,21 +32,21 @@ IST    = ZoneInfo("Asia/Kolkata")
 
 SECTOR_ETF_MAP: dict[str, str] = {
     "IT":             "ITETF.NS",
-    "Pharma":         "PHARMIETF.NS",    # was PHARMABEES.NS (delisted/renamed)
+    "Pharma":         "PHARMABEES.NS",    # Nippon India ETF Pharma BeES (PHARMIETF not on Yahoo)
     "Banking":        "BANKBEES.NS",
     "FMCG":           "FMCGIETF.NS",
     "Auto":           "AUTOIETF.NS",
     "Metal":          "METALIETF.NS",
-    "Realty":         "REAIETF.NS",
-    "Energy":         "ENERGIETF.NS",
+    "Realty":         "NIFTYRIT.NS",      # Mirae Nifty Realty ETF (REAIETF not on Yahoo)
+    "Energy":         "ENERGYBEES.NS",    # Nippon India ETF Energy (ENERGIETF not on Yahoo)
     "Infrastructure": "INFRAIETF.NS",
     "PSU Bank":       "PSUBNKIETF.NS",
-    "Defence":        "DEFEFIETF.NS",
-    "MNC":            "MNCIETF.NS",
-    "Consumption":    "CONSIETF.NS",
-    "Financials":     "FINIETF.NS",       
-    "Capital Goods":  "CGIETF.NS",        
-    "Chemicals":      "CHEMIETF.NS",      
+    "Defence":        "NIFTYDEF.NS",      # Motilal Nifty Defence ETF (DEFEFIETF not on Yahoo)
+    "MNC":            "NIFTYMNCG.NS",     # Motilal Nifty MNC ETF (MNCIETF not on Yahoo)
+    "Consumption":    "CONSUMBEES.NS",    # Nippon India ETF Consumption (CONSIETF not on Yahoo)
+    "Financials":     "FINIETF.NS",
+    "Capital Goods":  "CAPIETF.NS",       # Mirae Capital Goods ETF (CGIETF not on Yahoo)
+    "Chemicals":      "NIFTYCHML.NS",     # Motilal Nifty Chemicals ETF (CHEMIETF not on Yahoo)
     # "Telecom": intentionally omitted — TELE.NS is delisted and no liquid standalone
     #            telecom sector ETF exists on NSE. Telecom stocks receive sector_bonus=0,
     #            which is neutral (no penalty). Re-add if a valid ETF is listed.
