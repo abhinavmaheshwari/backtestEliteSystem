@@ -202,6 +202,15 @@ def start():
     cleanup_old_alerts(days=DEDUP_DAYS)
     logger.info(f"✅ 1H scanner ready | DB initialized | {DEDUP_DAYS}-day dedup window active")
 
+    # Fetch delivery data ONCE before the loop — previous-day data never changes
+    # during the trading day. Refreshes automatically when the date rolls over.
+    prev_delivery_map    = fetch_previous_day_delivery()
+    _delivery_fetch_date = datetime.now(IST).date()
+    if prev_delivery_map:
+        logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
+    else:
+        logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped")
+
     while True:
 
         ist_now      = datetime.now(IST)
@@ -230,6 +239,15 @@ def start():
         logger.info(f"🚀 1H SCAN | {scan_start.strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info("=" * 70)
 
+        # Refresh delivery map if date rolled over (new trading day)
+        if datetime.now(IST).date() != _delivery_fetch_date:
+            prev_delivery_map    = fetch_previous_day_delivery()
+            _delivery_fetch_date = datetime.now(IST).date()
+            if prev_delivery_map:
+                logger.info(f"📦 Delivery refreshed (new day) | {len(prev_delivery_map)} symbols")
+            else:
+                logger.info("📦 Delivery refresh unavailable — using empty map")
+
         sleep_time = 300  # default; replaced with precise dynamic value after scan completes
         try:
             # ── LOAD WATCHLIST ──────────────────────────────────────────────────────
@@ -252,11 +270,7 @@ def start():
             all_ticker_data = fetch_watchlist_data(watchlist, period="60d", interval="1h")
 
             # ── DELIVERY DATA ───────────────────────────────────────────────────────
-            prev_delivery_map = fetch_previous_day_delivery()
-            if prev_delivery_map:
-                logger.info(f"📦 Delivery data | {len(prev_delivery_map)} symbols")
-            else:
-                logger.info("📦 Delivery data unavailable — bonus skipped")
+            # (loaded once before the loop; refreshed automatically on date rollover)
 
             # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
             try:
@@ -347,12 +361,6 @@ def start():
                         continue
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-
-                    # Guard: dropna can empty the ticker when yfinance returns a shell
-                    # DataFrame of NaN rows for a delisted/suspended symbol.
-                    if ticker.empty:
-                        rejection_counts["no_data"] += 1
-                        continue
 
                     # ── FORMING CANDLE CHECK ────────────────────────────────────────
                     datetime_col = next(
