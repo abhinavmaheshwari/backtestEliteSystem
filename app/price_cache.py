@@ -170,7 +170,6 @@ def _download_all(
                         f"(batch {i // batch_size + 1}, {len(batch)} requested). "
                         f"Skipping to prevent symbol→data mismatch."
                     )
-                    df = raw[key].reset_index().copy()
                 continue
 
             # MultiIndex: columns are (Ticker, OHLCV)
@@ -182,10 +181,13 @@ def _download_all(
                     if key is None:
                         logger.warning(f"⚠️ Symbol not in batch response: {sym}")
                         continue
-                    if not df.empty:
-                        all_data[sym] = df
+                    # Assign and store in one expression — avoids UnboundLocalError
+                    # if reset_index() or copy() raises (Python 3.12 scoping).
+                    sym_df = raw[key].reset_index().copy()
+                    if not sym_df.empty:
+                        all_data[sym] = sym_df
                 except Exception:
-                    logger.exception(f"❌ Slice error extracting {sym} from batch")
+                    logger.warning(f"⚠️ Skipping {sym} — could not extract from batch")
 
         except Exception:
             logger.exception(f"❌ Batch download failed (batch {i // batch_size + 1})")
