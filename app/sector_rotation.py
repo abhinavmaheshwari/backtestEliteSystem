@@ -659,6 +659,28 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
             round(nifty_return, 2), len(close)
         )
 
+    # ── Classification summary logs ──────────────────────────────────────────────────
+    leading  = [(n, s) for n, s in sector_scores.items() if s.classification == "LEADING"]
+    improving= [(n, s) for n, s in sector_scores.items() if s.classification == "IMPROVING"]
+    weakening= [(n, s) for n, s in sector_scores.items() if s.classification == "WEAKENING"]
+    lagging  = [(n, s) for n, s in sector_scores.items() if s.classification == "LAGGING"]
+
+    for label, bucket, icon in [
+        ("LEADING",   leading,   "✅"),
+        ("IMPROVING", improving, "📈"),
+        ("WEAKENING", weakening, "📉"),
+        ("LAGGING",   lagging,   "❌"),
+    ]:
+        if bucket:
+            sorted_bucket = sorted(bucket, key=lambda x: x[1].outperformance_pct, reverse=True)
+            names = ", ".join(
+                f"{n} ({'+' if s.outperformance_pct >= 0 else ''}{s.outperformance_pct:.1f}%)"
+                for n, s in sorted_bucket
+            )
+            logger.info(f"{icon} {label}: {names}")
+        else:
+            logger.info(f"  — {label}: none")
+
     strong_sectors = {n for n, s in sector_scores.items() if s.classification in ("LEADING", "IMPROVING")}
     weak_sectors   = {n for n, s in sector_scores.items() if s.classification in ("WEAKENING", "LAGGING")}
     report = _build_report(sector_scores, strong_sectors, nifty_return, today, errors)
