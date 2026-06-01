@@ -28,6 +28,13 @@
 #   • Energy:       ENERGYBEES.NS    → OILIETF.NS     (ICICI Prudential Nifty Oil & Gas ETF)
 #   • Electronics:  MOFMANIETF.NS    → MAMFGETF.NS    (Mirae Asset Nifty India Manufacturing ETF)
 #
+# CHANGELOG (2026-06-01 round 4):
+#   Removed Electronics from SECTOR_ETF_MAP:
+#   • MAMFGETF.NS fails at runtime with YFRateLimitError / no data every cycle.
+#     Both MOFMANIETF.NS and MAMFGETF.NS are now confirmed unreliable.
+#     Sector omitted until a stable NSE-listed ETF with ≥6 months history is found.
+#     Graceful degradation handles the missing sector — no scoring impact.
+#
 # CHANGELOG (2026-06-01 round 3):
 #   Fixed duplicate-ticker bug in batch download:
 #   • Infrastructure / Capital Goods / Railways all mapped to INFRAIETF.NS,
@@ -73,7 +80,7 @@ SECTOR_ETF_MAP: dict[str, str] = {
     # NOTE: CHEMICAL.NS launched Nov 2025 — only ~6 months history. Will be skipped if
     #       bars < MIN_BARS_REQUIRED. Graceful degradation applies.
     "Railways":       "INFRAIETF.NS",       # Proxy — shares ETF with Infrastructure
-    "Electronics":    "MAMFGETF.NS",        # FIXED: MANIETF.NS → MOFMANIETF.NS (delisted) → Mirae Asset Nifty India Manufacturing ETF
+    # "Electronics" removed — MAMFGETF.NS fails at runtime (delisted/illiquid). Re-add when a stable ETF is available.
 }
 
 BENCHMARK_TICKER       = "^NSEI"
