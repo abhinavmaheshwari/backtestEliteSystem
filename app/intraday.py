@@ -14,7 +14,7 @@ import time
 import logging
 
 from zoneinfo import ZoneInfo
-from datetime import datetime, time as dt_time
+from datetime import datetime, date, time as dt_time
 
 from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
@@ -232,8 +232,7 @@ def start():
             except Exception:
                 logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
                 from sector_rotation import SectorRotationResult
-                from datetime import date as _date
-                rotation_result = SectorRotationResult({}, set(), set(), "", _date.today(), 0.0)
+                rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
             
             alerts_by_category = {}
             rejection_counts   = {
@@ -301,6 +300,11 @@ def start():
                         continue
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+
+                    # Guard: dropna may empty the DataFrame (all rows had NaN OHLCV)
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
 
                     # ── FORMING CANDLE CHECK ─────────────────────────────────────────
                     datetime_col = next(
