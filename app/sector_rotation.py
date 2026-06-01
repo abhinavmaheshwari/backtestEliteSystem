@@ -12,6 +12,16 @@
 #   • NEVER hard-filters stocks. Rotation status is a score modifier only.
 #   • Fully graceful degradation.
 #   • Sector lookup is symbol-driven, not category-driven.
+#
+# CHANGELOG (2026-06-01):
+#   Fixed 7 delisted ETF tickers discovered via yfinance download errors:
+#   • Realty:       NIFTYREALTY.NS   → MOREALTY.NS   (Motilal Oswal Nifty Realty ETF)
+#   • Energy:       ENERGYIETF.NS    → ENERGYBEES.NS  (Nippon India ETF Nifty Energy BeES)
+#   • Defence:      DEFEFIETF.NS     → MODEFENCE.NS   (Motilal Oswal Nifty India Defence ETF)
+#   • MNC:          MNCIETF.NS       → MOMNC.NS       (Motilal Oswal Nifty MNC ETF)
+#   • Capital Goods:CAPIETF.NS       → INFRAIETF.NS   (proxy; no dedicated ETF exists on NSE)
+#   • Chemicals:    CHEMIETF.NS      → CHEMICAL.NS    (Kotak Nifty Chemicals ETF, launched Nov 2025)
+#   • Electronics:  MANIETF.NS       → MOFMANIETF.NS  (Mirae Asset Nifty India Manufacturing ETF fallback)
 # =====================================================================================
 
 import logging
@@ -32,33 +42,36 @@ IST    = ZoneInfo("Asia/Kolkata")
 
 SECTOR_ETF_MAP: dict[str, str] = {
     "IT":             "ITETF.NS",
-    "Pharma":         "PHARMABEES.NS",    # Nippon India ETF Pharma BeES
+    "Pharma":         "PHARMABEES.NS",      # Nippon India ETF Pharma BeES
     "Banking":        "BANKBEES.NS",
     "FMCG":           "FMCGIETF.NS",
     "Auto":           "AUTOIETF.NS",
     "Metal":          "METALIETF.NS",
-    "Realty":         "NIFTYREALTY.NS",   # UPDATED: NIFTYRIT.NS delisted → Kotak Nifty Realty ETF
-    "Energy":         "ENERGYIETF.NS",    # UPDATED: ENERGYBEES.NS delisted → HDFC Nifty Energy ETF
+    "Realty":         "MOREALTY.NS",        # FIXED: NIFTYREALTY.NS delisted → Motilal Oswal Nifty Realty ETF
+    "Energy":         "ENERGYBEES.NS",      # FIXED: ENERGYIETF.NS delisted → Nippon India ETF Nifty Energy BeES
     "Infrastructure": "INFRAIETF.NS",
     "PSU Bank":       "PSUBNKIETF.NS",
-    "Defence":        "DEFEFIETF.NS",     # UPDATED: NIFTYDEF.NS delisted → HDFC Defence ETF
-    "MNC":            "MNCIETF.NS",       # UPDATED: NIFTYMNCG.NS delisted → Mirae MNC ETF
-    "Consumption":    "CONSUMBEES.NS",    # Nippon India ETF Consumption
+    "Defence":        "MODEFENCE.NS",       # FIXED: DEFEFIETF.NS delisted → Motilal Oswal Nifty India Defence ETF
+    "MNC":            "MOMNC.NS",           # FIXED: MNCIETF.NS delisted → Motilal Oswal Nifty MNC ETF
+    "Consumption":    "CONSUMBEES.NS",      # Nippon India ETF Consumption
     "Financials":     "FINIETF.NS",
-    "Capital Goods":  "CAPIETF.NS",       # Mirae Capital Goods ETF — kept, may be delisted; fallback below
-    "Chemicals":      "CHEMIETF.NS",      # UPDATED: NIFTYCHML.NS delisted → Mirae Nifty Chemicals ETF
-    # "Telecom": intentionally omitted — no liquid standalone telecom sector ETF on NSE.
+    "Capital Goods":  "INFRAIETF.NS",       # FIXED: CAPIETF.NS delisted → no dedicated ETF; Infra proxy
+    "Chemicals":      "CHEMICAL.NS",        # FIXED: CHEMIETF.NS delisted → Kotak Nifty Chemicals ETF (Nov 2025)
+    # NOTE: CHEMICAL.NS launched Nov 2025 — only ~6 months history. Will be skipped if
+    #       bars < MIN_BARS_REQUIRED during the first few months. Graceful degradation applies.
 
-    "Railways":       "INFRAIETF.NS",     # Proxy
-    "Electronics":    "MANIETF.NS",       # UPDATED: MANUIETF.NS delisted → Mirae Manufacturing ETF
+    "Railways":       "INFRAIETF.NS",       # Proxy
+    "Electronics":    "MOFMANIETF.NS",      # FIXED: MANIETF.NS delisted → Mirae Asset Nifty India Manufacturing ETF
+    # NOTE: If MOFMANIETF.NS also fails, Electronics sector will be gracefully skipped.
+    #       No other liquid standalone electronics/manufacturing ETF exists on NSE as of Jun 2026.
 }
 
 BENCHMARK_TICKER      = "^NSEI"
-RS_LOOKBACK_DAYS      = 20    
-MOMENTUM_LOOKBACK_DAYS = 5    
+RS_LOOKBACK_DAYS      = 20
+MOMENTUM_LOOKBACK_DAYS = 5
 DOWNLOAD_PERIOD       = "60d"
 MIN_BARS_REQUIRED     = RS_LOOKBACK_DAYS + MOMENTUM_LOOKBACK_DAYS + 5
-HIGHLIGHT_THRESHOLD_PCT = 5.0  
+HIGHLIGHT_THRESHOLD_PCT = 5.0
 
 # =====================================================================================
 # NSE SYMBOL → SECTOR MAP (SYNCHRONIZED WITH DAILY_BUILDER)
@@ -438,7 +451,8 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
 
     tickers_str = " ".join(tickers)
     logger.info(
-        f"🔄 Sector rotation: batch downloading {len(tickers)} tickers "        f"({DOWNLOAD_PERIOD} daily)..."
+        f"🔄 Sector rotation: batch downloading {len(tickers)} tickers "
+        f"({DOWNLOAD_PERIOD} daily)..."
     )
 
     try:
@@ -628,7 +642,7 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
             continue
 
         rs_value = (1 + sec_return / 100) / (1 + nifty_base / 100)
-        
+
         sec_lagged   = _pct_return(close.iloc[:-momentum_lookback], rs_lookback)
         nifty_lagged = _pct_return(nifty_close.iloc[:-momentum_lookback], rs_lookback)
         if sec_lagged is not None and nifty_lagged is not None:
