@@ -23,6 +23,7 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
+from price_cache import fetch_watchlist_data  # shared cache — eliminates duplicate downloads
 
 from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
 
@@ -56,90 +57,6 @@ MIN_SCORE        = SCORE_THRESHOLDS["15m"]
 MIN_STOCK_PRICE   = 50.0
 RSI_LOOKBACK_BARS = 3      # moved from inside per-stock loop to module level
 
-# =====================================================================================
-# BATCH DATA DOWNLOAD — FIX #2
-# Download all watchlist symbols in a single/few batches instead of 200 individual calls
-# =====================================================================================
-
-def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval: str = "15m") -> dict:
-    """
-    Download OHLCV data for all watchlist symbols in batches.
-    
-    Returns dict: {symbol: DataFrame}
-    
-    This replaces 200 individual yf.download calls with ~5-10 batched calls.
-    Reduces API rate-limiting risk by ~95%.
-    """
-    
-    symbols = watchlist["Stock"].tolist()
-    batch_size = 30  # Download 30 symbols at a time (yfinance handles this well)
-    all_data = {}
-    
-    for i in range(0, len(symbols), batch_size):
-        batch = symbols[i:i + batch_size]
-        tickers_str = " ".join([f"{sym}.NS" for sym in batch])
-        
-        logger.info(f"📥 Batch downloading {len(batch)} symbols ({i}–{min(i + batch_size, len(symbols))}/{len(symbols)})")
-        
-        try:
-            # Download entire batch in ONE request.
-            # group_by='ticker' locks the MultiIndex structure to (Ticker, OHLCV) so
-            # xs(sym, level=0) is always correct regardless of yfinance version changes.
-            batch_data = yf.download(
-                tickers_str,
-                period=period,
-                interval=interval,
-                progress=False,
-                auto_adjust=True,
-                threads=False,
-                group_by="ticker",
-            )
-
-            if batch_data is None or batch_data.empty:
-                logger.warning(f"⚠️ Empty response for batch {i // batch_size + 1}")
-                continue
-
-            # Detect actual structure returned — don't trust len(batch).
-            # If 29 of 30 tickers are suspended/delisted, yfinance returns a flat
-            # DataFrame for the one survivor instead of a MultiIndex.
-            if not isinstance(batch_data.columns, pd.MultiIndex):
-                # Flat DataFrame — yfinance returned a single-ticker result.
-                if len(batch) == 1:
-                    # We only requested 1 ticker, so batch[0] is safely the correct stock.
-                    sym = batch[0]
-                    df  = batch_data.reset_index().copy()
-                    if not df.empty:
-                        all_data[sym] = df
-                else:
-                    # We requested a multi-ticker batch but only 1 survived (others
-                    # delisted/suspended). Assigning to batch[0] would map the wrong
-                    # symbol to a survivor's data — skip the batch entirely instead.
-                    logger.warning(
-                        f"⚠️ YF returned flat DF for multi-ticker batch "
-                        f"(batch {i // batch_size + 1}, {len(batch)} requested). "
-                        f"Skipping to prevent symbol→data mismatch."
-                    )
-                    continue
-            else:
-                # Multi-ticker: MultiIndex columns (Ticker, OHLCV) with group_by='ticker'
-                for sym in batch:
-                    ns_sym = f"{sym}.NS"
-                    try:
-                        # Try .NS form first (what we passed to yf.download), then bare sym
-                        level0 = batch_data.columns.get_level_values(0)
-                        key    = ns_sym if ns_sym in level0 else (sym if sym in level0 else None)
-                        if key is None:
-                            logger.warning(f"⚠️ Symbol not in batch response: {sym}")
-                            continue
-                        ticker_df      = batch_data[key].reset_index()
-                        all_data[sym]  = ticker_df
-                    except Exception as e:
-                        logger.exception(f"❌ Slice error extracting {sym} from batch: {e}")
-
-        except Exception as e:
-            logger.exception(f"❌ Batch download failed (batch {i // batch_size + 1}): {e}")
-    
-    return all_data
 
 # =====================================================================================
 # MAIN SCANNING LOOP — NOW INSIDE start() FUNCTION (FIX #1)
