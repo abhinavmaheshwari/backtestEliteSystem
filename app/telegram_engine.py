@@ -111,6 +111,21 @@ def send_telegram_message(message: str, scan_type: str = None, retries: int = 3)
                 time.sleep(retry_after)
                 continue
 
+            # Thread not found — the topic was deleted or the thread_id is wrong.
+            # Fall back to General (remove message_thread_id and retry immediately)
+            # so alerts are never silently lost due to a misconfigured topic ID.
+            if response.status_code == 400:
+                error_body = response.json()
+                description = error_body.get("description", "")
+                if "message thread not found" in description and "message_thread_id" in payload:
+                    logger.warning(
+                        f"⚠️ Thread {thread_id} not found for scan={scan_type} — "
+                        f"falling back to General chat"
+                    )
+                    payload.pop("message_thread_id")
+                    thread_id = None
+                    continue  # retry immediately without thread_id
+
             logger.error(f"❌ Telegram {response.status_code}: {response.text}")
 
         except requests.exceptions.Timeout:
