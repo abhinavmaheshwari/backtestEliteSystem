@@ -348,6 +348,12 @@ def start():
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
+                    # Guard: dropna can empty the ticker when yfinance returns a shell
+                    # DataFrame of NaN rows for a delisted/suspended symbol.
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
+
                     # ── FORMING CANDLE CHECK ────────────────────────────────────────
                     datetime_col = next(
                         (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
