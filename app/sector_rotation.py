@@ -13,15 +13,20 @@
 #   • Fully graceful degradation.
 #   • Sector lookup is symbol-driven, not category-driven.
 #
-# CHANGELOG (2026-06-01):
+# CHANGELOG (2026-06-01 round 1):
 #   Fixed 7 delisted ETF tickers discovered via yfinance download errors:
 #   • Realty:       NIFTYREALTY.NS   → MOREALTY.NS   (Motilal Oswal Nifty Realty ETF)
-#   • Energy:       ENERGYIETF.NS    → ENERGYBEES.NS  (Nippon India ETF Nifty Energy BeES)
+#   • Energy:       ENERGYIETF.NS    → ENERGYBEES.NS  (delisted in round 2, see below)
 #   • Defence:      DEFEFIETF.NS     → MODEFENCE.NS   (Motilal Oswal Nifty India Defence ETF)
 #   • MNC:          MNCIETF.NS       → MOMNC.NS       (Motilal Oswal Nifty MNC ETF)
 #   • Capital Goods:CAPIETF.NS       → INFRAIETF.NS   (proxy; no dedicated ETF exists on NSE)
 #   • Chemicals:    CHEMIETF.NS      → CHEMICAL.NS    (Kotak Nifty Chemicals ETF, launched Nov 2025)
-#   • Electronics:  MANIETF.NS       → MOFMANIETF.NS  (Mirae Asset Nifty India Manufacturing ETF fallback)
+#   • Electronics:  MANIETF.NS       → MOFMANIETF.NS  (delisted in round 2, see below)
+#
+# CHANGELOG (2026-06-01 round 2):
+#   Fixed 2 more tickers that also failed at runtime:
+#   • Energy:       ENERGYBEES.NS    → OILIETF.NS     (ICICI Prudential Nifty Oil & Gas ETF)
+#   • Electronics:  MOFMANIETF.NS    → MAMFGETF.NS    (Mirae Asset Nifty India Manufacturing ETF)
 # =====================================================================================
 
 import logging
@@ -48,7 +53,7 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Auto":           "AUTOIETF.NS",
     "Metal":          "METALIETF.NS",
     "Realty":         "MOREALTY.NS",        # FIXED: NIFTYREALTY.NS delisted → Motilal Oswal Nifty Realty ETF
-    "Energy":         "ENERGYBEES.NS",      # FIXED: ENERGYIETF.NS delisted → Nippon India ETF Nifty Energy BeES
+    "Energy":         "OILIETF.NS",          # FIXED: ENERGYIETF.NS → ENERGYBEES.NS (delisted) → ICICI Prudential Nifty Oil & Gas ETF
     "Infrastructure": "INFRAIETF.NS",
     "PSU Bank":       "PSUBNKIETF.NS",
     "Defence":        "MODEFENCE.NS",       # FIXED: DEFEFIETF.NS delisted → Motilal Oswal Nifty India Defence ETF
@@ -61,9 +66,7 @@ SECTOR_ETF_MAP: dict[str, str] = {
     #       bars < MIN_BARS_REQUIRED during the first few months. Graceful degradation applies.
 
     "Railways":       "INFRAIETF.NS",       # Proxy
-    "Electronics":    "MOFMANIETF.NS",      # FIXED: MANIETF.NS delisted → Mirae Asset Nifty India Manufacturing ETF
-    # NOTE: If MOFMANIETF.NS also fails, Electronics sector will be gracefully skipped.
-    #       No other liquid standalone electronics/manufacturing ETF exists on NSE as of Jun 2026.
+    "Electronics":    "MAMFGETF.NS",         # FIXED: MANIETF.NS → MOFMANIETF.NS (delisted) → Mirae Asset Nifty India Manufacturing ETF
 }
 
 BENCHMARK_TICKER      = "^NSEI"
