@@ -27,6 +27,14 @@
 #   Fixed 2 more tickers that also failed at runtime:
 #   • Energy:       ENERGYBEES.NS    → OILIETF.NS     (ICICI Prudential Nifty Oil & Gas ETF)
 #   • Electronics:  MOFMANIETF.NS    → MAMFGETF.NS    (Mirae Asset Nifty India Manufacturing ETF)
+#
+# CHANGELOG (2026-06-01 round 3):
+#   Fixed duplicate-ticker bug in batch download:
+#   • Infrastructure / Capital Goods / Railways all mapped to INFRAIETF.NS,
+#     causing the same ticker to appear 3× in the yfinance batch string.
+#   • all_tickers is now deduplicated before the batch call; close_map is then
+#     shared across all sectors that proxy to the same ETF — no double-download,
+#     no MultiIndex parse confusion.
 # =====================================================================================
 
 import logging
@@ -53,7 +61,7 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Auto":           "AUTOIETF.NS",
     "Metal":          "METALIETF.NS",
     "Realty":         "MOREALTY.NS",        # FIXED: NIFTYREALTY.NS delisted → Motilal Oswal Nifty Realty ETF
-    "Energy":         "OILIETF.NS",          # FIXED: ENERGYIETF.NS → ENERGYBEES.NS (delisted) → ICICI Prudential Nifty Oil & Gas ETF
+    "Energy":         "OILIETF.NS",         # FIXED: ENERGYIETF.NS → ENERGYBEES.NS (delisted) → ICICI Prudential Nifty Oil & Gas ETF
     "Infrastructure": "INFRAIETF.NS",
     "PSU Bank":       "PSUBNKIETF.NS",
     "Defence":        "MODEFENCE.NS",       # FIXED: DEFEFIETF.NS delisted → Motilal Oswal Nifty India Defence ETF
@@ -63,17 +71,16 @@ SECTOR_ETF_MAP: dict[str, str] = {
     "Capital Goods":  "INFRAIETF.NS",       # FIXED: CAPIETF.NS delisted → no dedicated ETF; Infra proxy
     "Chemicals":      "CHEMICAL.NS",        # FIXED: CHEMIETF.NS delisted → Kotak Nifty Chemicals ETF (Nov 2025)
     # NOTE: CHEMICAL.NS launched Nov 2025 — only ~6 months history. Will be skipped if
-    #       bars < MIN_BARS_REQUIRED during the first few months. Graceful degradation applies.
-
-    "Railways":       "INFRAIETF.NS",       # Proxy
-    "Electronics":    "MAMFGETF.NS",         # FIXED: MANIETF.NS → MOFMANIETF.NS (delisted) → Mirae Asset Nifty India Manufacturing ETF
+    #       bars < MIN_BARS_REQUIRED. Graceful degradation applies.
+    "Railways":       "INFRAIETF.NS",       # Proxy — shares ETF with Infrastructure
+    "Electronics":    "MAMFGETF.NS",        # FIXED: MANIETF.NS → MOFMANIETF.NS (delisted) → Mirae Asset Nifty India Manufacturing ETF
 }
 
-BENCHMARK_TICKER      = "^NSEI"
-RS_LOOKBACK_DAYS      = 20
+BENCHMARK_TICKER       = "^NSEI"
+RS_LOOKBACK_DAYS       = 20
 MOMENTUM_LOOKBACK_DAYS = 5
-DOWNLOAD_PERIOD       = "60d"
-MIN_BARS_REQUIRED     = RS_LOOKBACK_DAYS + MOMENTUM_LOOKBACK_DAYS + 5
+DOWNLOAD_PERIOD        = "60d"
+MIN_BARS_REQUIRED      = RS_LOOKBACK_DAYS + MOMENTUM_LOOKBACK_DAYS + 5
 HIGHLIGHT_THRESHOLD_PCT = 5.0
 
 # =====================================================================================
@@ -437,25 +444,34 @@ def _parse_close_series(df: pd.DataFrame, label: str) -> Optional[pd.Series]:
 
 def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]:
     """
-    FIX GAP 4: Download all sector ETFs + Nifty benchmark in ONE yfinance batch call
-    instead of 20 sequential individual calls.
+    Download all tickers in ONE yfinance batch call.
 
-    Previously: 20 calls × ~1–2s each = 20–40s total (plus rate-limit risk).
-    Now:        1 batch call = ~2–4s total regardless of universe size.
+    Deduplicates tickers before the request so that sectors sharing a proxy ETF
+    (e.g. Infrastructure / Capital Goods / Railways all → INFRAIETF.NS) don't
+    cause the same symbol to appear multiple times in the batch string, which
+    confuses yfinance's MultiIndex column parsing.
 
-    Returns {ticker_symbol: close_series_or_None}.
-    Falls back to individual _download_close() for any ticker missing from the batch
-    response so a single delisted ETF can't silently null out the entire dataset.
+    Returns {ticker_symbol: close_series_or_None} for every requested ticker,
+    including duplicates (they all point to the same Series object).
     """
     results: dict[str, Optional[pd.Series]] = {}
 
     if not tickers:
         return results
 
-    tickers_str = " ".join(tickers)
+    # Deduplicate while preserving order; batch only unique tickers.
+    seen: set[str] = set()
+    unique_tickers: list[str] = []
+    for t in tickers:
+        if t not in seen:
+            seen.add(t)
+            unique_tickers.append(t)
+
+    tickers_str = " ".join(unique_tickers)
     logger.info(
-        f"🔄 Sector rotation: batch downloading {len(tickers)} tickers "
-        f"({DOWNLOAD_PERIOD} daily)..."
+        f"🔄 Sector rotation: batch downloading {len(unique_tickers)} unique tickers "
+        f"({len(tickers)} requested, {len(tickers) - len(unique_tickers)} deduped) "
+        f"| period={DOWNLOAD_PERIOD}"
     )
 
     try:
@@ -476,13 +492,12 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
             return results
 
         if not isinstance(raw.columns, pd.MultiIndex):
-            # Only one ticker survived (others delisted/halted) — yfinance returns flat DF.
-            # We can only safely assign it if we requested exactly 1 ticker.
-            if len(tickers) == 1:
-                results[tickers[0]] = _parse_close_series(raw, tickers[0])
+            # Only one ticker survived — yfinance returns a flat DF.
+            if len(unique_tickers) == 1:
+                series = _parse_close_series(raw, unique_tickers[0])
+                for t in tickers:                  # covers duplicates too
+                    results[t] = series
             else:
-                # Can't determine which ticker this belongs to — mark all as None.
-                # Individual fallback would repeat the same delisted errors; skip it.
                 logger.warning(
                     "⚠️  Sector batch returned flat DF for multi-ticker request "
                     "— skipping to avoid symbol→data mismatch"
@@ -492,18 +507,23 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
             return results
 
         # MultiIndex: columns are (Ticker, OHLCV).
-        for t in tickers:
+        # Build unique results first, then fan out to duplicates.
+        unique_results: dict[str, Optional[pd.Series]] = {}
+        level0 = raw.columns.get_level_values(0)
+        for t in unique_tickers:
             try:
-                level0 = raw.columns.get_level_values(0)
                 if t in level0:
-                    results[t] = _parse_close_series(raw[t], t)
+                    unique_results[t] = _parse_close_series(raw[t], t)
                 else:
-                    # Ticker absent from batch (delisted / no data for period) — not an error.
                     logger.debug(f"⚠️  {t} absent from sector batch (likely delisted) — skipped")
-                    results[t] = None
+                    unique_results[t] = None
             except Exception:
                 logger.exception(f"⚠️  Slice error for {t} in sector batch")
-                results[t] = None
+                unique_results[t] = None
+
+        # Fan out: every originally requested ticker (including duplicates) gets its result.
+        for t in tickers:
+            results[t] = unique_results.get(t)
 
     except Exception:
         logger.exception("⚠️  Sector batch download failed — all sectors will be skipped")
@@ -534,19 +554,22 @@ def _download_close_single(ticker: str) -> Optional[pd.Series]:
 def _download_close(ticker: str) -> Optional[pd.Series]:
     return _download_close_single(ticker)
 
+
 def _pct_return(series: pd.Series, lookback: int) -> Optional[float]:
     if len(series) < lookback + 1: return None
     start = float(series.iloc[-(lookback + 1)])
     end   = float(series.iloc[-1])
     return None if start <= 0 else (end / start - 1.0) * 100.0
 
+
 def _classify(rs_value: float, rs_momentum: float) -> str:
-    strong   = rs_value  >= 1.0
+    strong   = rs_value   >= 1.0
     positive = rs_momentum >= 0.0
     if strong and positive:     return "LEADING"
     if not strong and positive: return "IMPROVING"
     if strong and not positive: return "WEAKENING"
-    return                      "LAGGING"
+    return                             "LAGGING"
+
 
 def _build_report(scores, strong_sectors, nifty_return_pct, scan_date, errors) -> str:
     buckets = {k: [] for k in ("LEADING", "IMPROVING", "WEAKENING", "LAGGING")}
@@ -565,7 +588,7 @@ def _build_report(scores, strong_sectors, nifty_return_pct, scan_date, errors) -
         "= = = = = = = = = = = = = = = = =",
     ]
 
-    icons = {"LEADING": "✅", "IMPROVING": "📈", "WEAKENING": "📉", "LAGGING": "❌"}
+    icons  = {"LEADING": "✅", "IMPROVING": "📈", "WEAKENING": "📉", "LAGGING": "❌"}
     labels = {
         "LEADING":   "LEADING — Strong & Strengthening",
         "IMPROVING": "IMPROVING — Weak but Recovering",
@@ -585,7 +608,8 @@ def _build_report(scores, strong_sectors, nifty_return_pct, scan_date, errors) -
     else:
         lines.append("⚠️  No leading sectors — full universe scan, no sector bonus applied")
 
-    if errors: lines.append(f"⚠️  ETF data missing: {', '.join(errors)}")
+    if errors:
+        lines.append(f"⚠️  ETF data missing: {', '.join(errors)}")
 
     return "\n".join(lines)
 
@@ -597,27 +621,35 @@ _cache:      Optional[SectorRotationResult] = None
 _cache_time: Optional[datetime]             = None
 CACHE_TTL_MINUTES = 30
 
-def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_LOOKBACK_DAYS, force_refresh=False):
+
+def get_sector_scores(
+    rs_lookback: int = RS_LOOKBACK_DAYS,
+    momentum_lookback: int = MOMENTUM_LOOKBACK_DAYS,
+    force_refresh: bool = False,
+) -> SectorRotationResult:
     global _cache, _cache_time
 
     if not force_refresh and _cache is not None and _cache_time is not None:
         elapsed = (datetime.now(IST) - _cache_time).total_seconds()
         if elapsed < CACHE_TTL_MINUTES * 60:
-            logger.info(f"🔄 Sector rotation: using cached result ({elapsed/60:.1f}m old, TTL={CACHE_TTL_MINUTES}m)")
+            logger.info(
+                f"🔄 Sector rotation: using cached result "
+                f"({elapsed/60:.1f}m old, TTL={CACHE_TTL_MINUTES}m)"
+            )
             return _cache
 
-    today  = date.today()
-    errors = []
+    today         = date.today()
+    errors        = []
     sector_scores = {}
 
-    # FIX GAP 4: Download Nifty + all sector ETFs in ONE batch call.
-    # Previously: 20 sequential yf.download() calls (20–40s + rate-limit risk).
-    # Now: 1 batch call for all 20 tickers simultaneously (~3s total).
+    # Build deduplicated ticker list: benchmark + all unique ETF tickers.
+    # SECTOR_ETF_MAP may map multiple sectors to the same proxy ETF (e.g. INFRAIETF.NS
+    # is used for Infrastructure, Capital Goods, and Railways). _batch_download_closes
+    # handles deduplication internally and fans the result back to all callers.
     all_tickers = [BENCHMARK_TICKER] + list(SECTOR_ETF_MAP.values())
     close_map   = _batch_download_closes(all_tickers)
 
     nifty_close = close_map.get(BENCHMARK_TICKER)
-
     if nifty_close is None or len(nifty_close) < MIN_BARS_REQUIRED:
         logger.error("❌ Sector Rotation: Nifty 50 download failed")
         result = SectorRotationResult({}, set(), set(), "⚠️ Unavailable", today, 0.0, ["Nifty 50"])
@@ -657,28 +689,21 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
 
         classification = _classify(rs_value, rs_momentum)
         sector_scores[sector_name] = SectorScore(
-            sector_name, etf_ticker, round(rs_value, 4), round(rs_momentum, 4),
-            round((rs_value - 1.0) * 100, 2), classification, round(sec_return, 2),
-            round(nifty_return, 2), len(close)
+            sector_name, etf_ticker,
+            round(rs_value, 4), round(rs_momentum, 4),
+            round((rs_value - 1.0) * 100, 2), classification,
+            round(sec_return, 2), round(nifty_return, 2), len(close),
         )
 
-    # ── Classification summary logs ──────────────────────────────────────────────────
-    leading  = [(n, s) for n, s in sector_scores.items() if s.classification == "LEADING"]
-    improving= [(n, s) for n, s in sector_scores.items() if s.classification == "IMPROVING"]
-    weakening= [(n, s) for n, s in sector_scores.items() if s.classification == "WEAKENING"]
-    lagging  = [(n, s) for n, s in sector_scores.items() if s.classification == "LAGGING"]
-
-    for label, bucket, icon in [
-        ("LEADING",   leading,   "✅"),
-        ("IMPROVING", improving, "📈"),
-        ("WEAKENING", weakening, "📉"),
-        ("LAGGING",   lagging,   "❌"),
-    ]:
+    # ── Classification summary logs ───────────────────────────────────────────────────
+    buckets_log = {"LEADING": "✅", "IMPROVING": "📈", "WEAKENING": "📉", "LAGGING": "❌"}
+    for label, icon in buckets_log.items():
+        bucket = [(n, s) for n, s in sector_scores.items() if s.classification == label]
         if bucket:
-            sorted_bucket = sorted(bucket, key=lambda x: x[1].outperformance_pct, reverse=True)
+            sorted_b = sorted(bucket, key=lambda x: x[1].outperformance_pct, reverse=True)
             names = ", ".join(
                 f"{n} ({'+' if s.outperformance_pct >= 0 else ''}{s.outperformance_pct:.1f}%)"
-                for n, s in sorted_bucket
+                for n, s in sorted_b
             )
             logger.info(f"{icon} {label}: {names}")
         else:
@@ -688,11 +713,16 @@ def get_sector_scores(rs_lookback=RS_LOOKBACK_DAYS, momentum_lookback=MOMENTUM_L
     weak_sectors   = {n for n, s in sector_scores.items() if s.classification in ("WEAKENING", "LAGGING")}
     report = _build_report(sector_scores, strong_sectors, nifty_return, today, errors)
 
-    result = SectorRotationResult(sector_scores, strong_sectors, weak_sectors, report, today, round(nifty_return, 2), errors)
+    result = SectorRotationResult(
+        sector_scores, strong_sectors, weak_sectors, report,
+        today, round(nifty_return, 2), errors,
+    )
     _cache, _cache_time = result, datetime.now(IST)
     return result
 
+
 _ROTATION_BONUS = {"LEADING": +4, "IMPROVING": +2, "WEAKENING": -2, "LAGGING": -4}
+
 
 def get_sector_score_bonus(
     symbol: str,
