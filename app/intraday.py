@@ -153,7 +153,18 @@ def start():
     
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
-    
+
+    # Fetch delivery data ONCE before the loop — it's yesterday's data and never
+    # changes during the trading day. Re-fetching every 5 minutes wastes a 30s
+    # HTTP call to NSE on every cycle. Refresh automatically at midnight so the
+    # next day's session always starts with the correct previous-day delivery map.
+    prev_delivery_map    = fetch_previous_day_delivery()
+    _delivery_fetch_date = datetime.now(IST).date()
+    if prev_delivery_map:
+        logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
+    else:
+        logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped")
+
     while True:
         
         ist_now      = datetime.now(IST)
@@ -176,6 +187,15 @@ def start():
         logger.info(f"⚡ INTRADAY SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
 
+        # Refresh delivery map if date rolled over (new trading day)
+        if datetime.now(IST).date() != _delivery_fetch_date:
+            prev_delivery_map    = fetch_previous_day_delivery()
+            _delivery_fetch_date = datetime.now(IST).date()
+            if prev_delivery_map:
+                logger.info(f"📦 Delivery refreshed (new day) | {len(prev_delivery_map)} symbols")
+            else:
+                logger.info("📦 Delivery refresh unavailable — using empty map")
+
         sleep_time = 300  # default; always defined before the try so except can use it safely
         try:
             try:
@@ -197,12 +217,6 @@ def start():
             all_ticker_data = fetch_watchlist_data(watchlist, period="10d", interval="15m")
             logger.info(f"📥 Data downloaded for {len(all_ticker_data)}/{len(watchlist)} symbols")
             
-            # Fetch delivery conviction (previous day)
-            prev_delivery_map = fetch_previous_day_delivery()
-            if prev_delivery_map:
-                logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
-            else:
-                logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped this cycle")
 
             # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
             try:
@@ -287,12 +301,6 @@ def start():
                         continue
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-
-                    # Guard: dropna can empty the ticker (all rows were NaN — stock had
-                    # a failed download that returned a shell DataFrame with NaN values).
-                    if ticker.empty:
-                        rejection_counts["no_data"] += 1
-                        continue
 
                     # ── FORMING CANDLE CHECK ─────────────────────────────────────────
                     datetime_col = next(
