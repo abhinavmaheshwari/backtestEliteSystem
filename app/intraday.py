@@ -288,6 +288,12 @@ def start():
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
+                    # Guard: dropna can empty the ticker (all rows were NaN — stock had
+                    # a failed download that returned a shell DataFrame with NaN values).
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
+
                     # ── FORMING CANDLE CHECK ─────────────────────────────────────────
                     datetime_col = next(
                         (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
