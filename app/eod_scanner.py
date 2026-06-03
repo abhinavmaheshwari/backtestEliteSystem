@@ -17,30 +17,43 @@
 #   TV for "which stocks", yfinance for "what did they do today".
 #
 # FILTER PIPELINE (in order — a stock must pass ALL of these):
-#   1.  Data quality       — 200 candles minimum, no missing columns
-#   2.  Signal count       — at least 1 breakout signal (MIN_SIGNALS from config.py)
-#   3.  Candle body        — body ≥ 60% of range (tightest of the three scanners)
-#   4.  Bullish close      — close strictly above open
-#   5.  Close position     — close in top 25% of daily range
-#   6.  Upper wick         — wick ≤ 30% of range
-#   7.  Volume ratio       — current day ≥ 2.0× 20-day average
-#   8.  Avg volume floor   — 20-day avg ≥ 200K shares
-#   9.  Min stock price    — close ≥ ₹50
-#   10. RSI range          — RSI 58–75 (tightest RSI band)
-#   11. RSI direction      — RSI now > RSI 5 days ago (1 week of rising momentum)
-#   12. EMA20              — close above EMA20
-#   13. SMA50              — close above SMA50
-#   14. Golden cross       — SMA50 ≥ SMA200
-#   15. MACD               — MACD line above signal line
-#   16. 52W high proximity — within 15% of 52-week high
-#   17. Single-day move    — day move ≤ 8% from previous close (no gap chases)
-#   18. Score threshold    — composite score ≥ 78
+#   1.  Data quality          — 200 candles minimum, no missing columns
+#   2.  Signal count          — at least 1 breakout signal (MIN_SIGNALS from config.py)
+#   3.  Candle body           — body ≥ 45% of range
+#   4.  Bullish close         — close strictly above open
+#   5.  Close position        — close in top 35% of daily range (≥ 0.65)
+#   6.  Upper wick            — wick ≤ 35% of range
+#   7.  Volume ratio          — current day ≥ 1.8× 20-day average  [RAISED from 1.2×]
+#   8.  Avg volume floor      — 20-day avg ≥ 50K shares             [RAISED from 10K]
+#   9.  Min stock price       — close ≥ ₹50
+#   10. RSI range             — RSI 55–75                           [RAISED min from 50, lowered max from 80]
+#   11. RSI direction         — RSI now > RSI 5 days ago (1 week of rising momentum)
+#   12. EMA20                 — close above EMA20
+#   13. SMA50                 — close above SMA50
+#   14. Golden cross          — SMA50 ≥ SMA200
+#   15. ADX minimum           — ADX ≥ 25 (trend strength gate)     [NEW — was missing in EOD]
+#   16. MACD                  — MACD line above signal line
+#   17. 52W high proximity    — within 15% of 52-week high
+#   18. Single-day move       — day move ≤ 15% from previous close (no gap chases)
+#   19. Gap-from-support      — breakout candle body not > 3% above prior 10-bar high [NEW]
+#   20. Score threshold       — composite score ≥ 82                [RAISED from 78]
 #
-# FIXES APPLIED (v4):
-#   FIX 1 — Wrapped while-True loop in def start() — module-level loop blocked import
-#   FIX 2 — fetch_watchlist_data() batch download — was N sequential API calls per scan
-#   FIX 3 — All thresholds imported from config.py — hardcoded constants removed
-#   FIX 4 — init_db() / cleanup moved inside start() — was running at import time
+# PERFORMANCE FIXES APPLIED (v5):
+#   FIX 1 — ADX hard gate added (Filter 15): ADX < 25 hard-disqualifies.
+#            Matches ADX_MIN_THRESHOLD in config.py. Previously EOD had no ADX filter
+#            in the filter pipeline — only in scoring_engine's soft disqualifier.
+#            Root cause: EOD had 4 alerts ALL negative. Most had ADX 20–24 (weak trend).
+#
+#   FIX 2 — Gap-from-support filter added (Filter 19): blocks stocks where the
+#            breakout candle's OPEN is already > 3% above the prior 10-bar high.
+#            These are "already extended" moves that alert too late — the breakout
+#            happened before the candle that triggered the signal.
+#            Root cause: multi-signal stocks (Monthly+Weekly+52W) had typically been
+#            running for multiple days before the EOD scan catches them.
+#
+#   FIX 3 — Thresholds (volume, RSI, score) now imported from updated config.py v5.
+#            All values raised — see config.py module docstring for detailed rationale.
+#            (Config changes are in config.py, not duplicated here.)
 # =====================================================================================
 
 import pandas as pd
@@ -61,7 +74,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_delivery_data
 
-from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
+from sector_rotation import get_sector_scores
 
 # FIX 3: Centralized config — no more hardcoded constants
 from config import (
@@ -70,6 +83,7 @@ from config import (
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
     DEDUP_DAYS,
+    ADX_MIN_THRESHOLD,   # NEW (v5): imported for ADX hard gate (Filter 15)
 )
 
 # =====================================================================================
@@ -103,18 +117,23 @@ MIN_SIGNALS             = SCAN_CONFIG["1d"]["MIN_SIGNALS"]
 MIN_BODY_RATIO          = SCAN_CONFIG["1d"]["MIN_BODY_RATIO"]
 MIN_CLOSE_POSITION      = SCAN_CONFIG["1d"]["MIN_CLOSE_POSITION"]
 MAX_UPPER_WICK_RATIO    = SCAN_CONFIG["1d"]["MAX_UPPER_WICK"]
-MIN_VOLUME_RATIO        = SCAN_CONFIG["1d"]["MIN_VOLUME_RATIO"]
-MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1d"]["MIN_VOLUME_AVG"]
-MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]
-MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]
-MIN_SCORE               = SCORE_THRESHOLDS["1d"]
+MIN_VOLUME_RATIO        = SCAN_CONFIG["1d"]["MIN_VOLUME_RATIO"]      # 1.8 (was 1.2)
+MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1d"]["MIN_VOLUME_AVG"]        # 50K (was 10K)
+MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]               # 55  (was 50)
+MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]               # 75  (was 80)
+MIN_SCORE               = SCORE_THRESHOLDS["1d"]                     # 82  (was 78)
 
-# NOTE: MIN_SIGNALS = 1 for daily timeframe (config.py — a single 52W Breakout is
-# high-conviction enough for EOD. Intraday uses 2 to compensate for noise).
 MIN_STOCK_PRICE             = 50.0
 RSI_LOOKBACK_BARS           = 5      # 5 days = 1 week of rising momentum
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
-MAX_SINGLE_DAY_MOVE_PCT     = 15.0   # Raised from 8% to catch upper circuit breakouts
+MAX_SINGLE_DAY_MOVE_PCT     = 15.0
+
+# FIX 2 (v5): Gap-from-support threshold.
+# If the breakout candle's open is already > MAX_GAP_FROM_PRIOR_HIGH_PCT above the
+# prior 10-bar high, the move is extended — reject to avoid chasing.
+# 10-bar lookback = 2 trading weeks, covers the most recent consolidation range.
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   # NEW (v5)
+GAP_LOOKBACK_BARS           = 10    # NEW (v5): prior high window for gap check
 
 
 # =====================================================================================
@@ -253,20 +272,7 @@ def start():
     last_scan_date = None
 
     # FIX GAP 6: Weekly watchlist rebuild tracker.
-    # The parquet is built once at first startup and never refreshed unless the file is
-    # manually deleted. Fundamentals (ROE, EPS growth, OPM) shift every quarter;
-    # a watchlist from 3 months ago may include companies whose quality has deteriorated
-    # or exclude recent improvers. A weekly rebuild keeps the universe current.
-    #
-    # Rebuild policy: every Sunday at 7 PM IST (just before the EOD scan window opens).
-    # Sunday is a non-trading day so the rebuild runs without competing for resources.
-    # We use a date string (last_rebuild_week) rather than a timestamp so the rebuild
-    # happens at most once per week even if the scanner restarts mid-Sunday.
-    #
-    # IMPORTANT: The rebuild runs synchronously inside the EOD thread — it takes 30–60s
-    # and blocks this thread but not the intraday or 1H scanner threads. The EOD window
-    # is 6:30–8:00 PM; a 60s rebuild on Sunday at 7 PM is well within budget.
-    last_rebuild_week: str = ""   # ISO week string, e.g. "2025-W21"
+    last_rebuild_week: str = ""
 
     while True:
 
@@ -281,16 +287,14 @@ def start():
 
         # ── WEEKEND ─────────────────────────────────────────────────────────────────
         if not is_weekday:
-            # FIX GAP 6: Weekly watchlist rebuild — runs on Sunday in the EOD window.
-            # Triggers at most once per ISO week. Runs synchronously here (≤60s)
-            # because there are no intraday scans on weekends to conflict with.
-            current_week = ist_now.strftime("%G-W%V")   # ISO year + week number
+            current_week = ist_now.strftime("%G-W%V")
             is_sunday    = (weekday == 6)
             in_rebuild_window = dt_time(19, 0) <= current_time <= dt_time(19, 30)
 
             if is_sunday and in_rebuild_window and last_rebuild_week != current_week:
                 logger.info(
-                    f"📋 Weekly watchlist rebuild | Week={current_week} | "                    f"Trigger: Sunday {ist_now.strftime('%H:%M')} IST"
+                    f"📋 Weekly watchlist rebuild | Week={current_week} | "
+                    f"Trigger: Sunday {ist_now.strftime('%H:%M')} IST"
                 )
                 try:
                     from daily_builder import build_watchlist
@@ -299,7 +303,8 @@ def start():
                     logger.info(f"✅ Watchlist rebuilt for week {current_week}")
                 except Exception:
                     logger.exception(
-                        f"❌ Weekly rebuild failed for week {current_week} — "                        "existing watchlist retained; will retry next Sunday"
+                        f"❌ Weekly rebuild failed for week {current_week} — "
+                        "existing watchlist retained; will retry next Sunday"
                     )
 
             sleep_secs = seconds_until_eod()
@@ -339,7 +344,7 @@ def start():
         logger.info(f"📊 EOD SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info("=" * 70)
 
-        scan_start = datetime.now(IST)  # defined BEFORE try so except block can safely use it
+        scan_start = datetime.now(IST)
         try:
             # ── LOAD WATCHLIST ──────────────────────────────────────────────────────
             try:
@@ -358,23 +363,6 @@ def start():
                     continue
 
             # ── FETCH DELIVERY DATA + BATCH DOWNLOAD IN PARALLEL (FIX GAP 3) ─────────
-            #
-            # WHY PARALLEL:
-            #   Previously these two tasks ran sequentially: delivery retry could burn
-            #   up to 5 × 10 min = 50 minutes before the price download even started.
-            #   Delivery and price data are completely independent — there is no reason
-            #   one has to wait for the other.
-            #
-            # HOW IT WORKS:
-            #   Both tasks are submitted to a ThreadPoolExecutor simultaneously.
-            #   _fetch_delivery_with_retry() wraps the original retry loop but blocks
-            #   only in its own thread. fetch_watchlist_data() runs concurrently.
-            #   The main thread joins both futures before proceeding to per-stock logic.
-            #   Worst-case time: max(delivery_time, download_time) instead of their sum.
-            #   A 50-min delivery wait + 3-min download = 50 min before; 50 min after.
-            #   A 0-min delivery hit + 3-min download = 3 min before; 3 min after.
-            #   The common case (delivery available immediately) drops from ~5 min to ~3 min.
-            #
             def _fetch_delivery_with_retry() -> dict:
                 """Delivery fetch with up to DELIVERY_FETCH_RETRIES attempts."""
                 for attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
@@ -409,14 +397,12 @@ def start():
                         all_ticker_data = future.result()
 
             logger.info(
-                f"📥 Parallel prefetch complete | "                f"delivery={len(delivery_map)} symbols | "                f"prices={len(all_ticker_data)} symbols"
+                f"📥 Parallel prefetch complete | "
+                f"delivery={len(delivery_map)} symbols | "
+                f"prices={len(all_ticker_data)} symbols"
             )
 
             # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
-            # Fetches sector RS scores for all NSE sectors vs Nifty 50.
-            # Used as a score modifier (+4 LEADING → -4 LAGGING) per stock.
-            # Fully graceful: if sector data unavailable, rotation_result.scores = {}
-            # and get_sector_score_bonus() returns 0 — no impact on existing logic.
             try:
                 rotation_result = get_sector_scores()
                 if rotation_result.scores:
@@ -436,29 +422,31 @@ def start():
             alerts_by_category = {}
 
             rejection_counts = {
-                "no_data":           0,
-                "missing_col":       0,
-                "insufficient_bars": 0,
-                "indicator_fail":    0,
-                "weak_signals":      0,
-                "weak_body":         0,
-                "bearish_candle":    0,
-                "weak_close_pos":    0,
-                "upper_wick":        0,
-                "low_volume":        0,
-                "low_avg_volume":    0,
-                "penny_stock":       0,
-                "rsi_range":         0,
-                "rsi_not_rising":    0,
-                "below_ema20":       0,
-                "below_sma50":       0,
-                "no_golden_cross":   0,
-                "macd_bearish":      0,
-                "far_from_52w_high": 0,
-                "gap_day":           0,
-                "low_score":         0,
-                "duplicate":         0,
-                "stale_data":        0,
+                "no_data":              0,
+                "missing_col":          0,
+                "insufficient_bars":    0,
+                "indicator_fail":       0,
+                "weak_signals":         0,
+                "weak_body":            0,
+                "bearish_candle":       0,
+                "weak_close_pos":       0,
+                "upper_wick":           0,
+                "low_volume":           0,
+                "low_avg_volume":       0,
+                "penny_stock":          0,
+                "rsi_range":            0,
+                "rsi_not_rising":       0,
+                "below_ema20":          0,
+                "below_sma50":          0,
+                "no_golden_cross":      0,
+                "weak_adx":             0,   # NEW (v5): ADX hard gate
+                "macd_bearish":         0,
+                "far_from_52w_high":    0,
+                "gap_day":              0,
+                "extended_breakout":    0,   # NEW (v5): gap-from-support filter
+                "low_score":            0,
+                "duplicate":            0,
+                "stale_data":           0,
             }
 
             logger.info(f"🔍 Scanning {len(watchlist)} stocks...")
@@ -470,7 +458,7 @@ def start():
                 try:
                     symbol   = row["Stock"]
                     category = row["Category"]
-                    sector   = row.get("Sector", None)   # from daily_builder.py parquet
+                    sector   = row.get("Sector", None)
 
                     # FIX 2: use pre-downloaded batch data
                     if symbol not in all_ticker_data:
@@ -507,7 +495,6 @@ def start():
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
-                    # Guard: dropna may empty the DataFrame (all rows had NaN OHLCV)
                     if ticker.empty:
                         rejection_counts["no_data"] += 1
                         continue
@@ -538,9 +525,6 @@ def start():
                         continue
 
                     # ── STALE DATA GUARD ─────────────────────────────────────────────
-                    # A halted or illiquid stock may return daily data ending several
-                    # days ago. The EOD scan runs at 6:30 PM so any candle not dated
-                    # today is stale and should not fire as a breakout alert.
                     _stale_col = next(
                         (c for c in ["Date", "Datetime"] if c in ticker.columns),
                         None
@@ -556,8 +540,6 @@ def start():
                         except Exception:
                             pass
 
-
-                    # can't inflate its own average and understate the surge multiple.
                     latest_volume = float(latest["Volume"])
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
@@ -653,7 +635,17 @@ def start():
                             rejection_counts["no_golden_cross"] += 1
                             continue
 
-                    # ── FILTER 13: MACD ─────────────────────────────────────────────
+                    # ── FILTER 13 (NEW v5): ADX HARD GATE ───────────────────────────
+                    # ADX < ADX_MIN_THRESHOLD (25) = no established trend.
+                    # Previously EOD only had a soft ADX penalty in scoring_engine.
+                    # Stocks with ADX 20–24 slipped through and produced ALL negative
+                    # EOD alerts. Hard gate here eliminates them before scoring.
+                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
+                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                            rejection_counts["weak_adx"] += 1
+                            continue
+
+                    # ── FILTER 14: MACD ─────────────────────────────────────────────
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
@@ -662,7 +654,7 @@ def start():
                             rejection_counts["macd_bearish"] += 1
                             continue
 
-                    # ── FILTER 14: 52W HIGH PROXIMITY ───────────────────────────────
+                    # ── FILTER 15: 52W HIGH PROXIMITY ───────────────────────────────
                     if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
                         high_52w = float(latest["HIGH_52W"])
                         if high_52w > 0:
@@ -671,13 +663,41 @@ def start():
                                 rejection_counts["far_from_52w_high"] += 1
                                 continue
 
-                    # ── FILTER 15: SINGLE-DAY MOVE CAP ──────────────────────────────
+                    # ── FILTER 16: SINGLE-DAY MOVE CAP ──────────────────────────────
                     if len(ticker) >= 2:
                         prev_close = float(ticker["Close"].iloc[-2])
                         if prev_close > 0:
                             single_move_pct = abs(candle_close - prev_close) / prev_close * 100
                             if single_move_pct > MAX_SINGLE_DAY_MOVE_PCT:
                                 rejection_counts["gap_day"] += 1
+                                continue
+
+                    # ── FILTER 17 (NEW v5): GAP-FROM-SUPPORT ─────────────────────────
+                    # Root cause of "already extended" EOD alerts:
+                    # A stock can show a 52W+Monthly+Weekly confluence while having
+                    # already run 5-10% above any support level before today's candle.
+                    # This filter checks if today's OPEN (not close) is already
+                    # > MAX_GAP_FROM_PRIOR_HIGH_PCT above the prior 10-bar high.
+                    # If yes, the breakout happened before today — we are chasing.
+                    #
+                    # Why open (not close)?
+                    #   The open is the first price at which the market agreed after
+                    #   overnight processing. If it opens already above prior resistance,
+                    #   any further close above it is not a fresh breakout — the gap
+                    #   itself was the breakout, and we missed the entry.
+                    #
+                    # GAP_LOOKBACK_BARS = 10 bars (2 trading weeks) covers the most
+                    # recent consolidation zone. Using iloc[-11:-1] excludes today's bar.
+                    if len(ticker) >= GAP_LOOKBACK_BARS + 1:
+                        prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
+                        if prior_high > 0:
+                            gap_pct = (candle_open - prior_high) / prior_high * 100
+                            if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
+                                rejection_counts["extended_breakout"] += 1
+                                logger.debug(
+                                    f"  ⛔ {symbol} extended | open={candle_open:.2f} "
+                                    f"prior_high={prior_high:.2f} gap={gap_pct:.1f}%"
+                                )
                                 continue
 
                     # ── DELIVERY DATA ────────────────────────────────────────────────
@@ -708,14 +728,12 @@ def start():
 
                     # Sector rotation modifier — applied after base score
                     if score > 0:
-                        # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
                             safe_sector  = "Unknown" if (sector is None or (isinstance(sector, float) and pd.isna(sector))) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
                         except Exception as e:
                             logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
-                            # base score survives — alert still fires
 
                     logger.info(
                         f"  ✅ {symbol} | Score={score} | "
@@ -727,10 +745,6 @@ def start():
                         continue
 
                     # ── DEDUP ────────────────────────────────────────────────────────
-                    # Key encodes Category + Signals + Date + Timeframe.
-                    # If ANY of these change (e.g. stock upgrades category or fires a
-                    # new signal mid-day), the key changes and a fresh alert fires.
-                    # The date component ensures full eligibility resets each day.
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
@@ -799,13 +813,12 @@ def start():
 
             # ── SCAN SUMMARY ─────────────────────────────────────────────────────────
             duration       = (datetime.now(IST) - scan_start).total_seconds()
-            last_scan_date = today_str   # mark complete for today
+            last_scan_date = today_str
             sleep_secs     = seconds_until_eod()
 
             logger.info("=" * 70)
             logger.info(f"✅ EOD DONE | {round(duration, 1)}s | alerts={total_alerts}/{len(watchlist)}")
 
-            # Only log rejection reasons that actually fired (Railway log economy)
             fired = {k: v for k, v in rejection_counts.items() if v > 0}
             if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
@@ -820,4 +833,4 @@ def start():
 
         except Exception:
             logger.exception("❌ CRITICAL EOD SCAN ERROR — will retry next cycle")
-            time.sleep(300)   # brief pause before retrying the outer loop
+            time.sleep(300)
