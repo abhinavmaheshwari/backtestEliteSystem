@@ -1,11 +1,58 @@
 # =====================================================================================
-# app/intraday.py (FIXED)
+# app/intraday.py (FIXED — v5)
 # EARLY MOMENTUM SCANNER — 15M BARS
 #
-# FIXES APPLIED:
+# FIXES APPLIED (original):
 # 1. Wrap infinite loop in start() function instead of module-level code
 # 2. Batch yf.download calls to reduce API requests from ~200 per scan to ~5-10
 # 3. Import centralized thresholds from config.py instead of hardcoding
+#
+# FILTER PIPELINE (in order — a stock must pass ALL of these):
+#   1.  Data quality          — 105 candles minimum (max lookback for 15m breakout engine)
+#   2.  Signal count          — at least 2 breakout signals (MIN_SIGNALS from config.py)
+#   3.  Candle body           — body ≥ 60% of range                 [RAISED from 55%]
+#   4.  Bullish close         — close strictly above open
+#   5.  Close position        — close in top 30% of bar range (≥ 0.70)
+#   6.  Upper wick            — wick ≤ 20% of range                 [TIGHTENED from 25%]
+#   7.  Volume ratio          — current bar ≥ 2.5× 20-bar average   [RAISED from 1.8×]
+#   8.  Avg volume floor      — 20-bar avg ≥ 150K shares            [RAISED from 100K]
+#   9.  Min stock price       — close ≥ ₹50
+#   10. RSI range             — RSI 58–72                           [RAISED min from 55, lowered max from 75]
+#   11. RSI direction         — RSI now > RSI 5 bars ago            [LOOKBACK RAISED from 3]
+#   12. ADX hard gate         — ADX ≥ 25 (trend strength)          [NEW v5]
+#   13. EMA20                 — close above EMA20                   [NEW v5]
+#   14. SMA50                 — close above SMA50                   [NEW v5]
+#   15. Golden cross          — SMA50 ≥ SMA200                     [NEW v5]
+#   16. MACD                  — MACD line above signal line         [NEW v5]
+#   17. 52W high proximity    — within 15% of 52-week high          [NEW v5]
+#   18. Single-bar move cap   — bar move ≤ 6% from prior close      [NEW v5]
+#   19. Gap-from-support      — open not > 3% above prior 10-bar high [NEW v5]
+#   20. Score threshold       — composite score ≥ 78                [RAISED from 72]
+#
+# PERFORMANCE FIXES APPLIED (v5):
+#   FIX 1 — ADX hard gate added (Filter 12): ADX < 25 hard-disqualifies.
+#            Matches ADX_MIN_THRESHOLD in config.py. Previously intraday had no ADX
+#            filter in the pipeline — only scoring_engine's soft disqualifier.
+#
+#   FIX 2 — Gap-from-support filter added (Filter 19): blocks stocks where the
+#            breakout bar's OPEN is already > 3% above the prior 10-bar high.
+#            Prevents chasing already-extended 15m moves.
+#
+#   FIX 3 — Trend structure filters added (Filters 13–16): EMA20, SMA50, golden
+#            cross, MACD. These existed in live_scanner and eod_scanner but were
+#            missing from intraday entirely — allowing below-MA breakout attempts.
+#
+#   FIX 4 — 52W proximity filter added (Filter 17): rejects stocks more than 15%
+#            below their 52-week high. Consistent with other two scanners.
+#
+#   FIX 5 — Single-bar move cap added (Filter 18): rejects bars with > 6% move
+#            from prior close. Prevents chasing gap-up continuations.
+#
+#   FIX 6 — RSI lookback raised from 3 → 5 bars. 5 bars of rising RSI on 15m
+#            = 75 minutes of building momentum, not just one recent tick.
+#
+#   FIX 7 — Thresholds (volume, RSI, candle, score) now at v5 levels from config.py.
+#            All values raised — see config.py module docstring for detailed rationale.
 # =====================================================================================
 
 import pandas as pd
@@ -28,7 +75,13 @@ from price_cache import fetch_watchlist_data  # shared cache — eliminates dupl
 from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
 
 # FIX #3: Import config centrally instead of hardcoding
-from config import WATCHLIST_PATH, SCORE_THRESHOLDS, SCAN_CONFIG, DEDUP_DAYS
+from config import (
+    WATCHLIST_PATH,
+    SCORE_THRESHOLDS,
+    SCAN_CONFIG,
+    DEDUP_DAYS,
+    ADX_MIN_THRESHOLD,   # NEW (v5): imported for ADX hard gate (Filter 12)
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +108,17 @@ MIN_SCORE        = SCORE_THRESHOLDS["15m"]
 
 # These constants are 15m-specific — not in config.py (no 1h/EOD equivalent)
 MIN_STOCK_PRICE   = 50.0
-RSI_LOOKBACK_BARS = 3      # moved from inside per-stock loop to module level
+RSI_LOOKBACK_BARS = 5      # FIX 6 (v5): raised from 3 → 5 bars (75 min of building momentum)
+
+# FIX 4/5 (v5): 52W proximity and single-bar move cap — matching live_scanner and eod_scanner
+MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
+MAX_SINGLE_BAR_MOVE_PCT        = 6.0
+
+# FIX 2 (v5): Gap-from-support threshold.
+# If the breakout bar's OPEN is already > MAX_GAP_FROM_PRIOR_HIGH_PCT above the
+# prior 10-bar high, the move is extended — reject to avoid chasing.
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   # NEW (v5)
+GAP_LOOKBACK_BARS           = 10    # NEW (v5): prior high window for gap check
 
 
 # =====================================================================================
@@ -168,6 +231,14 @@ def start():
                 "penny_stock":       0,   # FIX GAP 2: added — sub-₹50 gate was missing
                 "rsi_range":         0,
                 "rsi_not_rising":    0,
+                "weak_adx":          0,   # NEW (v5): ADX hard gate
+                "below_ema20":       0,   # NEW (v5): trend structure filter
+                "below_sma50":       0,   # NEW (v5): trend structure filter
+                "no_golden_cross":   0,   # NEW (v5): trend structure filter
+                "macd_bearish":      0,   # NEW (v5): trend structure filter
+                "far_from_52w_high": 0,   # NEW (v5): 52W proximity filter
+                "gap_bar":           0,   # NEW (v5): single-bar move cap
+                "extended_breakout": 0,   # NEW (v5): gap-from-support filter
                 "low_score":         0,
                 "duplicate":         0,
                 "stale_data":        0,
@@ -379,6 +450,101 @@ def start():
                         if rsi_val <= rsi_prev:
                             rejection_counts["rsi_not_rising"] += 1
                             continue
+
+                    # ── FILTER 9 (NEW v5): ADX HARD GATE ────────────────────────────
+                    # ADX < ADX_MIN_THRESHOLD (25) = no established trend.
+                    # Previously intraday had no ADX filter in the pipeline — only a
+                    # soft ADX penalty in scoring_engine. Stocks with ADX 20–24 could
+                    # pass all filters and fire 15m alerts that reversed immediately.
+                    # Hard gate here eliminates them before scoring.
+                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
+                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                            rejection_counts["weak_adx"] += 1
+                            continue
+
+                    # ── FILTER 10 (NEW v5): EMA20 ────────────────────────────────────
+                    # Intraday breakouts below EMA20 are counter-trend moves.
+                    # This filter existed in live_scanner and eod_scanner but was
+                    # missing from intraday entirely.
+                    if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
+                        if candle_close < float(latest["EMA20"]):
+                            rejection_counts["below_ema20"] += 1
+                            continue
+
+                    # ── FILTER 11 (NEW v5): SMA50 ────────────────────────────────────
+                    if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
+                        if candle_close < float(latest["SMA50"]):
+                            rejection_counts["below_sma50"] += 1
+                            continue
+
+                    # ── FILTER 12 (NEW v5): GOLDEN CROSS ────────────────────────────
+                    if (
+                        "SMA50" in ticker.columns and "SMA200" in ticker.columns and
+                        not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
+                    ):
+                        if float(latest["SMA50"]) < float(latest["SMA200"]):
+                            rejection_counts["no_golden_cross"] += 1
+                            continue
+
+                    # ── FILTER 13 (NEW v5): MACD ─────────────────────────────────────
+                    if (
+                        "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
+                        not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
+                    ):
+                        if float(latest["MACD"]) < float(latest["MACD_SIGNAL"]):
+                            rejection_counts["macd_bearish"] += 1
+                            continue
+
+                    # ── FILTER 14 (NEW v5): 52W HIGH PROXIMITY ──────────────────────
+                    # Rejects stocks more than 15% below their 52-week high.
+                    # A stock far from its 52W high lacks the momentum context needed
+                    # for a sustainable intraday breakout. Consistent with live_scanner.
+                    if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
+                        high_52w = float(latest["HIGH_52W"])
+                        if high_52w > 0:
+                            pct_from_high = (high_52w - candle_close) / high_52w * 100
+                            if pct_from_high > MAX_DISTANCE_FROM_52W_HIGH_PCT:
+                                rejection_counts["far_from_52w_high"] += 1
+                                continue
+
+                    # ── FILTER 15 (NEW v5): SINGLE-BAR MOVE CAP ─────────────────────
+                    # Prevents chasing gap-up continuations. A 15m bar that has already
+                    # moved >6% from the prior close is a gap, not a fresh breakout.
+                    # 6% matches MAX_SINGLE_CANDLE_MOVE_PCT in live_scanner.
+                    if len(ticker) >= 2:
+                        prev_close = float(ticker["Close"].iloc[-2])
+                        if prev_close > 0:
+                            single_move_pct = abs(candle_close - prev_close) / prev_close * 100
+                            if single_move_pct > MAX_SINGLE_BAR_MOVE_PCT:
+                                rejection_counts["gap_bar"] += 1
+                                continue
+
+                    # ── FILTER 16 (NEW v5): GAP-FROM-SUPPORT ────────────────────────
+                    # Root cause of "already extended" 15m alerts:
+                    # A stock showing Session+Daily confluence may have already run
+                    # 3–5% above any support level before the alerting bar opened.
+                    # This filter checks if today's bar's OPEN is already
+                    # > MAX_GAP_FROM_PRIOR_HIGH_PCT above the prior 10-bar high.
+                    # If yes, the move is extended — we are chasing.
+                    #
+                    # Why open (not close)?
+                    #   The open is the first price at which the market agreed after
+                    #   the prior bar closed. If it opens already above prior resistance,
+                    #   the breakout happened on the gap — not on this bar's close.
+                    #
+                    # GAP_LOOKBACK_BARS = 10 bars (2.5 hours of 15m data), covers the
+                    # current session's recent consolidation zone.
+                    if len(ticker) >= GAP_LOOKBACK_BARS + 1:
+                        prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
+                        if prior_high > 0:
+                            gap_pct = (candle_open - prior_high) / prior_high * 100
+                            if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
+                                rejection_counts["extended_breakout"] += 1
+                                logger.debug(
+                                    f"  ⛔ {symbol} extended | open={candle_open:.2f} "
+                                    f"prior_high={prior_high:.2f} gap={gap_pct:.1f}%"
+                                )
+                                continue
 
                     # ── SCORE ────────────────────────────────────────────────────────
                     delivery_pct = prev_delivery_map.get(symbol, None)
