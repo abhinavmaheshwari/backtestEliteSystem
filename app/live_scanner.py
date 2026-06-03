@@ -17,11 +17,48 @@
 #   the scanners fetch price bars from yfinance. The two sources are complementary:
 #   TV for "which stocks", yfinance for "what did they do today".
 #
-# FIXES APPLIED (v4):
+# FILTER PIPELINE (in order — a stock must pass ALL of these):
+#   1.  Data quality          — 100 candles minimum
+#   2.  Signal count          — at least 3 breakout signals         [RAISED from 2 — worst performer]
+#   3.  Candle body           — body ≥ 55% of range                 [RAISED from 50%]
+#   4.  Bullish close         — close strictly above open
+#   5.  Close position        — close in top 35% of bar range (≥ 0.65)
+#   6.  Upper wick            — wick ≤ 25% of range                 [TIGHTENED from 30%]
+#   7.  Volume ratio          — current bar ≥ 2.0× 20-bar average   [RAISED from 1.5×]
+#   8.  Avg volume floor      — 20-bar avg ≥ 100K shares            [RAISED from 50K]
+#   9.  Min stock price       — close ≥ ₹50
+#   10. RSI range             — RSI 55–74                           [RAISED min from 52, lowered max from 78]
+#   11. RSI direction         — RSI now > RSI 3 bars ago
+#   12. EMA20                 — close above EMA20
+#   13. SMA50                 — close above SMA50
+#   14. Golden cross          — SMA50 ≥ SMA200
+#   15. ADX hard gate         — ADX ≥ 25 (trend strength)          [NEW v5]
+#   16. MACD                  — MACD line above signal line
+#   17. 52W high proximity    — within 15% of 52-week high
+#   18. Single-bar move cap   — bar move ≤ 6% from prior close
+#   19. Gap-from-support      — open not > 3% above prior 10-bar high [NEW v5]
+#   20. Score threshold       — composite score ≥ 80                [RAISED from 75]
+#
+# FIXES APPLIED (v4 original):
 #   FIX 1 — Wrapped while-True loop in def start() — module-level loop blocked import
 #   FIX 2 — fetch_watchlist_data() batch download — was 370 sequential API calls/cycle
 #   FIX 3 — All thresholds imported from config.py — hardcoded constants removed
 #   FIX 4 — init_db() / cleanup moved inside start() — was running at import time
+#
+# PERFORMANCE FIXES APPLIED (v5):
+#   FIX 5 — ADX hard gate added (Filter 15): ADX < 25 hard-disqualifies.
+#            Matches ADX_MIN_THRESHOLD in config.py. Previously 1H only had a soft ADX
+#            penalty in scoring_engine. Stocks with ADX 20–24 were the primary driver
+#            of 12/14 negative 1H alerts — no directional commitment behind the signal.
+#
+#   FIX 6 — Gap-from-support filter added (Filter 19): blocks stocks where the
+#            breakout bar's OPEN is already > 3% above the prior 10-bar high.
+#            A 1H bar spanning a full hour can appear as a fresh breakout while the
+#            actual gap happened at bar open — we'd be chasing. 10-bar lookback on 1H
+#            = 10 hours of recent consolidation (covers the prior 1–2 trading sessions).
+#
+#   FIX 7 — Thresholds (volume, RSI, candle, signals, score) now at v5 levels from
+#            config.py. All values raised — see config.py module docstring for details.
 # =====================================================================================
 
 import pandas as pd
@@ -50,6 +87,7 @@ from config import (
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
     DEDUP_DAYS,
+    ADX_MIN_THRESHOLD,   # NEW (v5): imported for ADX hard gate (Filter 15)
 )
 
 # =====================================================================================
@@ -88,6 +126,13 @@ MIN_STOCK_PRICE             = 50.0
 RSI_LOOKBACK_BARS           = 3
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
 MAX_SINGLE_CANDLE_MOVE_PCT  = 6.0
+
+# FIX 6 (v5): Gap-from-support threshold.
+# If the breakout bar's OPEN is already > MAX_GAP_FROM_PRIOR_HIGH_PCT above the
+# prior 10-bar high, the move is extended — reject to avoid chasing.
+# 10-bar lookback on 1H = 10 hours (covers 1–2 prior trading sessions).
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   # NEW (v5)
+GAP_LOOKBACK_BARS           = 10    # NEW (v5): prior high window for gap check
 
 
 
@@ -214,9 +259,11 @@ def start():
                 "below_ema20":       0,
                 "below_sma50":       0,
                 "no_golden_cross":   0,
+                "weak_adx":          0,   # NEW (v5): ADX hard gate
                 "macd_bearish":      0,
                 "far_from_52w_high": 0,
                 "gap_candle":        0,
+                "extended_breakout": 0,   # NEW (v5): gap-from-support filter
                 "low_score":         0,
                 "duplicate":         0,
                 "stale_data":        0,
@@ -437,7 +484,19 @@ def start():
                             rejection_counts["no_golden_cross"] += 1
                             continue
 
-                    # ── FILTER 13: MACD ─────────────────────────────────────────────
+                    # ── FILTER 13 (NEW v5): ADX HARD GATE ───────────────────────────
+                    # ADX < ADX_MIN_THRESHOLD (25) = no established trend.
+                    # 1H was the worst performer (12/14 negative alerts). ADX 20–24
+                    # stocks produce breakout signals on the 1H bar but reverse within
+                    # the next 1–3 hours because there is no committed directional trend.
+                    # Hard gate here eliminates them before scoring.
+                    # Previously only a soft ADX penalty existed in scoring_engine.
+                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
+                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                            rejection_counts["weak_adx"] += 1
+                            continue
+
+                    # ── FILTER 14: MACD ─────────────────────────────────────────────
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
@@ -446,7 +505,7 @@ def start():
                             rejection_counts["macd_bearish"] += 1
                             continue
 
-                    # ── FILTER 14: 52W HIGH PROXIMITY ───────────────────────────────
+                    # ── FILTER 15: 52W HIGH PROXIMITY ───────────────────────────────
                     if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
                         high_52w = float(latest["HIGH_52W"])
                         if high_52w > 0:
@@ -455,13 +514,41 @@ def start():
                                 rejection_counts["far_from_52w_high"] += 1
                                 continue
 
-                    # ── FILTER 15: SINGLE-BAR MOVE CAP ──────────────────────────────
+                    # ── FILTER 16: SINGLE-BAR MOVE CAP ──────────────────────────────
                     if len(ticker) >= 2:
                         prev_close = float(ticker["Close"].iloc[-2])
                         if prev_close > 0:
                             single_move_pct = abs(candle_close - prev_close) / prev_close * 100
                             if single_move_pct > MAX_SINGLE_CANDLE_MOVE_PCT:
                                 rejection_counts["gap_candle"] += 1
+                                continue
+
+                    # ── FILTER 17 (NEW v5): GAP-FROM-SUPPORT ────────────────────────
+                    # Root cause of "already extended" 1H alerts:
+                    # A 1H bar spanning a full hour can appear as a fresh breakout
+                    # while the actual gap happened at bar open — the consolidation
+                    # breakout occurred before this bar and we'd be chasing.
+                    #
+                    # This filter checks if today's bar's OPEN is already
+                    # > MAX_GAP_FROM_PRIOR_HIGH_PCT above the prior 10-bar high.
+                    # If yes, the move is extended — we are chasing.
+                    #
+                    # Why open (not close)?
+                    #   The open is the first price after the prior bar closed. If it
+                    #   opens already above prior resistance, the breakout was the gap
+                    #   itself — not this bar's subsequent close above the open.
+                    #
+                    # 10-bar lookback on 1H = 10 hours = covers 1–2 trading sessions.
+                    if len(ticker) >= GAP_LOOKBACK_BARS + 1:
+                        prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
+                        if prior_high > 0:
+                            gap_pct = (candle_open - prior_high) / prior_high * 100
+                            if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
+                                rejection_counts["extended_breakout"] += 1
+                                logger.debug(
+                                    f"  ⛔ {symbol} extended | open={candle_open:.2f} "
+                                    f"prior_high={prior_high:.2f} gap={gap_pct:.1f}%"
+                                )
                                 continue
 
                     # ── SCORE ────────────────────────────────────────────────────────
