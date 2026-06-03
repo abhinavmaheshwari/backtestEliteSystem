@@ -4,7 +4,7 @@
 # WHAT THIS FILE DOES:
 #   Calculates a composite quality score (0–100) for each candidate stock that has
 #   passed the scanner's upstream filter stack. The score is used as a final gate —
-#   only stocks above the scanner-specific threshold (72/75/78) generate alerts.
+#   only stocks above the scanner-specific threshold (78/80/82) generate alerts.
 #
 #   The score has two layers:
 #     1. HARD DISQUALIFIERS — if any fire, score returns 0 immediately (no partial credit)
@@ -20,106 +20,106 @@
 #                                      climax, ATR quality, delivery conviction)
 #
 # HARD DISQUALIFIERS (returns 0 immediately):
-#   1. Avg volume < 50K (illiquid — unreliable fills)
+#   1. Avg volume < floor   (illiquid — unreliable fills)
 #   2. Volume spike on bearish close (distribution — smart money selling)
 #   3. Upper wick > 40% of range (rejection candle — buyers lost control)
-#   4. ADX < 22 (no directional trend — choppy market)
+#   4. ADX < 25 (RAISED from 22 — weak/establishing trends disqualified)
 #   5. RSI divergence: price ↑ but RSI ↓ over lookback window (hidden weakness)
 #   6. Price above BB upper with volume ratio < 1.8 (overextension without conviction)
 #   7. 3 doji/narrow candles in last 4 bars (pre-breakout exhaustion)
 #
-# CHANGES FROM PREVIOUS VERSION:
-#   + FIX GAP 1: SCORE_CATEGORY expanded to include all Financial path categories
-#     produced by daily_builder.py. Previously "Financial Compounder", "Financial High
-#     Growth", "Financial Mature Quality", and "Financial Turnaround" all scored 0
-#     category points, putting every Financial sector stock at a ~30-point disadvantage
-#     vs non-financial peers at the same quality tier.
+# ── PERFORMANCE FIX SUMMARY (v5) ──────────────────────────────────────────────────
 #
-#     Financial weights are set equal to their non-financial analogues:
-#       "Financial High Growth"    → 22 pts  (same as "High Growth")
-#       "Financial Compounder"     → 30 pts  (same as "Elite Compounder")
-#       "Financial Mature Quality" → 14 pts  (same as "Mature Quality")
-#       "Financial Turnaround"     →  8 pts  (same as "Turnaround")
-#       "Turnaround"               →  8 pts  (added; was also missing from old map)
-#       "Steady Compounder"        → 18 pts  (between High Growth and Mature Quality)
+# FIX 1 — ADX hard disqualifier raised from 22 → 25 (from config.ADX_MIN_THRESHOLD)
 #
-#     Matching is still first-match-wins (dict ordered highest-points-first) so a
-#     stock categorised "Financial Compounder + Financial Mature Quality" earns only
-#     30 pts (the Financial Compounder score) — no double-counting.
+#   Root cause: ADX 22–24 stocks were passing the disqualifier and generating alerts
+#   in choppy / trending-weakly markets. These are statistically poor breakout setups.
+#   ADX 25 is the widely-accepted minimum for an "established" trend. Stocks below
+#   this have no directional commitment and breakouts often reverse immediately.
 #
-#   + timeframe parameter added to calculate_score() — scoring engine now knows which
-#     scanner called it and adjusts behaviour accordingly
-#   + EOD disqualifier #5 (RSI divergence) aligned with eod_scanner hidden divergence
-#     check: uses 5-bar lookback on daily, 6-bar on intraday/1H (was always 6-bar)
-#   + Gap-up chase penalty (-5) skipped for EOD timeframe — the ATR filter in
-#     eod_scanner already hard-rejects exhaustion moves before scoring. Keeping the
-#     flat 8% penalty on daily would double-penalise a condition already upstream-gated
-#   + NEW BONUS: ATR quality bonus (+3) — move of 1.0–2.0× ATR on high volume is the
-#     ideal breakout signature. Rewards sustainable breakouts over marginal ones
-#   + NEW BONUS: Delivery conviction bonus (up to +6 pts EOD, +3 pts intraday/1H).
-#     EOD uses same-day bhavcopy; intraday/1H use previous day's bhavcopy as a proxy
-#     for overnight positional conviction. Requires delivery_pct passed from scanners.
-#   + FIX: SCORE_CATEGORY now uses ordered first-match-wins iteration instead of
-#     summing all matching keys. Matching is still substring-based (label in category)
-#     so multi-label strings like "Elite Compounder + High Growth" work naturally:
-#     "Elite Compounder" matches first (30 pts, highest) and the loop stops — no
-#     double-counting. Dict is ordered highest-points-first to guarantee this.
-#   + Disqualifier #8 (unsustained volume hard block) removed — was already softened
-#     to -8 penalty in previous version; now lives only in bonus_modifiers as penalty
-#   + All disqualifiers now log the specific value that triggered them
+#   Implementation: check_hard_disqualifiers() now reads ADX_MIN_THRESHOLD from
+#   config.py (default 25) instead of hardcoding 22. The scoring step 6 that awards
+#   +1 for ADX ≥ 22 is also raised to ≥ 25, so the ADX scoring floor is consistent
+#   with the disqualifier floor.
+#
+# FIX 2 — RSI scoring sweet spot tightened
+#
+#   Old sweet spot: 58–72 (15 pts), 55–57 (6 pts), 72–75 (10 pts)
+#   New sweet spot: 60–70 (15 pts), 57–59 (6 pts), 70–74 (10 pts)
+#
+#   Rationale: The old 58–72 band was too wide and awarded full RSI points to
+#   stocks at either edge. RSI 58 is barely above neutral; RSI 72 is approaching
+#   overbought. The tighter 60–70 range rewards the genuinely healthy momentum
+#   zone. The taper bands on both sides are kept to avoid cliff edges.
+#
+# FIX 3 — Volume scoring floor raised
+#
+#   Old: 1.2× → 2 pts    New: 1.2× → 0 pts (removed — 1.2× is not real conviction)
+#   Old: 1.5× → 5 pts    New: 1.5× → 3 pts (reduced — entry-level minimum)
+#   Old: 2.0× → 10 pts   New: 2.0× → 7 pts
+#   Old: 2.5× → 14 pts   New: 2.5× → 12 pts
+#   Old: 3.0× → 17 pts   New: 3.0× → 15 pts
+#   Old: 4.0× → 20 pts   New: 4.0× → 20 pts (unchanged — climax volume still max)
+#
+#   Rationale: The old scoring gave 2 pts for 1.2× and 5 pts for 1.5× volume.
+#   Combined with the old low score thresholds, a stock with barely-above-average
+#   volume could still accumulate enough points to alert. Reducing the low-end
+#   volume scores forces stocks to have genuinely elevated volume to score well.
+#
+# FIX 4 — Overextension disqualifier tightened
+#
+#   Old: BB_UPPER breach with volume_ratio < 1.8 → disqualify
+#   New: BB_UPPER breach with volume_ratio < 2.0 → disqualify
+#
+#   Rationale: A stock touching its upper Bollinger Band on only 1.8× average
+#   volume is approaching overextension without the conviction needed to sustain
+#   the move. Raising to 2.0× is consistent with the raised MIN_VOLUME_RATIO
+#   across all timeframes in config.py. Keeps the filter coherent end-to-end.
+#
+# FIX 5 — Gap-from-support penalty added (new)
+#
+#   Stocks that have already run >5% above SMA50 are chasing. A breakout at
+#   SMA50+8% has poor risk/reward — the stock is extended, not setting up fresh.
+#   New penalty: -6 pts if Close > SMA50 × 1.05 (more than 5% above 50-day MA).
+#   Applied in bonus_modifiers() for ALL timeframes (the extension risk is the same
+#   whether the bar is daily, hourly, or 15m).
+#
+#   Why 5% and not a different threshold?
+#   - < 3% above SMA50: still "near support" — no penalty
+#   - 3–5% above SMA50: moderately extended — borderline, no penalty to avoid false positives
+#   - > 5% above SMA50: clearly extended — penalise, likely chasing
+#   - > 8% above SMA50: very extended — the gap-up chase penalty already catches these
+#
 # =====================================================================================
 
 import logging
+
+# FIX 1: Import ADX_MIN_THRESHOLD from config instead of hardcoding
+from config import ADX_MIN_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
 # =====================================================================================
 # CATEGORY WEIGHTS
-#
-# FIX GAP 1: Expanded from 3 keys to 10 to cover all categories daily_builder.py
-# can produce (both PATH A non-financial and PATH B financial).
-#
-# Matching uses substring search so "Financial Compounder + Financial Mature Quality"
-# hits "Financial Compounder" first (highest points) and stops — no double-counting.
-# Keys are ordered highest-points-first to make first-match = best-match.
-#
-# Why these point values?
-#   Financial Compounder = Elite Compounder (30): both represent the highest-quality
-#     compounding businesses — one in manufacturing/tech, the other in banking/NBFC.
-#     HDFC Bank meets the same quality bar as INFY; the scoring engine should treat them
-#     equivalently. Using a lower weight would systematically undercount financial
-#     sector breakouts for no fundamental reason.
-#   Financial High Growth = High Growth (22): same logic — fast NII/profit growth for
-#     a bank is equivalent to fast gross-profit growth for a tech company.
-#   Financial Mature Quality = Mature Quality (14): large stable bank, same archetype
-#     as a large stable conglomerate or blue-chip manufacturer.
-#   Steady Compounder (18): positioned between High Growth and Mature Quality because
-#     it implies consistent double-digit growth without the acceleration of High Growth.
-#   Financial Turnaround = Turnaround (8): recovery plays — rewards real earnings
-#     improvement without over-rewarding turnarounds (which carry more uncertainty).
 # =====================================================================================
 
 SCORE_CATEGORY = {
     # ── Non-financial (PATH A) ────────────────────────────────────────────────────
-    "Elite Compounder":     30,   # High ROE + clean growth + low debt
-    "High Growth":          22,   # YoY sales + profit > 15%
-    "Steady Compounder":    18,   # YoY sales + profit > 10% with solid ROE
-    "Mature Quality":       14,   # Large cap, ROE ≥ 15%, low debt
-    "Turnaround":            8,   # Profit recovery ≥ 30% with improving margins
+    "Elite Compounder":     30,
+    "High Growth":          22,
+    "Steady Compounder":    18,
+    "Mature Quality":       14,
+    "Turnaround":            8,
 
     # ── Financial (PATH B) — set equal to non-financial analogues ─────────────────
-    "Financial Compounder":     30,   # Steady NII growth + ROE ≥ 15% + ROA ≥ 1%
-    "Financial High Growth":    22,   # NII YoY ≥ 15% + net income YoY ≥ 15%
-    "Financial Mature Quality": 14,   # Large-cap bank, ROE ≥ 15%, ROA ≥ 1%
-    "Financial Turnaround":      8,   # Profit recovery ≥ 25% YoY with stable NII
+    "Financial Compounder":     30,
+    "Financial High Growth":    22,
+    "Financial Mature Quality": 14,
+    "Financial Turnaround":      8,
 }
 
 # =====================================================================================
 # RSI DIVERGENCE LOOKBACK — per timeframe
-#
-# EOD uses 5 bars (= 1 trading week) to match eod_scanner's hidden divergence check.
-# Intraday and 1H use 6 bars — the previous default, appropriate for shorter bars
-# where 5 bars is too short a window to be statistically meaningful.
 # =====================================================================================
 
 RSI_DIVERGENCE_LOOKBACK = {
@@ -130,32 +130,13 @@ RSI_DIVERGENCE_LOOKBACK = {
 
 # =====================================================================================
 # DELIVERY CONVICTION THRESHOLDS
-#
-# EOD: same-day bhavcopy — full bonus (max +6 pts)
-# Intraday / 1H: previous-day bhavcopy — halved bonus (max +3 pts)
-#
-# These bands determine how many base points a stock earns based on its NSE
-# delivery percentage. The intraday/1H bonus is halved because prior-day data
-# is one session stale.
-#
-# Why these thresholds?
-#   < 25%: The day's volume was dominated by intraday traders and F&O hedgers.
-#          The volume ratio looks impressive but doesn't represent real buyers
-#          accumulating stock. No bonus — the volume signal is partially misleading.
-#   25–39%: Mixed participation. Some positional interest but not institutional-grade.
-#           Small bonus to acknowledge the partial confirmation.
-#   40–59%: Solid delivery. More than one-third of the day's volume was positional.
-#           This is the threshold most experienced swing traders look for. Good bonus.
-#   ≥ 60%:  High conviction delivery. Institutions and HNIs took delivery aggressively.
-#           Combined with 2× volume and strong candle structure, this is as good as it
-#           gets for a daily breakout setup. Maximum bonus.
 # =====================================================================================
 
 DELIVERY_BONUS_TIERS = [
-    (60.0, 6),   # ≥ 60% delivery → +6 pts (institutional conviction)
-    (40.0, 4),   # ≥ 40% delivery → +4 pts (solid positional interest)
-    (25.0, 2),   # ≥ 25% delivery → +2 pts (moderate delivery)
-    (0.0,  0),   # < 25% delivery → +0 pts (intraday churn, no bonus)
+    (60.0, 6),
+    (40.0, 4),
+    (25.0, 2),
+    (0.0,  0),
 ]
 
 # =====================================================================================
@@ -173,9 +154,7 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
     volume_ratio : float       — current bar volume / 20-bar average
     symbol       : str         — used only for logging (optional)
     timeframe    : str         — "1d", "1h", or "15m" — affects RSI divergence lookback
-    min_vol      : int         — minimum 20-bar average volume threshold (timeframe-aware).
-                                 Pass from config.SCAN_CONFIG[timeframe]["MIN_VOLUME_AVG"]
-                                 so the daily 50K floor isn't applied to 15m bars.
+    min_vol      : int         — minimum 20-bar average volume threshold (timeframe-aware)
 
     Returns
     -------
@@ -186,10 +165,6 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
     tag = f"[{symbol}] " if symbol else ""
 
     # ── DISQUALIFIER 1: ILLIQUID STOCK ──────────────────────────────────────────────
-    # GAP 1 FIX: Use iloc[-21:-1] (20 bars before current) to avoid including the
-    # current breakout candle in the average, which deflates the ratio.
-    # GAP 2 FIX: Use caller-supplied min_vol instead of hardcoded 50K, so the same
-    # function works correctly for 15m bars (where 50K/bar = ~1.25M shares/day).
     avg_vol_20 = float(ticker["Volume"].iloc[-21:-1].mean())
     if avg_vol_20 < min_vol:
         reason = f"Avg vol {avg_vol_20:,.0f} < {min_vol:,} (illiquid)"
@@ -213,23 +188,24 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
         return True, reason
 
     # ── DISQUALIFIER 4: NO DIRECTIONAL TREND (ADX) ──────────────────────────────────
+    #
+    # FIX 1: Threshold raised from 22 → ADX_MIN_THRESHOLD (25, from config.py).
+    #
+    # ADX 22–24 is a "weak/establishing" trend. These stocks were generating alerts
+    # that reversed quickly because there was no committed directional movement
+    # behind the breakout. ADX ≥ 25 is the standard minimum for a trend worth trading.
+    #
     if "ADX" in ticker.columns:
         adx_val = float(latest.get("ADX", 0) or 0)
-        if 0 < adx_val < 22:
-            reason = f"ADX {adx_val:.1f} < 22 (no directional trend — ranging market)"
+        if 0 < adx_val < ADX_MIN_THRESHOLD:
+            reason = (
+                f"ADX {adx_val:.1f} < {ADX_MIN_THRESHOLD} "
+                f"(trend too weak — ranging or establishing)"
+            )
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason
 
     # ── DISQUALIFIER 5: RSI BEARISH DIVERGENCE ──────────────────────────────────────
-    #
-    # Lookback is timeframe-aware:
-    #   EOD (1d): 5 bars = 1 trading week — matches eod_scanner's hidden divergence check.
-    #             Any RSI decline while price rises = hard reject (no tolerance buffer).
-    #             A stock reaching this point already passed eod_scanner Filter 9B, so
-    #             this is a redundant safety net — still correct to reject.
-    #   1H / 15m: 6 bars. RSI must be down ≥ 3 points — small oscillations on short
-    #             bars are noise, not divergence. The buffer prevents false rejections.
-    #
     if "RSI" in ticker.columns:
         lookback = RSI_DIVERGENCE_LOOKBACK.get(timeframe, 6)
         if len(ticker) > lookback:
@@ -259,12 +235,17 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
                     return True, reason
 
     # ── DISQUALIFIER 6: OVEREXTENSION WITHOUT VOLUME ────────────────────────────────
+    #
+    # FIX 4: Volume threshold raised from 1.8 → 2.0.
+    # Consistent with the raised MIN_VOLUME_RATIO in config.py.
+    # A stock breaking above BB upper on only 1.8× volume is not convincing enough.
+    #
     if "BB_UPPER" in ticker.columns:
         bb_upper = float(latest.get("BB_UPPER", 0) or 0)
-        if bb_upper > 0 and float(latest["Close"]) > bb_upper and volume_ratio < 1.8:
+        if bb_upper > 0 and float(latest["Close"]) > bb_upper and volume_ratio < 2.0:
             reason = (
                 f"Price above BB upper (₹{float(latest['Close']):.2f} > ₹{bb_upper:.2f}) "
-                f"with weak volume ({volume_ratio:.1f}x < 1.8x) — overextension risk"
+                f"with weak volume ({volume_ratio:.1f}x < 2.0x) — overextension risk"
             )
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason
@@ -305,20 +286,6 @@ def bonus_modifiers(
     """
     Returns an integer bonus (can be negative) to add to the base score.
 
-    Parameters
-    ----------
-    ticker       : pd.DataFrame — full OHLCV + indicator data
-    latest       : pd.Series   — ticker.iloc[-1]
-    volume_ratio : float       — current bar volume / 20-bar average
-    symbol       : str         — for logging only
-    timeframe    : str         — "1d", "1h", or "15m"
-    atr_val      : float|None  — ATR(14) in price units, pre-computed by eod_scanner
-                                 None for intraday/1H (ATR bonus skipped)
-    delivery_pct : float|None  — NSE delivery % for the relevant session.
-                                 EOD: today's bhavcopy (same-day, max +6 pts).
-                                 Intraday/1H: previous day's bhavcopy (max +3 pts).
-                                 None means data unavailable — bonus skipped cleanly
-
     Bonuses:
       +3  Sustained volume (3-bar avg ≥ 1.5× 20-bar baseline)
       +3  Full MA bull stack (EMA20 > SMA50 > SMA200)
@@ -332,20 +299,19 @@ def bonus_modifiers(
 
     Penalties:
       -8  Unsustained volume (fewer than 2 of last 3 bars above 80% of avg)
-      -5  Gap-up chase (>8% single-bar move) — INTRADAY/1H ONLY (EOD uses ATR filter)
+      -5  Gap-up chase (>8% single-bar move) — INTRADAY/1H ONLY
       -5  Extreme overbought RSI (> 78)
+      -6  Extended above SMA50 (>5% above SMA50) — FIX 5: new penalty
     """
+
+    import pandas as pd
 
     bonus = 0
     tag   = f"[{symbol}] " if symbol else ""
 
     # ── BONUS: SUSTAINED VOLUME ───────────────────────────────────────────────────────
     if len(ticker) >= 23:
-        # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
         avg_20 = float(ticker["Volume"].iloc[-21:-1].mean())
-        # FIX: use iloc[-4:-1] (3 bars before current) to exclude the breakout candle
-        # from the "sustained" average. tail(3) includes the current bar, which inflates
-        # avg_3 with the very volume spike being tested — making this bonus fire too easily.
         avg_3  = float(ticker["Volume"].iloc[-4:-1].mean())
         if avg_20 > 0 and (avg_3 / avg_20) >= 1.5:
             logger.debug(f"  +3 {tag}Sustained volume (3-bar avg {avg_3/avg_20:.1f}x 20-bar baseline)")
@@ -391,20 +357,6 @@ def bonus_modifiers(
                 bonus += 2
 
     # ── BONUS: ATR QUALITY MOVE — EOD ONLY ───────────────────────────────────────────
-    #
-    # Rewards the ideal breakout signature: a move that is large enough to confirm
-    # institutional buying (≥ 1.0× ATR) but not so extreme that it signals exhaustion
-    # (< 2.0× ATR, which is below the 3× hard reject in eod_scanner).
-    #
-    # Why 1.0–2.0× ATR is the sweet spot:
-    #   < 1.0× ATR: the day's move is within normal noise — not a clean breakout
-    #   1.0–2.0× ATR: meaningful directional move, sustainable, room for follow-through
-    #   2.0–3.0× ATR: strong move, still valid (eod_scanner allows up to 3×), but
-    #                  approaching exhaustion territory — no bonus
-    #   > 3.0× ATR: already blocked by eod_scanner before scoring is called
-    #
-    # atr_val is only passed by eod_scanner.py; intraday/1H pass None.
-    #
     if timeframe == "1d" and atr_val is not None and atr_val > 0:
         if len(ticker) >= 2:
             prev_close      = float(ticker["Close"].iloc[-2])
@@ -428,23 +380,8 @@ def bonus_modifiers(
                 )
 
     # ── BONUS: DELIVERY CONVICTION ────────────────────────────────────────────────────
-    #
-    # EOD (timeframe == "1d"):
-    #   Uses today's bhavcopy delivery % — same-day, highest confidence signal.
-    #   Rewards up to +6 pts.
-    #
-    # Intraday / 1H (timeframe != "1d"):
-    #   Uses previous trading day's delivery % as a proxy for positional conviction.
-    #   High prior-day delivery = institutions held overnight and are still positioned
-    #   long — a meaningful tailwind for today's momentum setup.
-    #   Bonus is halved vs EOD (max +3 pts) because prior-day data is one day stale
-    #   and can't speak to what institutions are doing today specifically.
-    #
-    # delivery_pct is None if bhavcopy unavailable or symbol not in file → skip cleanly.
-    #
     if delivery_pct is not None:
         if timeframe == "1d":
-            # Same-day delivery — full bonus tiers
             delivery_bonus = 0
             for threshold, pts in DELIVERY_BONUS_TIERS:
                 if delivery_pct >= threshold:
@@ -452,11 +389,10 @@ def bonus_modifiers(
                     break
             label = "same-day"
         else:
-            # Previous-day delivery — halved tiers (max +3)
             delivery_bonus = 0
             for threshold, pts in DELIVERY_BONUS_TIERS:
                 if delivery_pct >= threshold:
-                    delivery_bonus = pts // 2   # 6→3, 4→2, 2→1, 0→0
+                    delivery_bonus = pts // 2
                     break
             label = "prev-day"
 
@@ -477,9 +413,7 @@ def bonus_modifiers(
         logger.debug(f"  ○ {tag}Prev-day delivery unavailable — bonus skipped (no penalty)")
 
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
-    #
     if len(ticker) >= 4:
-        # GAP 1 FIX: baseline excludes current bar (iloc[-21:-1])
         avg_vol_20   = float(ticker["Volume"].iloc[-21:-1].mean())
         recent_above = sum(
             1 for i in range(-3, 0)
@@ -493,7 +427,6 @@ def bonus_modifiers(
             bonus -= 8
 
     # ── PENALTY: GAP-UP CHASE — INTRADAY AND 1H ONLY ─────────────────────────────────
-    #
     if timeframe != "1d" and len(ticker) >= 2:
         prev_close = float(ticker["Close"].iloc[-2])
         if prev_close > 0:
@@ -508,6 +441,39 @@ def bonus_modifiers(
         if rsi_val > 78:
             logger.warning(f"  -5 {tag}Extreme RSI ({rsi_val:.1f} > 78)")
             bonus -= 5
+
+    # ── PENALTY: EXTENDED ABOVE SMA50 ────────────────────────────────────────────────
+    #
+    # FIX 5: NEW PENALTY — gap-from-support filter.
+    #
+    # Root cause of chasing: stocks with 4–6 confluence signals (Monthly + Weekly +
+    # 52W + BB + Volume) have often already run 8–15% before alerting. By the time
+    # we see the signal, the entry is at extension, not at support.
+    #
+    # This penalty applies when Close > SMA50 × 1.05 (more than 5% above SMA50).
+    # At that point the stock is extended from its trend support; breakout entries
+    # here have poor risk/reward — stop needs to be placed well below current price.
+    #
+    # The -6 pt penalty is calibrated to drop a borderline 82-pt EOD score below
+    # threshold (82 - 6 = 76 < 82) while a genuinely strong stock (90+ pts) can
+    # absorb the penalty and still alert.
+    #
+    # IMPORTANT: This is a penalty, not a hard block. A stock 6% above SMA50 that
+    # has exceptional delivery conviction (+6), ATR quality (+3), and full bull stack
+    # (+3) can still net-positive past the penalty. It just needs to be exceptional.
+    #
+    if "SMA50" in ticker.columns:
+        sma50 = float(latest.get("SMA50", 0) or 0)
+        close = float(latest["Close"])
+        if sma50 > 0:
+            pct_above_sma50 = (close - sma50) / sma50 * 100
+            if pct_above_sma50 > 5.0:
+                logger.warning(
+                    f"  -6 {tag}Extended above SMA50 "
+                    f"({pct_above_sma50:.1f}% above — chasing extension, "
+                    f"SMA50=₹{sma50:.2f}, Close=₹{close:.2f})"
+                )
+                bonus -= 6
 
     return bonus
 
@@ -533,24 +499,9 @@ def calculate_score(
     """
     Returns an integer score from 0 to 100 (plus bonuses, capped at 100).
     Returns 0 if any hard disqualifier fires.
-
-    Parameters
-    ----------
-    category         : str           — stock category (e.g. "Elite Compounder",
-                                       "Financial Compounder", "Turnaround", etc.)
-    breakout_count   : int           — number of breakout signals from detect_breakouts()
-    rsi              : float         — current RSI value
-    volume_ratio     : float         — current bar volume / 20-bar average volume
-    breakout_signals : list[str]     — signal name strings, used to check for 52W signal
-    ticker           : pd.DataFrame  — full OHLCV + indicator DataFrame
-    latest           : pd.Series     — ticker.iloc[-1]
-    symbol           : str           — ticker symbol, used only for log messages
-    timeframe        : str           — "1d", "1h", or "15m" — controls divergence lookback,
-                                       ATR bonus eligibility, delivery bonus eligibility,
-                                       and gap-up chase penalty applicability
-    atr_val          : float|None    — ATR(14) in ₹, passed by eod_scanner only (intraday/1H pass None)
-    delivery_pct     : float|None    — NSE delivery %. EOD: same-day bhavcopy. Intraday/1H: prev-day bhavcopy.
     """
+
+    import pandas as pd
 
     score = 0
     tag   = f"[{symbol}] " if symbol else ""
@@ -564,43 +515,16 @@ def calculate_score(
             return 0
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
-    #
-    # FIX GAP 1: Iterate in order (highest-points-first) and stop at the FIRST match.
-    # This prevents a category string that contains multiple key substrings
-    # (e.g. "Elite Compounder + High Growth") from double-counting.
-    #
-    # The expanded SCORE_CATEGORY dict now covers all 9 categories from daily_builder:
-    #   PATH A: Elite Compounder, High Growth, Steady Compounder, Mature Quality, Turnaround
-    #   PATH B: Financial Compounder, Financial High Growth, Financial Mature Quality,
-    #           Financial Turnaround
-    #
     category_pts = 0
     for label, pts in SCORE_CATEGORY.items():
         if label in category:
             category_pts = pts
-            break   # first (highest-value) match wins — no double-counting
+            break
 
     score += category_pts
     logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")
 
     # ── STEP 3: BREAKOUT SIGNALS (WEIGHTED STRENGTH) ─────────────────────────────────
-    #
-    # breakout_signals is a dict {signal_name: strength_score} from breakout_engine,
-    # where each score = breakout magnitude (%) × signal weight.
-    #
-    # SCALE PROBLEM: windowed breakouts produce small scores (0.1–9 pts typical) but
-    # Volume Surge produces 200–500+ pts (vol_surge % × 1.3 — entirely different unit).
-    # A raw sum() would let a single volume spike claim all 24 pts every time, making
-    # the per-signal differentiation completely meaningless.
-    #
-    # FIX: cap each individual signal at 8 pts before summing, then cap the total at 24.
-    # This matches the old flat-counter ceiling (8 pts per signal, max 3 signals = 24)
-    # while still rewarding a strong 52W breakout (e.g. 9 → capped 8) more than a weak
-    # daily breakout (e.g. 0.9 → contributes 0.9). Differentiation is preserved within
-    # each signal type; the volume unit mismatch can no longer blow the budget.
-    #
-    # Fallback to flat counter handles legacy callers passing a list or None.
-    #
     PER_SIGNAL_CAP = 8.0
 
     if isinstance(breakout_signals, dict) and breakout_signals:
@@ -625,42 +549,63 @@ def calculate_score(
     logger.debug(f"  Score after signals ({breakout_count} signals, pts={signal_pts:.1f}): {score} (+{int(signal_pts)})")
 
     # ── STEP 4: RSI QUALITY ──────────────────────────────────────────────────────────
-    if 58 <= rsi <= 72:
-        rsi_pts = 15
-    elif 72 < rsi <= 75:
-        rsi_pts = 10
-    elif 55 <= rsi < 58:
-        rsi_pts = 6
-    elif 75 < rsi <= 78:
-        rsi_pts = 3
+    #
+    # FIX 2: Sweet spot tightened from 58–72 → 60–70.
+    # Tapering bands adjusted accordingly to avoid cliff edges.
+    #
+    # Old bands:  58–72 (15), 72–75 (10), 55–57 (6), 75–78 (3), 78–82 (1)
+    # New bands:  60–70 (15), 70–74 (10), 57–59 (6), 74–78 (3), 78–82 (1)
+    #
+    if 60 <= rsi <= 70:
+        rsi_pts = 15   # sweet spot: healthy momentum, not overbought
+    elif 70 < rsi <= 74:
+        rsi_pts = 10   # approaching upper edge — still acceptable
+    elif 57 <= rsi < 60:
+        rsi_pts = 6    # building momentum — partial credit
+    elif 74 < rsi <= 78:
+        rsi_pts = 3    # getting extended — small partial credit
     elif 78 < rsi <= 82:
-        rsi_pts = 1
+        rsi_pts = 1    # near overbought — token credit before -5 penalty fires
     else:
-        rsi_pts = 0
+        rsi_pts = 0    # RSI < 57 or > 82 — no points
 
     score += rsi_pts
     logger.debug(f"  Score after RSI ({rsi:.1f}): {score} (+{rsi_pts})")
 
     # ── STEP 5: VOLUME QUALITY ───────────────────────────────────────────────────────
+    #
+    # FIX 3: Low-end volume tiers reduced to remove easy point accumulation.
+    # 1.2× entry removed (was 2 pts) — 1.2× daily volume is not real conviction.
+    # 1.5× reduced from 5 → 3 pts.
+    # Upper tiers (2.5×, 3×) modestly reduced to maintain relative differentiation.
+    # 4× and above unchanged — climax volume still earns full points.
+    #
     if volume_ratio >= 4.0:
-        vol_pts = 20
+        vol_pts = 20   # unchanged — climax volume is the gold standard
     elif volume_ratio >= 3.0:
-        vol_pts = 17
+        vol_pts = 15   # reduced from 17 — still strong, slight tightening
     elif volume_ratio >= 2.5:
-        vol_pts = 14
+        vol_pts = 12   # reduced from 14
     elif volume_ratio >= 2.0:
-        vol_pts = 10
+        vol_pts = 7    # reduced from 10 — meaningful but not exceptional
     elif volume_ratio >= 1.5:
-        vol_pts = 5
-    elif volume_ratio >= 1.2:
-        vol_pts = 2
+        vol_pts = 3    # reduced from 5 — entry-level, barely above average
     else:
-        vol_pts = 0
+        vol_pts = 0    # < 1.5× → no volume quality points (removed 1.2× tier)
 
     score += vol_pts
     logger.debug(f"  Score after volume ({volume_ratio:.2f}x): {score} (+{vol_pts})")
 
     # ── STEP 6: TREND STRENGTH ───────────────────────────────────────────────────────
+    #
+    # FIX 1 (partial): ADX scoring floor aligned with disqualifier floor.
+    # Old: ADX ≥ 25 → +2, ADX ≥ 22 → +1
+    # New: ADX ≥ 30 → +2, ADX ≥ 25 → +1
+    # Rationale: if ADX < 25 is now a hard disqualifier, there is no reason to keep
+    # a scoring bonus at the same level — it would never fire anyway. Align the bonus
+    # floor at the disqualifier ceiling (25) and award the larger +2 bonus only for
+    # genuinely strong trends (ADX ≥ 30). This differentiates strong-trend stocks.
+    #
     if ticker is not None and latest is not None:
         trend_pts = 0
 
@@ -677,12 +622,13 @@ def calculate_score(
 
         if "ADX" in ticker.columns:
             adx_val = float(latest.get("ADX", 0) or 0)
-            if adx_val >= 25:
+            if adx_val >= 30:
                 trend_pts += 2
-                logger.debug(f"  +2 {tag}ADX {adx_val:.1f} ≥ 25 (strong trend)")
-            elif adx_val >= 22:
+                logger.debug(f"  +2 {tag}ADX {adx_val:.1f} ≥ 30 (strong trend)")
+            elif adx_val >= ADX_MIN_THRESHOLD:   # 25
                 trend_pts += 1
-                logger.debug(f"  +1 {tag}ADX {adx_val:.1f} ≥ 22 (established trend)")
+                logger.debug(f"  +1 {tag}ADX {adx_val:.1f} ≥ {ADX_MIN_THRESHOLD} (established trend)")
+            # ADX < ADX_MIN_THRESHOLD is a hard disqualifier — never reaches here
 
         if "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns:
             macd_val = float(latest.get("MACD", 0) or 0)
