@@ -1,64 +1,6 @@
 # =====================================================================================
-# app/live_scanner.py
+# app/live_scanner.py (FIXED — Backtest Enhancements Added)
 # TREND CONFIRMATION SCANNER — 1H BARS
-#
-# WHAT THIS FILE DOES:
-#   Runs every 5 minutes during market hours (10:17 AM – 3:30 PM IST).
-#   Starts at 10:17 (not 9:15) because a full hour bar needs at least one complete
-#   60-minute candle — the 9:15 bar doesn't close until 10:14 AM.
-#   Downloads 60 days of 1H OHLCV data, applies indicators, and runs candidates
-#   through a stricter filter stack than intraday — 1H signals represent larger,
-#   more committed moves that are worth swing-trading over 1–3 days.
-#
-# DATA SOURCE:
-#   yfinance — used for historical OHLCV bars only.
-#   TradingView Screener is used by daily_builder.py to build the watchlist
-#   (fundamentals, sector classification). Once that parquet is on disk,
-#   the scanners fetch price bars from yfinance. The two sources are complementary:
-#   TV for "which stocks", yfinance for "what did they do today".
-#
-# FILTER PIPELINE (in order — a stock must pass ALL of these):
-#   1.  Data quality          — 100 candles minimum
-#   2.  Signal count          — at least 3 breakout signals         [RAISED from 2 — worst performer]
-#   3.  Candle body           — body ≥ 55% of range                 [RAISED from 50%]
-#   4.  Bullish close         — close strictly above open
-#   5.  Close position        — close in top 35% of bar range (≥ 0.65)
-#   6.  Upper wick            — wick ≤ 25% of range                 [TIGHTENED from 30%]
-#   7.  Volume ratio          — current bar ≥ 2.0× 20-bar average   [RAISED from 1.5×]
-#   8.  Avg volume floor      — 20-bar avg ≥ 100K shares            [RAISED from 50K]
-#   9.  Min stock price       — close ≥ ₹50
-#   10. RSI range             — RSI 55–74                           [RAISED min from 52, lowered max from 78]
-#   11. RSI direction         — RSI now > RSI 3 bars ago
-#   12. EMA20                 — close above EMA20
-#   13. SMA50                 — close above SMA50
-#   14. Golden cross          — SMA50 ≥ SMA200
-#   15. ADX hard gate         — ADX ≥ 25 (trend strength)          [NEW v5]
-#   16. MACD                  — MACD line above signal line
-#   17. 52W high proximity    — within 15% of 52-week high
-#   18. Single-bar move cap   — bar move ≤ 6% from prior close
-#   19. Gap-from-support      — open not > 3% above prior 10-bar high [NEW v5]
-#   20. Score threshold       — composite score ≥ 80                [RAISED from 75]
-#
-# FIXES APPLIED (v4 original):
-#   FIX 1 — Wrapped while-True loop in def start() — module-level loop blocked import
-#   FIX 2 — fetch_watchlist_data() batch download — was 370 sequential API calls/cycle
-#   FIX 3 — All thresholds imported from config.py — hardcoded constants removed
-#   FIX 4 — init_db() / cleanup moved inside start() — was running at import time
-#
-# PERFORMANCE FIXES APPLIED (v5):
-#   FIX 5 — ADX hard gate added (Filter 15): ADX < 25 hard-disqualifies.
-#            Matches ADX_MIN_THRESHOLD in config.py. Previously 1H only had a soft ADX
-#            penalty in scoring_engine. Stocks with ADX 20–24 were the primary driver
-#            of 12/14 negative 1H alerts — no directional commitment behind the signal.
-#
-#   FIX 6 — Gap-from-support filter added (Filter 19): blocks stocks where the
-#            breakout bar's OPEN is already > 3% above the prior 10-bar high.
-#            A 1H bar spanning a full hour can appear as a fresh breakout while the
-#            actual gap happened at bar open — we'd be chasing. 10-bar lookback on 1H
-#            = 10 hours of recent consolidation (covers the prior 1–2 trading sessions).
-#
-#   FIX 7 — Thresholds (volume, RSI, candle, signals, score) now at v5 levels from
-#            config.py. All values raised — see config.py module docstring for details.
 # =====================================================================================
 
 import pandas as pd
@@ -76,23 +18,18 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
-from price_cache import fetch_watchlist_data  # shared cache — eliminates duplicate downloads
+from price_cache import fetch_watchlist_data 
 
-from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
+from sector_rotation import get_sector_scores
 
-# FIX 3: Centralized config — no more hardcoded constants
 from config import (
     WATCHLIST_PATH,
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
     DEDUP_DAYS,
-    ADX_MIN_THRESHOLD,   # NEW (v5): imported for ADX hard gate (Filter 15)
+    ADX_MIN_THRESHOLD, 
 )
-
-# =====================================================================================
-# LOGGER
-# =====================================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,12 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-CHUNK_SIZE = 10   # Max stocks per Telegram message
-
-# =====================================================================================
-# THRESHOLD IMPORTS — sourced from config.py (1h section)
-# Changing these values: edit config.py, not here.
-# =====================================================================================
+CHUNK_SIZE = 10  
 
 TIMEFRAME               = "1h"
 MIN_SIGNALS             = SCAN_CONFIG["1h"]["MIN_SIGNALS"]
@@ -121,165 +53,87 @@ MIN_RSI                 = SCAN_CONFIG["1h"]["MIN_RSI"]
 MAX_RSI                 = SCAN_CONFIG["1h"]["MAX_RSI"]
 MIN_SCORE               = SCORE_THRESHOLDS["1h"]
 
-# These constants are 1H-specific — not in config.py (no intraday/EOD equivalent)
 MIN_STOCK_PRICE             = 50.0
 RSI_LOOKBACK_BARS           = 3
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
 MAX_SINGLE_CANDLE_MOVE_PCT  = 6.0
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   
+GAP_LOOKBACK_BARS           = 10    
 
-# FIX 6 (v5): Gap-from-support threshold.
-# If the breakout bar's OPEN is already > MAX_GAP_FROM_PRIOR_HIGH_PCT above the
-# prior 10-bar high, the move is extended — reject to avoid chasing.
-# 10-bar lookback on 1H = 10 hours (covers 1–2 prior trading sessions).
-MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   # NEW (v5)
-GAP_LOOKBACK_BARS           = 10    # NEW (v5): prior high window for gap check
-
-
-
-
-# =====================================================================================
-# START — FIX 1: entire scanning loop inside a function
-# Called from main.py via:  import live_scanner; live_scanner.start()
-# =====================================================================================
 
 def start():
-    """
-    Main 1H scanning loop. Runs every 5 minutes during market hours.
-    Wrapped in start() so importing this module does NOT block main.py.
-    """
-
-    # FIX 4: DB init inside start(), not at module level
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
-    logger.info(f"✅ 1H scanner ready | DB initialized | {DEDUP_DAYS}-day dedup window active")
-
-    # Fetch delivery data ONCE before the loop — previous-day data never changes
-    # during the trading day. Refreshes automatically when the date rolls over.
+    
     prev_delivery_map    = fetch_previous_day_delivery()
     _delivery_fetch_date = datetime.now(IST).date()
-    if prev_delivery_map:
-        logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
-    else:
-        logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped")
 
     while True:
-
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
         weekday      = ist_now.weekday()
 
-        # GAP 3 FIX: Extended to 15:35 (was 15:30).
-        # The final 1H bar closes at 15:30. Without this extension the scanner wakes
-        # at 15:31, sees current_time > 15:30, and misses the last BTST sweep entirely.
-        # Start at 10:17 — first complete 1H bar (9:15–10:14) must have closed
         market_open = dt_time(10, 17) <= current_time <= dt_time(15, 35)
 
         if weekday >= 5 or not market_open:
-            logger.info(
-                f"⏰ Outside 1H window | {ist_now.strftime('%H:%M')} "
-                f"({'Weekend' if weekday >= 5 else 'Pre/post market'}) | sleep 5m"
-            )
+            logger.info("⏰ Outside 1H window | sleep 5m")
             time.sleep(300)
             continue
+            
+        # ── MACRO REGIME CHECK ──────────────────────────────────────────────────
+        from market_filter import is_market_regime_bullish
+        if not is_market_regime_bullish():
+            logger.info("🛑 Bearish macro regime detected. Skipping all scans to preserve capital.")
+            time.sleep(300)
+            continue
+        # ────────────────────────────────────────────────────────────────────────
 
         scan_start         = datetime.now(IST)
         total_alerts       = 0
         alerts_by_category = {}
 
-        logger.info("=" * 70)
-        logger.info(f"🚀 1H SCAN | {scan_start.strftime('%Y-%m-%d %H:%M:%S IST')}")
-        logger.info("=" * 70)
-
-        # Refresh delivery map if date rolled over (new trading day)
         if datetime.now(IST).date() != _delivery_fetch_date:
             prev_delivery_map    = fetch_previous_day_delivery()
             _delivery_fetch_date = datetime.now(IST).date()
-            if prev_delivery_map:
-                logger.info(f"📦 Delivery refreshed (new day) | {len(prev_delivery_map)} symbols")
-            else:
-                logger.info("📦 Delivery refresh unavailable — using empty map")
 
-        sleep_time = 300  # default; replaced with precise dynamic value after scan completes
+        sleep_time = 300  
         try:
-            # ── LOAD WATCHLIST ──────────────────────────────────────────────────────
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
-                logger.info(f"📋 Watchlist | {len(watchlist)} stocks")
             except Exception:
-                logger.exception("❌ Watchlist load failed — attempting rebuild")
                 try:
                     from daily_builder import build_watchlist
                     build_watchlist()
                     watchlist = pd.read_parquet(WATCHLIST_PATH)
-                    logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
                 except Exception:
-                    logger.exception("❌ Watchlist rebuild also failed — aborting scan cycle")
                     time.sleep(300)
                     continue
 
-            # ── BATCH DOWNLOAD (FIX 2) ──────────────────────────────────────────────
             all_ticker_data = fetch_watchlist_data(watchlist, period="60d", interval="1h")
 
-            # ── DELIVERY DATA ───────────────────────────────────────────────────────
-            # (loaded once before the loop; refreshed automatically on date rollover)
-
-            # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
             try:
                 rotation_result = get_sector_scores()
-                if rotation_result.scores:
-                    logger.info(
-                        f"🔄 Sector rotation loaded | "
-                        f"{len(rotation_result.scores)} sectors | "
-                        f"leading={len(rotation_result.strong_sectors)}"
-                    )
-                else:
-                    logger.info("🔄 Sector rotation unavailable — bonus skipped")
             except Exception:
-                logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
                 from sector_rotation import SectorRotationResult
                 rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
 
-            # Per-scan rejection counters
-            rejection_counts = {
-                "no_data":           0,
-                "missing_col":       0,
-                "forming_candle_stripped": 0,  # bar dropped but stock still evaluated
-                "insufficient_bars": 0,
-                "indicator_fail":    0,
-                "weak_signals":      0,
-                "weak_body":         0,
-                "bearish_candle":    0,
-                "weak_close_pos":    0,
-                "upper_wick":        0,
-                "low_volume":        0,
-                "low_avg_volume":    0,
-                "penny_stock":       0,
-                "rsi_range":         0,
-                "rsi_not_rising":    0,
-                "below_ema20":       0,
-                "below_sma50":       0,
-                "no_golden_cross":   0,
-                "weak_adx":          0,   # NEW (v5): ADX hard gate
-                "macd_bearish":      0,
-                "far_from_52w_high": 0,
-                "gap_candle":        0,
-                "extended_breakout": 0,   # NEW (v5): gap-from-support filter
-                "low_score":         0,
-                "duplicate":         0,
-                "stale_data":        0,
-            }
+            rejection_counts = {k: 0 for k in [
+                "no_data", "missing_col", "forming_candle_stripped", "insufficient_bars", 
+                "indicator_fail", "weak_signals", "weak_body", "bearish_candle", 
+                "weak_close_pos", "upper_wick", "low_volume", "low_avg_volume", 
+                "penny_stock", "rsi_range", "rsi_not_rising", "below_ema20", 
+                "below_sma50", "no_golden_cross", "weak_adx", "macd_bearish", 
+                "far_from_52w_high", "gap_candle", "extended_breakout", "low_score", 
+                "duplicate", "stale_data"
+            ]}
 
-            # ── PER-STOCK PROCESSING ────────────────────────────────────────────────
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
-
                 symbol = "UNKNOWN"
-
                 try:
                     symbol   = row["Stock"]
                     category = row["Category"]
                     sector   = row.get("Sector", None)
 
-                    # FIX 2: use pre-downloaded batch data
                     if symbol not in all_ticker_data:
                         rejection_counts["no_data"] += 1
                         continue
@@ -290,7 +144,6 @@ def start():
                         rejection_counts["no_data"] += 1
                         continue
 
-                    # ── COLUMN NORMALISATION ────────────────────────────────────────
                     if isinstance(ticker.columns, pd.MultiIndex):
                         ticker.columns = ticker.columns.get_level_values(0)
 
@@ -301,7 +154,6 @@ def start():
 
                     for col_name in required_cols:
                         if col_name not in ticker.columns:
-                            logger.warning(f"  ❌ Missing col '{col_name}': {symbol}")
                             missing_col = True
                             break
                         if isinstance(ticker[col_name], pd.DataFrame):
@@ -314,22 +166,14 @@ def start():
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
-                    # Guard: dropna may empty the DataFrame (all rows had NaN OHLCV)
                     if ticker.empty:
                         rejection_counts["no_data"] += 1
                         continue
 
-                    # ── FORMING CANDLE CHECK ────────────────────────────────────────
-                    datetime_col = next(
-                        (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
-                        None
-                    )
+                    datetime_col = next((c for c in ["Datetime", "Date", "index"] if c in ticker.columns), None)
                     if datetime_col is not None:
                         try:
                             raw_ts = pd.Timestamp(ticker.iloc[-1][datetime_col])
-                            # Convert to IST before stripping tz — yfinance may return
-                            # UTC or IST timestamps. Normalising ensures the naive
-                            # comparison is always in IST wall-clock time.
                             if raw_ts.tzinfo is not None:
                                 raw_ts = raw_ts.tz_convert("Asia/Kolkata")
                             candle_start = raw_ts.replace(tzinfo=None)
@@ -339,20 +183,18 @@ def start():
                                 ticker = ticker.iloc[:-1].copy()
                                 rejection_counts["forming_candle_stripped"] += 1
                         except Exception:
-                            logger.exception(f"  ⚠️ Candle age check error {symbol}")
+                            pass
 
                     if len(ticker) < 100:
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
-                    # ── INDICATORS ──────────────────────────────────────────────────
                     ticker = apply_indicators(ticker, timeframe="1h")
 
                     if ticker is None or ticker.empty:
                         rejection_counts["indicator_fail"] += 1
                         continue
 
-                    # ── BREAKOUT SIGNALS ────────────────────────────────────────────
                     signals = detect_breakouts(ticker, timeframe="1h")
 
                     if len(signals) < MIN_SIGNALS:
@@ -361,16 +203,7 @@ def start():
 
                     latest = ticker.iloc[-1]
 
-                    # ── STALE DATA GUARD ─────────────────────────────────────────────
-                    # Halted / illiquid stocks return data ending on the last day they
-                    # traded. 1H fetches 60 days of history so stale bars are especially
-                    # likely to survive all filters and fire a false alert.
-                    # We compare the last bar's date against today's IST date and skip
-                    # the stock entirely if it doesn't match.
-                    _stale_col = next(
-                        (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
-                        None
-                    )
+                    _stale_col = next((c for c in ["Datetime", "Date", "index"] if c in ticker.columns), None)
                     if _stale_col:
                         try:
                             _last_ts = pd.to_datetime(latest[_stale_col])
@@ -380,25 +213,19 @@ def start():
                                 rejection_counts["stale_data"] += 1
                                 continue
                         except Exception:
-                            pass  # unparseable timestamp — allow through, don't crash
+                            pass 
 
                     if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
-                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
                         continue
 
-                    # ── VOLUME ──────────────────────────────────────────────────────
                     latest_volume = float(latest["Volume"])
-                    # GAP 1 FIX: exclude the current bar from the baseline average.
-                    # Using tail(20) includes today's breakout candle, deflating the ratio.
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
-                        logger.warning(f"  ❌ Zero avg volume: {symbol}")
                         continue
 
                     volume_ratio = latest_volume / avg_volume
 
-                    # ── CANDLE GEOMETRY ─────────────────────────────────────────────
                     candle_high  = float(latest["High"])
                     candle_low   = float(latest["Low"])
                     candle_open  = float(latest["Open"])
@@ -408,7 +235,6 @@ def start():
                     upper_wick   = candle_high - candle_close
 
                     if candle_range <= 0:
-                        logger.warning(f"  ❌ Zero candle range: {symbol}")
                         continue
 
                     body_ratio     = candle_body / candle_range
@@ -416,66 +242,44 @@ def start():
                     wick_ratio     = upper_wick / candle_range
                     rsi_val        = float(latest["RSI"])
 
-                    # ── FILTER 1: CANDLE BODY ───────────────────────────────────────
                     if body_ratio < MIN_BODY_RATIO:
                         rejection_counts["weak_body"] += 1
                         continue
-
-                    # ── FILTER 2: BULLISH CANDLE ────────────────────────────────────
                     if candle_close <= candle_open:
                         rejection_counts["bearish_candle"] += 1
                         continue
-
-                    # ── FILTER 3: CLOSE POSITION ────────────────────────────────────
                     if close_position < MIN_CLOSE_POSITION:
                         rejection_counts["weak_close_pos"] += 1
                         continue
-
-                    # ── FILTER 4: UPPER WICK ────────────────────────────────────────
                     if wick_ratio > MAX_UPPER_WICK_RATIO:
                         rejection_counts["upper_wick"] += 1
                         continue
-
-                    # ── FILTER 5: VOLUME RATIO ──────────────────────────────────────
                     if volume_ratio < MIN_VOLUME_RATIO:
                         rejection_counts["low_volume"] += 1
                         continue
-
-                    # ── FILTER 6: AVG VOLUME FLOOR ──────────────────────────────────
                     if avg_volume < MIN_AVG_VOLUME_SHARES:
                         rejection_counts["low_avg_volume"] += 1
                         continue
-
-                    # ── FILTER 7: MINIMUM PRICE ─────────────────────────────────────
                     if candle_close < MIN_STOCK_PRICE:
                         rejection_counts["penny_stock"] += 1
                         continue
-
-                    # ── FILTER 8: RSI RANGE ─────────────────────────────────────────
                     if not (MIN_RSI <= rsi_val <= MAX_RSI):
                         rejection_counts["rsi_range"] += 1
                         continue
-
-                    # ── FILTER 9: RSI DIRECTION ─────────────────────────────────────
                     if len(ticker) > RSI_LOOKBACK_BARS:
                         rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
                         if rsi_val <= rsi_prev:
                             rejection_counts["rsi_not_rising"] += 1
                             continue
 
-                    # ── FILTER 10: EMA20 ────────────────────────────────────────────
                     if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
                         if candle_close < float(latest["EMA20"]):
                             rejection_counts["below_ema20"] += 1
                             continue
-
-                    # ── FILTER 11: SMA50 ────────────────────────────────────────────
                     if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
                         if candle_close < float(latest["SMA50"]):
                             rejection_counts["below_sma50"] += 1
                             continue
-
-                    # ── FILTER 12: GOLDEN CROSS ─────────────────────────────────────
                     if (
                         "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                         not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
@@ -483,20 +287,10 @@ def start():
                         if float(latest["SMA50"]) < float(latest["SMA200"]):
                             rejection_counts["no_golden_cross"] += 1
                             continue
-
-                    # ── FILTER 13 (NEW v5): ADX HARD GATE ───────────────────────────
-                    # ADX < ADX_MIN_THRESHOLD (25) = no established trend.
-                    # 1H was the worst performer (12/14 negative alerts). ADX 20–24
-                    # stocks produce breakout signals on the 1H bar but reverse within
-                    # the next 1–3 hours because there is no committed directional trend.
-                    # Hard gate here eliminates them before scoring.
-                    # Previously only a soft ADX penalty existed in scoring_engine.
                     if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
                         if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
                             rejection_counts["weak_adx"] += 1
                             continue
-
-                    # ── FILTER 14: MACD ─────────────────────────────────────────────
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
@@ -504,8 +298,6 @@ def start():
                         if float(latest["MACD"]) < float(latest["MACD_SIGNAL"]):
                             rejection_counts["macd_bearish"] += 1
                             continue
-
-                    # ── FILTER 15: 52W HIGH PROXIMITY ───────────────────────────────
                     if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
                         high_52w = float(latest["HIGH_52W"])
                         if high_52w > 0:
@@ -513,8 +305,6 @@ def start():
                             if pct_from_high > MAX_DISTANCE_FROM_52W_HIGH_PCT:
                                 rejection_counts["far_from_52w_high"] += 1
                                 continue
-
-                    # ── FILTER 16: SINGLE-BAR MOVE CAP ──────────────────────────────
                     if len(ticker) >= 2:
                         prev_close = float(ticker["Close"].iloc[-2])
                         if prev_close > 0:
@@ -523,35 +313,14 @@ def start():
                                 rejection_counts["gap_candle"] += 1
                                 continue
 
-                    # ── FILTER 17 (NEW v5): GAP-FROM-SUPPORT ────────────────────────
-                    # Root cause of "already extended" 1H alerts:
-                    # A 1H bar spanning a full hour can appear as a fresh breakout
-                    # while the actual gap happened at bar open — the consolidation
-                    # breakout occurred before this bar and we'd be chasing.
-                    #
-                    # This filter checks if today's bar's OPEN is already
-                    # > MAX_GAP_FROM_PRIOR_HIGH_PCT above the prior 10-bar high.
-                    # If yes, the move is extended — we are chasing.
-                    #
-                    # Why open (not close)?
-                    #   The open is the first price after the prior bar closed. If it
-                    #   opens already above prior resistance, the breakout was the gap
-                    #   itself — not this bar's subsequent close above the open.
-                    #
-                    # 10-bar lookback on 1H = 10 hours = covers 1–2 trading sessions.
                     if len(ticker) >= GAP_LOOKBACK_BARS + 1:
                         prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
                         if prior_high > 0:
                             gap_pct = (candle_open - prior_high) / prior_high * 100
                             if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
                                 rejection_counts["extended_breakout"] += 1
-                                logger.debug(
-                                    f"  ⛔ {symbol} extended | open={candle_open:.2f} "
-                                    f"prior_high={prior_high:.2f} gap={gap_pct:.1f}%"
-                                )
                                 continue
 
-                    # ── SCORE ────────────────────────────────────────────────────────
                     delivery_pct = prev_delivery_map.get(symbol, None)
 
                     score = calculate_score(
@@ -569,57 +338,29 @@ def start():
                     )
 
                     if score > 0:
-                        # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
                             safe_sector  = "Unknown" if (sector is None or (isinstance(sector, float) and pd.isna(sector))) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
-                            # base score survives — alert still fires
-
-                    logger.info(
-                        f"  ✅ {symbol} | Score={score} | "
-                        f"Vol={volume_ratio:.1f}x | RSI={rsi_val:.1f} | Sig={len(signals)}"
-                    )
+                        except Exception:
+                            pass
 
                     if score < MIN_SCORE:
                         rejection_counts["low_score"] += 1
                         continue
 
-                    # ── DEDUP ────────────────────────────────────────────────────────
-                    # Key encodes Category + Signals + Date + Timeframe.
-                    # If ANY of these change (e.g. stock upgrades to a stronger category
-                    # or fires a new signal mid-day), the key changes and a fresh alert
-                    # fires. The date component ensures full eligibility resets each day.
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
-                    saved = save_alert_if_new(
-                        symbol,
-                        dedup_key,
-                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-                    )
-
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
 
-                    # ── BUILD ALERT PAYLOAD ──────────────────────────────────────────
-                    above_sma50 = (
-                        bool(candle_close >= float(latest["SMA50"]))
-                        if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50"))
-                        else None
-                    )
-                    golden_cross = (
-                        bool(float(latest["SMA50"]) >= float(latest["SMA200"]))
-                        if (
-                            "SMA50" in ticker.columns and "SMA200" in ticker.columns
-                            and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
-                        )
-                        else None
-                    )
+                    # ── DYNAMIC ATR STOP CALCULATION ─────────────────────────────
+                    current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
+                    suggested_stop = candle_close - (1.5 * current_atr)
 
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
@@ -635,20 +376,18 @@ def start():
                         "close_position":   round(close_position * 100),
                         "score":            score,
                         "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
-                        "above_sma50":      above_sma50,
-                        "golden_cross":     golden_cross,
+                        "above_sma50":      bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None,
+                        "golden_cross":     bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None,
+                        "atr_stop":         round(suggested_stop, 2)
                     })
                     total_alerts += 1
 
                 except Exception:
                     logger.exception(f"❌ Error processing {symbol}")
 
-            # ── SEND ALERTS ──────────────────────────────────────────────────────────
             scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-            if total_alerts == 0:
-                logger.info("📭 No 1H alerts this cycle")
-            else:
+            if total_alerts > 0:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
                     chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
@@ -656,26 +395,9 @@ def start():
                     for chunk_num, chunk in enumerate(chunks, start=1):
                         msg = build_message("1H", cat, chunk, chunk_num, len(chunks), scan_time)
                         send_telegram_message(msg, scan_type="1H")
-                        logger.info(f"📨 Sent | {cat} | chunk {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
-            # ── SCAN SUMMARY ─────────────────────────────────────────────────────────
-            duration = (datetime.now(IST) - scan_start).total_seconds()
-
-            logger.info("=" * 70)
-            logger.info(f"✅ 1H DONE | {round(duration, 1)}s | alerts={total_alerts}/{len(watchlist)}")
-
-            # Only log rejection reasons that actually fired (Railway log economy)
-            fired = {k: v for k, v in rejection_counts.items() if v > 0}
-            if fired:
-                logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
-
-            # Dynamic sleep: keep cycle cadence at exactly 300s regardless of scan duration.
-            # Without this, a 45s scan causes the loop to fire every 345s — a full
-            # 5-minute lag accumulates over a 6-hour trading day.
             elapsed    = (datetime.now(IST) - scan_start).total_seconds()
             sleep_time = max(0, 300 - elapsed)
-            logger.info(f"💤 Scan took {elapsed:.1f}s — sleeping {sleep_time:.1f}s to hit 5-min cadence")
-            logger.info("=" * 70)
 
         except Exception:
             logger.exception("❌ CRITICAL 1H SCAN ERROR — will retry next cycle")
