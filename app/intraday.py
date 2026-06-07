@@ -1,58 +1,6 @@
 # =====================================================================================
-# app/intraday.py (FIXED — v5)
+# app/intraday.py (FIXED — Backtest Enhancements Added)
 # EARLY MOMENTUM SCANNER — 15M BARS
-#
-# FIXES APPLIED (original):
-# 1. Wrap infinite loop in start() function instead of module-level code
-# 2. Batch yf.download calls to reduce API requests from ~200 per scan to ~5-10
-# 3. Import centralized thresholds from config.py instead of hardcoding
-#
-# FILTER PIPELINE (in order — a stock must pass ALL of these):
-#   1.  Data quality          — 105 candles minimum (max lookback for 15m breakout engine)
-#   2.  Signal count          — at least 2 breakout signals (MIN_SIGNALS from config.py)
-#   3.  Candle body           — body ≥ 60% of range                 [RAISED from 55%]
-#   4.  Bullish close         — close strictly above open
-#   5.  Close position        — close in top 30% of bar range (≥ 0.70)
-#   6.  Upper wick            — wick ≤ 20% of range                 [TIGHTENED from 25%]
-#   7.  Volume ratio          — current bar ≥ 2.5× 20-bar average   [RAISED from 1.8×]
-#   8.  Avg volume floor      — 20-bar avg ≥ 150K shares            [RAISED from 100K]
-#   9.  Min stock price       — close ≥ ₹50
-#   10. RSI range             — RSI 58–72                           [RAISED min from 55, lowered max from 75]
-#   11. RSI direction         — RSI now > RSI 5 bars ago            [LOOKBACK RAISED from 3]
-#   12. ADX hard gate         — ADX ≥ 25 (trend strength)          [NEW v5]
-#   13. EMA20                 — close above EMA20                   [NEW v5]
-#   14. SMA50                 — close above SMA50                   [NEW v5]
-#   15. Golden cross          — SMA50 ≥ SMA200                     [NEW v5]
-#   16. MACD                  — MACD line above signal line         [NEW v5]
-#   17. 52W high proximity    — within 15% of 52-week high          [NEW v5]
-#   18. Single-bar move cap   — bar move ≤ 6% from prior close      [NEW v5]
-#   19. Gap-from-support      — open not > 3% above prior 10-bar high [NEW v5]
-#   20. Score threshold       — composite score ≥ 78                [RAISED from 72]
-#
-# PERFORMANCE FIXES APPLIED (v5):
-#   FIX 1 — ADX hard gate added (Filter 12): ADX < 25 hard-disqualifies.
-#            Matches ADX_MIN_THRESHOLD in config.py. Previously intraday had no ADX
-#            filter in the pipeline — only scoring_engine's soft disqualifier.
-#
-#   FIX 2 — Gap-from-support filter added (Filter 19): blocks stocks where the
-#            breakout bar's OPEN is already > 3% above the prior 10-bar high.
-#            Prevents chasing already-extended 15m moves.
-#
-#   FIX 3 — Trend structure filters added (Filters 13–16): EMA20, SMA50, golden
-#            cross, MACD. These existed in live_scanner and eod_scanner but were
-#            missing from intraday entirely — allowing below-MA breakout attempts.
-#
-#   FIX 4 — 52W proximity filter added (Filter 17): rejects stocks more than 15%
-#            below their 52-week high. Consistent with other two scanners.
-#
-#   FIX 5 — Single-bar move cap added (Filter 18): rejects bars with > 6% move
-#            from prior close. Prevents chasing gap-up continuations.
-#
-#   FIX 6 — RSI lookback raised from 3 → 5 bars. 5 bars of rising RSI on 15m
-#            = 75 minutes of building momentum, not just one recent tick.
-#
-#   FIX 7 — Thresholds (volume, RSI, candle, score) now at v5 levels from config.py.
-#            All values raised — see config.py module docstring for detailed rationale.
 # =====================================================================================
 
 import pandas as pd
@@ -70,17 +18,16 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
-from price_cache import fetch_watchlist_data  # shared cache — eliminates duplicate downloads
+from price_cache import fetch_watchlist_data  
 
-from sector_rotation import get_sector_scores  # get_sector_score_bonus removed — use rotation_result.score_bonus_for()
+from sector_rotation import get_sector_scores  
 
-# FIX #3: Import config centrally instead of hardcoding
 from config import (
     WATCHLIST_PATH,
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     DEDUP_DAYS,
-    ADX_MIN_THRESHOLD,   # NEW (v5): imported for ADX hard gate (Filter 12)
+    ADX_MIN_THRESHOLD,   
 )
 
 logging.basicConfig(
@@ -92,9 +39,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-CHUNK_SIZE = 10   # Max stocks per Telegram message
+CHUNK_SIZE = 10   
 
-# Import thresholds for this timeframe from centralized config
 TIMEFRAME        = "15m"
 MIN_SIGNALS      = SCAN_CONFIG["15m"]["MIN_SIGNALS"]
 MIN_BODY_RATIO   = SCAN_CONFIG["15m"]["MIN_BODY_RATIO"]
@@ -106,38 +52,18 @@ MIN_RSI          = SCAN_CONFIG["15m"]["MIN_RSI"]
 MAX_RSI          = SCAN_CONFIG["15m"]["MAX_RSI"]
 MIN_SCORE        = SCORE_THRESHOLDS["15m"]
 
-# These constants are 15m-specific — not in config.py (no 1h/EOD equivalent)
 MIN_STOCK_PRICE   = 50.0
-RSI_LOOKBACK_BARS = 5      # FIX 6 (v5): raised from 3 → 5 bars (75 min of building momentum)
-
-# FIX 4/5 (v5): 52W proximity and single-bar move cap — matching live_scanner and eod_scanner
+RSI_LOOKBACK_BARS = 5      
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
 MAX_SINGLE_BAR_MOVE_PCT        = 6.0
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   
+GAP_LOOKBACK_BARS           = 10    
 
-# FIX 2 (v5): Gap-from-support threshold.
-# If the breakout bar's OPEN is already > MAX_GAP_FROM_PRIOR_HIGH_PCT above the
-# prior 10-bar high, the move is extended — reject to avoid chasing.
-MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   # NEW (v5)
-GAP_LOOKBACK_BARS           = 10    # NEW (v5): prior high window for gap check
-
-
-# =====================================================================================
-# MAIN SCANNING LOOP — NOW INSIDE start() FUNCTION (FIX #1)
-# =====================================================================================
 
 def start():
-    """
-    Main scanning loop. Wrapped in a function so it doesn't execute on import.
-    Called from main.py via: intraday.start()
-    """
-    
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
 
-    # Fetch delivery data ONCE before the loop — it's yesterday's data and never
-    # changes during the trading day. Re-fetching every 5 minutes wastes a 30s
-    # HTTP call to NSE on every cycle. Refresh automatically at midnight so the
-    # next day's session always starts with the correct previous-day delivery map.
     prev_delivery_map    = fetch_previous_day_delivery()
     _delivery_fetch_date = datetime.now(IST).date()
     if prev_delivery_map:
@@ -146,28 +72,30 @@ def start():
         logger.info("📦 Previous-day delivery unavailable — delivery scoring skipped")
 
     while True:
-        
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
         weekday      = ist_now.weekday()
         
-        # GAP 3 FIX: Extended to 15:35 (was 15:30).
-        # The 15:15–15:30 candle closes at 15:30. Without this extension the scanner
-        # wakes at 15:31, sees current_time > 15:30, and skips the entire final sweep —
-        # permanently missing the last (often most volatile) BTST candle of the day.
         market_open  = dt_time(9, 32) <= current_time <= dt_time(15, 35)
         
         if weekday >= 5 or not market_open:
             logger.info("📅 Outside market hours | Sleeping 5 minutes")
             time.sleep(300)
             continue
+            
+        # ── MACRO REGIME CHECK ──────────────────────────────────────────────────
+        from market_filter import is_market_regime_bullish
+        if not is_market_regime_bullish():
+            logger.info("🛑 Bearish macro regime detected. Skipping all scans to preserve capital.")
+            time.sleep(300)
+            continue
+        # ────────────────────────────────────────────────────────────────────────
         
         scan_start = datetime.now(IST)
         logger.info("=" * 80)
         logger.info(f"⚡ INTRADAY SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
 
-        # Refresh delivery map if date rolled over (new trading day)
         if datetime.now(IST).date() != _delivery_fetch_date:
             prev_delivery_map    = fetch_previous_day_delivery()
             _delivery_fetch_date = datetime.now(IST).date()
@@ -176,7 +104,7 @@ def start():
             else:
                 logger.info("📦 Delivery refresh unavailable — using empty map")
 
-        sleep_time = 300  # default; always defined before the try so except can use it safely
+        sleep_time = 300  
         try:
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
@@ -193,20 +121,13 @@ def start():
                     time.sleep(300)
                     continue
             
-            # FIX #2: Batch download instead of 200 individual calls
             all_ticker_data = fetch_watchlist_data(watchlist, period="10d", interval="15m")
             logger.info(f"📥 Data downloaded for {len(all_ticker_data)}/{len(watchlist)} symbols")
             
-
-            # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
             try:
                 rotation_result = get_sector_scores()
                 if rotation_result.scores:
-                    logger.info(
-                        f"🔄 Sector rotation loaded | "
-                        f"{len(rotation_result.scores)} sectors | "
-                        f"leading={len(rotation_result.strong_sectors)}"
-                    )
+                    logger.info(f"🔄 Sector rotation loaded | {len(rotation_result.scores)} sectors")
                 else:
                     logger.info("🔄 Sector rotation unavailable — bonus skipped")
             except Exception:
@@ -215,41 +136,18 @@ def start():
                 rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
             
             alerts_by_category = {}
-            rejection_counts   = {
-                "no_data":           0,
-                "missing_col":       0,
-                "forming_candle_stripped": 0,  # bar dropped but stock still evaluated
-                "insufficient_bars": 0,
-                "indicator_fail":    0,
-                "weak_signals":      0,
-                "weak_body":         0,
-                "bearish_candle":    0,
-                "weak_close_pos":    0,
-                "upper_wick":        0,
-                "low_volume":        0,
-                "low_avg_volume":    0,
-                "penny_stock":       0,   # FIX GAP 2: added — sub-₹50 gate was missing
-                "rsi_range":         0,
-                "rsi_not_rising":    0,
-                "weak_adx":          0,   # NEW (v5): ADX hard gate
-                "below_ema20":       0,   # NEW (v5): trend structure filter
-                "below_sma50":       0,   # NEW (v5): trend structure filter
-                "no_golden_cross":   0,   # NEW (v5): trend structure filter
-                "macd_bearish":      0,   # NEW (v5): trend structure filter
-                "far_from_52w_high": 0,   # NEW (v5): 52W proximity filter
-                "gap_bar":           0,   # NEW (v5): single-bar move cap
-                "extended_breakout": 0,   # NEW (v5): gap-from-support filter
-                "low_score":         0,
-                "duplicate":         0,
-                "stale_data":        0,
-            }
+            rejection_counts   = {k: 0 for k in [
+                "no_data", "missing_col", "forming_candle_stripped", "insufficient_bars", 
+                "indicator_fail", "weak_signals", "weak_body", "bearish_candle", 
+                "weak_close_pos", "upper_wick", "low_volume", "low_avg_volume", 
+                "penny_stock", "rsi_range", "rsi_not_rising", "weak_adx", "below_ema20", 
+                "below_sma50", "no_golden_cross", "macd_bearish", "far_from_52w_high", 
+                "gap_bar", "extended_breakout", "low_score", "duplicate", "stale_data"
+            ]}
             total_alerts = 0
 
-            # ── PER-STOCK PROCESSING ────────────────────────────────────────────────
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
-
                 symbol = "UNKNOWN"
-
                 try:
                     symbol   = row["Stock"]
                     category = row["Category"]
@@ -265,7 +163,6 @@ def start():
                         rejection_counts["no_data"] += 1
                         continue
 
-                    # ── COLUMN NORMALISATION ────────────────────────────────────────
                     if isinstance(ticker.columns, pd.MultiIndex):
                         ticker.columns = ticker.columns.get_level_values(0)
 
@@ -276,7 +173,6 @@ def start():
 
                     for col_name in required_cols:
                         if col_name not in ticker.columns:
-                            logger.warning(f"  ❌ Missing col '{col_name}': {symbol}")
                             missing_col = True
                             break
                         if isinstance(ticker[col_name], pd.DataFrame):
@@ -289,23 +185,14 @@ def start():
 
                     ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
-                    # Guard: dropna may empty the DataFrame (all rows had NaN OHLCV)
                     if ticker.empty:
                         rejection_counts["no_data"] += 1
                         continue
 
-                    # ── FORMING CANDLE CHECK ─────────────────────────────────────────
-                    datetime_col = next(
-                        (c for c in ["Datetime", "Date", "index"] if c in ticker.columns),
-                        None
-                    )
+                    datetime_col = next((c for c in ["Datetime", "Date", "index"] if c in ticker.columns), None)
                     if datetime_col is not None:
                         try:
                             raw_ts = pd.Timestamp(ticker.iloc[-1][datetime_col])
-                            # Convert to IST before stripping tz — yfinance may return
-                            # UTC or IST timestamps depending on version. Normalising to
-                            # IST wall-clock before stripping ensures the naive comparison
-                            # is always correct (UTC naive would be 5.5h behind IST naive).
                             if raw_ts.tzinfo is not None:
                                 raw_ts = raw_ts.tz_convert("Asia/Kolkata")
                             candle_start = raw_ts.replace(tzinfo=None)
@@ -315,25 +202,18 @@ def start():
                                 ticker = ticker.iloc[:-1].copy()
                                 rejection_counts["forming_candle_stripped"] += 1
                         except Exception:
-                            logger.exception(f"  ⚠️ Candle age check error {symbol}")
+                            pass
 
-                    # GAP 5 FIX: minimum bar guard must equal max lookback window used by
-                    # breakout_engine for this timeframe. For 15m, that is 104 bars
-                    # ("Weekly Breakout" window). A guard of 26 (1 day) allowed stocks
-                    # with only 75 bars to pass, causing the 104-bar rolling max to return
-                    # NaN — silently preventing any Weekly Breakout signal from ever firing.
                     if len(ticker) < 105:
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
-                    # ── INDICATORS ──────────────────────────────────────────────────
                     ticker = apply_indicators(ticker, timeframe=TIMEFRAME)
 
                     if ticker is None or ticker.empty:
                         rejection_counts["indicator_fail"] += 1
                         continue
 
-                    # ── BREAKOUT SIGNALS ────────────────────────────────────────────
                     signals = detect_breakouts(ticker, timeframe=TIMEFRAME)
 
                     if len(signals) < MIN_SIGNALS:
@@ -342,21 +222,10 @@ def start():
 
                     latest = ticker.iloc[-1]
 
-                    # ── RSI AVAILABILITY GUARD ───────────────────────────────────────
-                    # Guard before any RSI read — if apply_indicators failed to produce
-                    # RSI (e.g. NaN on all rows), float() would return NaN and silently
-                    # corrupt the RSI filter and scoring downstream.
                     if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
-                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
                         continue
 
-                    # ── STALE DATA GUARD ─────────────────────────────────────────────
-                    # Halted/illiquid stocks return data ending on the last day they
-                    # traded. Without this, a 4-day-old 15m candle fires as live.
-                    _stale_col = next(
-                        (c for c in ["Datetime", "Date"] if c in ticker.columns),
-                        None
-                    )
+                    _stale_col = next((c for c in ["Datetime", "Date"] if c in ticker.columns), None)
                     if _stale_col:
                         try:
                             _last_ts = pd.to_datetime(latest[_stale_col])
@@ -368,20 +237,14 @@ def start():
                         except Exception:
                             pass
 
-
-                    # Using tail(20) includes today's breakout candle, which inflates the
-                    # average and deflates the ratio (e.g. a true 20x reads as 10x).
-                    # iloc[-21:-1] always averages exactly the 20 bars *before* the current one.
                     latest_volume = float(latest["Volume"])
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
-                        logger.warning(f"  ❌ Zero avg volume: {symbol}")
                         continue
 
                     volume_ratio = latest_volume / avg_volume
 
-                    # ── CANDLE GEOMETRY ─────────────────────────────────────────────
                     candle_high  = float(latest["High"])
                     candle_low   = float(latest["Low"])
                     candle_open  = float(latest["Open"])
@@ -391,7 +254,6 @@ def start():
                     upper_wick   = candle_high - candle_close
 
                     if candle_range <= 0:
-                        logger.warning(f"  ❌ Zero candle range: {symbol}")
                         continue
 
                     body_ratio     = candle_body / candle_range
@@ -399,85 +261,52 @@ def start():
                     wick_ratio     = upper_wick / candle_range
                     rsi_val        = float(latest["RSI"])
 
-                    # ── FILTER 1: CANDLE BODY ────────────────────────────────────────
                     if body_ratio < MIN_BODY_RATIO:
                         rejection_counts["weak_body"] += 1
                         continue
-
-                    # ── FILTER 2: BULLISH CANDLE ─────────────────────────────────────
                     if candle_close <= candle_open:
                         rejection_counts["bearish_candle"] += 1
                         continue
-
-                    # ── FILTER 3: CLOSE POSITION ─────────────────────────────────────
                     if close_position < MIN_CLOSE_POSITION:
                         rejection_counts["weak_close_pos"] += 1
                         continue
-
-                    # ── FILTER 4: UPPER WICK ─────────────────────────────────────────
                     if wick_ratio > MAX_UPPER_WICK:
                         rejection_counts["upper_wick"] += 1
                         continue
-
-                    # ── FILTER 5: VOLUME RATIO ───────────────────────────────────────
                     if volume_ratio < MIN_VOLUME_RATIO:
                         rejection_counts["low_volume"] += 1
                         continue
-
-                    # ── FILTER 6: AVG VOLUME FLOOR ───────────────────────────────────
                     if avg_volume < MIN_VOLUME_AVG:
                         rejection_counts["low_avg_volume"] += 1
                         continue
-
-                    # ── FILTER 6B: MINIMUM PRICE (penny stock gate) ──────────────────
-                    # FIX GAP 2: live_scanner and eod_scanner both hard-reject stocks
-                    # below ₹50. intraday.py was missing this gate entirely — a ₹12
-                    # micro-cap could pass all 15m filters and fire an alert.
-                    # The ₹50 floor matches daily_builder's MIN_PRICE and both other
-                    # scanners, keeping the universe consistent across all timeframes.
                     if candle_close < MIN_STOCK_PRICE:
                         rejection_counts["penny_stock"] += 1
                         continue
-
-                    # ── FILTER 7: RSI RANGE ──────────────────────────────────────────
                     if not (MIN_RSI <= rsi_val <= MAX_RSI):
                         rejection_counts["rsi_range"] += 1
                         continue
 
-                    # ── FILTER 8: RSI DIRECTION ──────────────────────────────────────
                     if len(ticker) > RSI_LOOKBACK_BARS:
                         rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
                         if rsi_val <= rsi_prev:
                             rejection_counts["rsi_not_rising"] += 1
                             continue
 
-                    # ── FILTER 9 (NEW v5): ADX HARD GATE ────────────────────────────
-                    # ADX < ADX_MIN_THRESHOLD (25) = no established trend.
-                    # Previously intraday had no ADX filter in the pipeline — only a
-                    # soft ADX penalty in scoring_engine. Stocks with ADX 20–24 could
-                    # pass all filters and fire 15m alerts that reversed immediately.
-                    # Hard gate here eliminates them before scoring.
                     if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
                         if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
                             rejection_counts["weak_adx"] += 1
                             continue
 
-                    # ── FILTER 10 (NEW v5): EMA20 ────────────────────────────────────
-                    # Intraday breakouts below EMA20 are counter-trend moves.
-                    # This filter existed in live_scanner and eod_scanner but was
-                    # missing from intraday entirely.
                     if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
                         if candle_close < float(latest["EMA20"]):
                             rejection_counts["below_ema20"] += 1
                             continue
 
-                    # ── FILTER 11 (NEW v5): SMA50 ────────────────────────────────────
                     if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
                         if candle_close < float(latest["SMA50"]):
                             rejection_counts["below_sma50"] += 1
                             continue
 
-                    # ── FILTER 12 (NEW v5): GOLDEN CROSS ────────────────────────────
                     if (
                         "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                         not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
@@ -486,7 +315,6 @@ def start():
                             rejection_counts["no_golden_cross"] += 1
                             continue
 
-                    # ── FILTER 13 (NEW v5): MACD ─────────────────────────────────────
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
@@ -495,10 +323,6 @@ def start():
                             rejection_counts["macd_bearish"] += 1
                             continue
 
-                    # ── FILTER 14 (NEW v5): 52W HIGH PROXIMITY ──────────────────────
-                    # Rejects stocks more than 15% below their 52-week high.
-                    # A stock far from its 52W high lacks the momentum context needed
-                    # for a sustainable intraday breakout. Consistent with live_scanner.
                     if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
                         high_52w = float(latest["HIGH_52W"])
                         if high_52w > 0:
@@ -507,10 +331,6 @@ def start():
                                 rejection_counts["far_from_52w_high"] += 1
                                 continue
 
-                    # ── FILTER 15 (NEW v5): SINGLE-BAR MOVE CAP ─────────────────────
-                    # Prevents chasing gap-up continuations. A 15m bar that has already
-                    # moved >6% from the prior close is a gap, not a fresh breakout.
-                    # 6% matches MAX_SINGLE_CANDLE_MOVE_PCT in live_scanner.
                     if len(ticker) >= 2:
                         prev_close = float(ticker["Close"].iloc[-2])
                         if prev_close > 0:
@@ -519,34 +339,14 @@ def start():
                                 rejection_counts["gap_bar"] += 1
                                 continue
 
-                    # ── FILTER 16 (NEW v5): GAP-FROM-SUPPORT ────────────────────────
-                    # Root cause of "already extended" 15m alerts:
-                    # A stock showing Session+Daily confluence may have already run
-                    # 3–5% above any support level before the alerting bar opened.
-                    # This filter checks if today's bar's OPEN is already
-                    # > MAX_GAP_FROM_PRIOR_HIGH_PCT above the prior 10-bar high.
-                    # If yes, the move is extended — we are chasing.
-                    #
-                    # Why open (not close)?
-                    #   The open is the first price at which the market agreed after
-                    #   the prior bar closed. If it opens already above prior resistance,
-                    #   the breakout happened on the gap — not on this bar's close.
-                    #
-                    # GAP_LOOKBACK_BARS = 10 bars (2.5 hours of 15m data), covers the
-                    # current session's recent consolidation zone.
                     if len(ticker) >= GAP_LOOKBACK_BARS + 1:
                         prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
                         if prior_high > 0:
                             gap_pct = (candle_open - prior_high) / prior_high * 100
                             if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
                                 rejection_counts["extended_breakout"] += 1
-                                logger.debug(
-                                    f"  ⛔ {symbol} extended | open={candle_open:.2f} "
-                                    f"prior_high={prior_high:.2f} gap={gap_pct:.1f}%"
-                                )
                                 continue
 
-                    # ── SCORE ────────────────────────────────────────────────────────
                     delivery_pct = prev_delivery_map.get(symbol, None)
 
                     score = calculate_score(
@@ -564,44 +364,30 @@ def start():
                     )
 
                     if score > 0:
-                        # ISOLATED TRY/EXCEPT: a sector error will NOT kill the alert
                         try:
                             safe_sector  = "Unknown" if (sector is None or (isinstance(sector, float) and pd.isna(sector))) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
-                            # base score survives — alert still fires
-
-                    logger.info(
-                        f"  ✅ {symbol} | Score={score} | "
-                        f"Vol={volume_ratio:.1f}x | RSI={rsi_val:.1f} | Sig={len(signals)}"
-                    )
+                        except Exception:
+                            pass
 
                     if score < MIN_SCORE:
                         rejection_counts["low_score"] += 1
                         continue
 
-                    # ── DEDUP ────────────────────────────────────────────────────────
-                    # Key encodes Category + Signals + Date + Timeframe.
-                    # If ANY of these change (e.g. stock upgrades category or fires a
-                    # new signal mid-day), the key changes and a fresh alert fires.
-                    # The date component ensures full eligibility resets each day.
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|INTRADAY"
 
-                    saved = save_alert_if_new(
-                        symbol,
-                        dedup_key,
-                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-                    )
-
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
 
-                    # ── BUILD ALERT PAYLOAD ──────────────────────────────────────────
+                    # ── DYNAMIC ATR STOP CALCULATION ─────────────────────────────
+                    current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
+                    suggested_stop = candle_close - (1.5 * current_atr)
+
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
                         "category":         category,
@@ -618,34 +404,27 @@ def start():
                         "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
                         "above_sma50":      bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None,
                         "golden_cross":     bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None,
+                        "atr_stop":         round(suggested_stop, 2)
                     })
                     total_alerts += 1
 
                 except Exception:
                     logger.exception(f"❌ UNHANDLED ERROR processing {symbol}")
             
-            # ── SEND ALERTS ──────────────────────────────────────────────────────────
             scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
             if total_alerts == 0:
                 logger.info("📭 No INTRADAY alerts this cycle")
             else:
                 for cat in sorted(alerts_by_category.keys()):
-                    cat_alerts = sorted(
-                        alerts_by_category[cat],
-                        key=lambda x: x["score"],
-                        reverse=True
-                    )
+                    cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
                     chunks = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
-                    
                     for chunk_num, chunk in enumerate(chunks, 1):
                         msg = build_message("INTRADAY", cat, chunk, chunk_num, len(chunks), scan_time)
                         send_telegram_message(msg, scan_type="INTRADAY")
                         logger.info(f"📨 Sent | {cat} | chunk {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
-            # ── SCAN SUMMARY ─────────────────────────────────────────────────────────
             duration = (datetime.now(IST) - scan_start).total_seconds()
-
             logger.info("=" * 80)
             logger.info(f"✅ INTRADAY SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")
 
@@ -653,9 +432,6 @@ def start():
             if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
-            # Dynamic sleep: keep cycle cadence at exactly 300s regardless of scan duration.
-            # Without this, a 45s scan causes the loop to fire every 345s, drifting 45s
-            # per cycle — a full 5-minute lag accumulates over a 6-hour trading day.
             elapsed     = (datetime.now(IST) - scan_start).total_seconds()
             sleep_time  = max(0, 300 - elapsed)
             logger.info(f"💤 Scan took {elapsed:.1f}s — sleeping {sleep_time:.1f}s to hit 5-min cadence")
