@@ -1,17 +1,26 @@
 # =====================================================================================
 # app/daily_builder.py  —  v3 (Financial sector dual-path)
-# WITH AUTOMATED MORNING EMAIL DELIVERY
+# WITH SILENT EXECUTION & ENHANCED ERROR LOGGING
 # =====================================================================================
 
 import os
 import traceback
 import threading
 import pandas as pd
+import logging
 
 from datetime import datetime
 from tradingview_screener import Query, col
 
 from config import WATCHLIST_PATH
+
+# ── LOGGING SETUP ────────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # =====================================================================================
 # OUTPUT FILES
@@ -83,14 +92,15 @@ def log_exclusion(symbol: str, reason: str) -> None:
             "Reason":    reason,
             "Scan Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
-    print(f"⛔ SKIP [{symbol}]: {reason}")
+    # REMOVED LOG SPAM: We no longer print this to the console. 
+    # It will silently save to the CSV file instead to prevent Railway log flooding.
 
 # =====================================================================================
 # FETCH UNIVERSE
 # =====================================================================================
 
 def fetch_universe() -> pd.DataFrame:
-    print("\n📡 Fetching NSE stocks (single API call)...\n")
+    logger.info("📡 Fetching NSE stocks from TradingView...")
 
     fields = [
         "name", "sector", "close", "average_volume_30d_calc",
@@ -117,7 +127,7 @@ def fetch_universe() -> pd.DataFrame:
     )
 
     total, df = q.get_scanner_data()
-    print(f"✅ Universe fetched: {total} stocks")
+    logger.info(f"✅ Universe fetched: {total} stocks")
     return df
 
 # =====================================================================================
@@ -381,9 +391,7 @@ def classify_stock(row: pd.Series) -> dict | None:
         else:
             return _classify_nonfin(row, symbol)
     except Exception as e:
-        tb = traceback.format_exc()
-        log_exclusion(symbol, f"Unhandled exception: {e}\n{tb}")
-        print(f"❌ EXCEPTION [{symbol}]: {e}\n{tb}")
+        logger.error(f"❌ EXCEPTION [{symbol}]: {e}")
         return None
 
 # =====================================================================================
@@ -394,20 +402,18 @@ def main():
     with _exclusion_lock:
         EXCLUSION_LOG.clear()  
         
-    print("\n🚀 ELITE FUNDAMENTAL SCAN STARTED\n")
+    logger.info("🚀 ELITE FUNDAMENTAL SCAN STARTED")
 
     os.makedirs(os.path.dirname(OUTPUT_PARQUET), exist_ok=True)
 
     universe_df = fetch_universe()
 
     if universe_df.empty:
-        print("❌ No stocks returned from TradingView")
+        logger.error("❌ No stocks returned from TradingView")
         return
 
     fin_mask = universe_df["sector"].isin(FINANCIAL_SECTORS)
-    print(f"\n📊 Classifying {len(universe_df)} stocks...")
-    print(f"   └─ PATH A (Non-Financial): {(~fin_mask).sum()} stocks")
-    print(f"   └─ PATH B (Financial):     {fin_mask.sum()} stocks\n")
+    logger.info(f"📊 Classifying {len(universe_df)} stocks... (Path A: {(~fin_mask).sum()} | Path B: {fin_mask.sum()})")
 
     results = [classify_stock(row) for _, row in universe_df.iterrows()]
     winners = [r for r in results if r is not None]
@@ -416,10 +422,10 @@ def main():
         with _exclusion_lock:
             exclusion_snapshot = list(EXCLUSION_LOG)
         pd.DataFrame(exclusion_snapshot).to_csv(EXCLUSION_CSV, index=False)
-        print(f"📋 Exclusion log → {EXCLUSION_CSV}  ({len(exclusion_snapshot)} skipped)")
+        logger.info(f"📋 Exclusion log saved to {EXCLUSION_CSV} ({len(exclusion_snapshot)} skipped)")
 
     if not winners:
-        print("❌ No qualifying stocks after classification")
+        logger.warning("❌ No qualifying stocks after classification")
         return
 
     final_df = (
@@ -434,30 +440,20 @@ def main():
     final_df.to_csv(OUTPUT_CSV, index=False)
     final_df.to_parquet(OUTPUT_PARQUET, index=False)
 
-    print("\n================================================")
-    print(f"✅ FINAL WATCHLIST: {len(final_df)} stocks")
-    print("================================================")
-    for path, group in final_df.groupby("Path"):
-        print(f"\n  {path} ({len(group)} stocks):")
-        for cat, sub in group.groupby("Category"):
-            print(f"    {cat}: {len(sub)}")
+    logger.info(f"✅ FINAL WATCHLIST SAVED: {len(final_df)} stocks")
 
-    print("\n── Top 20 ──────────────────────────────────────\n")
-    print(final_df.head(20).to_string(index=False))
-    print(f"\n💾 CSV Saved:     {OUTPUT_CSV}")
-    print(f"💾 PARQUET Saved: {OUTPUT_PARQUET}")
+    # Keep a small visual print out for manual console runs
+    print("\n── Top 10 ──────────────────────────────────────\n")
+    print(final_df.head(10).to_string(index=False))
 
     # =================================================================================
-    # NEW BLOCK: EMAIL THE WATCHLIST TO YOUR INBOX
+    # EMAIL DISPATCH
     # =================================================================================
     try:
         from email_engine import send_html_email
-        print("\n📧 Compiling fundamental watchlist for email delivery...")
+        logger.info("📧 Compiling fundamental watchlist for email delivery...")
         
-        # Select key columns so the email table remains readable on mobile
         email_df = final_df[['Stock', 'Category', 'Sector', 'CMP', 'Fundamental Score', 'ROE %', 'YOY Profit %']]
-        
-        # Convert DataFrame to clean HTML
         table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
         
         html_content = f"""
@@ -479,7 +475,6 @@ def main():
             <div class="container">
                 <h1>🌟 Daily Fundamental Watchlist</h1>
                 <p style="text-align: center; color: #7f8c8d;">Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                
                 <h2>📋 Elite Universe ({len(final_df)} Stocks)</h2>
                 {table_html}
             </div>
@@ -488,22 +483,22 @@ def main():
         """
         
         subject = f"🌟 Daily Fundamental Watchlist - {datetime.now().strftime('%Y-%m-%d')}"
+        
         email_success = send_html_email(subject, html_content)
+        
         if email_success:
-            print("✅ Watchlist successfully emailed to your inbox.")
+            logger.info("✅ Watchlist successfully emailed to your inbox.")
         else:
-            print("⚠️ Watchlist email failed to send (check credentials/environment variables).")
+            logger.error("⚠️ Email function returned False. Check environment variables.")
             
-    except ImportError:
-        print("⚠️ email_engine.py not found. Email delivery skipped.")
     except Exception as e:
-        print(f"❌ Failed to email watchlist: {e}")
+        logger.error(f"❌ CRITICAL ERROR emailing watchlist: {e}")
+        # This traceback will print exactly what caused the crash (e.g. SMTPAuthenticationError)
+        logger.error(traceback.format_exc())
 
 # =====================================================================================
 # ALIAS
 build_watchlist = main
-
-# =====================================================================================
 
 if __name__ == "__main__":
     main()
