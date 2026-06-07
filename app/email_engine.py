@@ -1,14 +1,32 @@
 # =====================================================================================
 # app/email_engine.py
-# CLOUD-OPTIMIZED EMAIL PIPELINE (TLS + TIMEOUT)
+# CLOUD-OPTIMIZED EMAIL PIPELINE (IPv4 Forced + TLS)
 # =====================================================================================
 
 import smtplib
+import socket
 from email.message import EmailMessage
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# 🚨 CRITICAL CLOUD FIX: Force IPv4 Resolution
+# Railway and other cloud providers often have broken IPv6 routing for Google.
+# This patch forces Python's socket library to only use IPv4 for the connection,
+# which bypasses the [Errno 101] Network is unreachable error.
+# ============================================================================
+original_getaddrinfo = socket.getaddrinfo
+
+def ipv4_getaddrinfo(*args, **kwargs):
+    responses = original_getaddrinfo(*args, **kwargs)
+    # Filter out IPv6 (AF_INET6), keep only IPv4 (AF_INET)
+    return [res for res in responses if res[0] == socket.AF_INET]
+
+# Apply the patch
+socket.getaddrinfo = ipv4_getaddrinfo
+# ============================================================================
 
 def send_html_email(subject: str, html_content: str) -> bool:
     """
@@ -32,9 +50,7 @@ def send_html_email(subject: str, html_content: str) -> bool:
         msg.set_content("Please enable HTML viewing features to safely render today's metrics table.")
         msg.add_alternative(html_content, subtype='html')
 
-        # FIX 1 & 2: Use Port 587 (TLS) instead of 465 (SSL) and enforce a 15-second timeout
-        # This guarantees the script will never freeze and cause Railway to kill the container.
-        logger.info("🔌 Connecting to SMTP server (Port 587)...")
+        logger.info("🔌 Connecting to SMTP server over IPv4 (Port 587)...")
         
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
             smtp.ehlo()
@@ -51,7 +67,7 @@ def send_html_email(subject: str, html_content: str) -> bool:
         return True
 
     except TimeoutError:
-        logger.error("❌ Email connection timed out after 15 seconds. (Network blocked)")
+        logger.error("❌ Email connection timed out after 15 seconds.")
         return False
     except smtplib.SMTPAuthenticationError:
         logger.error("❌ Email Auth Failed. Check your SENDER_PASSWORD (16-char App Password).")
