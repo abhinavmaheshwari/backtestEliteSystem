@@ -1,12 +1,13 @@
 # =====================================================================================
-# app/live_scanner.py (FIXED — Backtest Enhancements Added)
-# TREND CONFIRMATION SCANNER — 1H BARS
+# app/live_scanner.py (ULTIMATE EDITION)
+# TREND CONFIRMATION SCANNER — 1H BARS + MULTI-TIMEFRAME ALIGNMENT
 # =====================================================================================
 
 import pandas as pd
 import yfinance as yf
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from zoneinfo import ZoneInfo
 from datetime import datetime, date, time as dt_time
@@ -109,7 +110,15 @@ def start():
                     time.sleep(300)
                     continue
 
-            all_ticker_data = fetch_watchlist_data(watchlist, period="60d", interval="1h")
+            # ── BATCH DOWNLOAD: 1H + DAILY CONTEXT (MTA) ────────────────────────────
+            all_ticker_data = {}
+            daily_context_data = {}
+            
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_1h = pool.submit(fetch_watchlist_data, watchlist, "60d", "1h")
+                future_1d = pool.submit(fetch_watchlist_data, watchlist, "60d", "1d")
+                all_ticker_data = future_1h.result()
+                daily_context_data = future_1d.result()
 
             try:
                 rotation_result = get_sector_scores()
@@ -123,7 +132,7 @@ def start():
                 "weak_close_pos", "upper_wick", "low_volume", "low_avg_volume", 
                 "penny_stock", "rsi_range", "rsi_not_rising", "below_ema20", 
                 "below_sma50", "no_golden_cross", "weak_adx", "macd_bearish", 
-                "far_from_52w_high", "gap_candle", "extended_breakout", "low_score", 
+                "far_from_52w_high", "gap_candle", "extended_breakout", "below_daily_ema20", "low_score", 
                 "duplicate", "stale_data"
             ]}
 
@@ -298,6 +307,20 @@ def start():
                         if float(latest["MACD"]) < float(latest["MACD_SIGNAL"]):
                             rejection_counts["macd_bearish"] += 1
                             continue
+
+                    # ── MULTI-TIMEFRAME ALIGNMENT (MTA) ─────────────────────────────────────
+                    if symbol in daily_context_data and not daily_context_data[symbol].empty:
+                        daily_df = daily_context_data[symbol].copy()
+                        if len(daily_df) >= 20:
+                            daily_df["EMA20_D"] = daily_df["Close"].ewm(span=20, adjust=False).mean()
+                            latest_daily_close = float(daily_df["Close"].iloc[-1])
+                            latest_daily_ema20 = float(daily_df["EMA20_D"].iloc[-1])
+                            
+                            if latest_daily_close < latest_daily_ema20:
+                                rejection_counts["below_daily_ema20"] += 1
+                                continue
+                    # ────────────────────────────────────────────────────────────────────────
+
                     if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
                         high_52w = float(latest["HIGH_52W"])
                         if high_52w > 0:
@@ -358,7 +381,6 @@ def start():
                         rejection_counts["duplicate"] += 1
                         continue
 
-                    # ── DYNAMIC ATR STOP CALCULATION ─────────────────────────────
                     current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
                     suggested_stop = candle_close - (1.5 * current_atr)
 
