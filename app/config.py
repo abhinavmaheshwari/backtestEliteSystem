@@ -16,7 +16,7 @@ BASE_DIR = os.path.dirname(
 )
 
 # =====================================================================================
-# TELEGRAM CONFIG
+# TELEGRAM CONFIG (DYNAMIC ENVIRONMENT READ)
 # =====================================================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -52,12 +52,9 @@ SCORE_THRESHOLDS = {
 
 # =====================================================================================
 # SCAN CONFIGURATION
-# RSI Caps raised to allow for true parabolic momentum.
 # =====================================================================================
 
 SCAN_CONFIG = {
-
-    # INTRADAY (15m)
     "15m": {
         "MIN_SIGNALS":        2,
         "MIN_BODY_RATIO":     0.60,
@@ -66,10 +63,8 @@ SCAN_CONFIG = {
         "MIN_VOLUME_RATIO":   2.5,
         "MIN_VOLUME_AVG":     150_000,
         "MIN_RSI":            58,
-        "MAX_RSI":            85,  # Raised to catch strong intraday momentum
+        "MAX_RSI":            85,  
     },
-
-    # LIVE (1h)
     "1h": {
         "MIN_SIGNALS":        3,
         "MIN_BODY_RATIO":     0.55,
@@ -78,10 +73,8 @@ SCAN_CONFIG = {
         "MIN_VOLUME_RATIO":   2.0,
         "MIN_VOLUME_AVG":     100_000,
         "MIN_RSI":            55,
-        "MAX_RSI":            86,  # Raised to let 1H trends breathe
+        "MAX_RSI":            86,  
     },
-
-    # EOD (Daily)
     "1d": {
         "MIN_SIGNALS":        1,
         "MIN_BODY_RATIO":     0.45,
@@ -90,19 +83,11 @@ SCAN_CONFIG = {
         "MIN_VOLUME_RATIO":   1.8,
         "MIN_VOLUME_AVG":     50_000,
         "MIN_RSI":            55,
-        "MAX_RSI":            88,  # Raised for strong 52W breakouts
+        "MAX_RSI":            88,  
     },
 }
 
-# =====================================================================================
-# ADX MINIMUM THRESHOLD
-# =====================================================================================
-
 ADX_MIN_THRESHOLD = 25
-
-# =====================================================================================
-# DELIVERY CONVICTION THRESHOLDS
-# =====================================================================================
 
 DELIVERY_CONVICTION_THRESHOLDS = {
     "institutional": 60,
@@ -111,29 +96,11 @@ DELIVERY_CONVICTION_THRESHOLDS = {
     "intraday_churn": 0,
 }
 
-# =====================================================================================
-# BATCH DOWNLOAD SETTINGS
-# =====================================================================================
-
 BATCH_DOWNLOAD_SIZE = 30
 YAHOO_TIMEOUT = 30
-
-# =====================================================================================
-# ALERT DEDUPLICATION
-# =====================================================================================
-
 DEDUP_DAYS = 7
-
-# =====================================================================================
-# TELEGRAM SETTINGS
-# =====================================================================================
 
 TELEGRAM_CHUNK_SIZE = 10
 TELEGRAM_RETRIES = 3
 TELEGRAM_TIMEOUT = 10
-
-# =====================================================================================
-# LOGGING
-# =====================================================================================
-
 LOG_LEVEL = "INFO"
