@@ -64,10 +64,10 @@ _BK_ICON = {
     "Monthly Breakout": "🌕",
     "Weekly Breakout":  "📊",
     "Daily Breakout":   "📉",
-    "Hourly Breakout":  "⏱",   # 1H timeframe signal
-    "Session Breakout": "⚡",   # 15m timeframe signal
-    "BB Breakout":      "🎯",   # Bollinger Band squeeze breakout
-    "Volume Surge":     "📈",   # Volume × 3 confirmation
+    "Hourly Breakout":  "⏱",   
+    "Session Breakout": "⚡",   
+    "BB Breakout":      "🎯",   
+    "Volume Surge":     "📈",   
 }
 
 def breakout_lines(signals):
@@ -101,7 +101,6 @@ def trend_structure_lines(alert):
 
 # =====================================================================================
 # SINGLE ALERT BLOCK
-# Symbol is wrapped in <b> for bold; rest is plain text (HTML-safe)
 # =====================================================================================
 
 _TOP = "= = = = = = = = = = = = = = = = ="
@@ -130,7 +129,7 @@ def format_alert(a, scanner="1H"):
     open_price   = a.get("open")
     day_high     = a.get("day_high")
     day_low      = a.get("day_low")
-    delivery_pct = a.get("delivery_pct")   # present in EOD alerts; None for intraday/1H
+    delivery_pct = a.get("delivery_pct")   
 
     price_lines = [f"Price:    ₹{a['price']}"]
     if open_price is not None:
@@ -139,9 +138,11 @@ def format_alert(a, scanner="1H"):
         price_lines.append(f"Day High: ₹{day_high}")
     if day_low is not None:
         price_lines.append(f"Day Low:  ₹{day_low}")
+    if "atr_stop" in a:
+        price_lines.append(f"ATR Stop: ₹{a['atr_stop']} (Dynamic)")
+        
     price_block = "\n".join(price_lines)
 
-    # Delivery conviction label — shown only for EOD alerts
     if delivery_pct is not None:
         if delivery_pct >= 60:
             deliv_label = "🏦 Institutional"
@@ -155,7 +156,6 @@ def format_alert(a, scanner="1H"):
     else:
         delivery_line = None
 
-    # <b> tag for bold symbol — HTML parse_mode
     lines = [
         _DIV,
         f"Stock: <b>{a['symbol']}</b>",
