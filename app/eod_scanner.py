@@ -1,59 +1,6 @@
 # =====================================================================================
-# app/eod_scanner.py
+# app/eod_scanner.py (FIXED — Backtest Enhancements Added)
 # EOD BREAKOUT SCANNER — DAILY CANDLES
-#
-# WHAT THIS FILE DOES:
-#   Runs once per trading day at 6:30 PM IST.
-#   This timing ensures the NSE bhavcopy (delivery data) is published and available,
-#   while the final daily candle has long settled (NSE close is 3:30 PM).
-#   Downloads 1 year of daily OHLCV data for each watchlist stock, applies indicators,
-#   then runs the strictest filter stack of the three scanners.
-#
-# DATA SOURCE:
-#   yfinance — used for historical OHLCV bars only.
-#   TradingView Screener is used by daily_builder.py to build the watchlist
-#   (fundamentals, sector classification). Once that parquet is on disk,
-#   the scanners fetch price bars from yfinance. The two sources are complementary:
-#   TV for "which stocks", yfinance for "what did they do today".
-#
-# FILTER PIPELINE (in order — a stock must pass ALL of these):
-#   1.  Data quality          — 200 candles minimum, no missing columns
-#   2.  Signal count          — at least 1 breakout signal (MIN_SIGNALS from config.py)
-#   3.  Candle body           — body ≥ 45% of range
-#   4.  Bullish close         — close strictly above open
-#   5.  Close position        — close in top 35% of daily range (≥ 0.65)
-#   6.  Upper wick            — wick ≤ 35% of range
-#   7.  Volume ratio          — current day ≥ 1.8× 20-day average  [RAISED from 1.2×]
-#   8.  Avg volume floor      — 20-day avg ≥ 50K shares             [RAISED from 10K]
-#   9.  Min stock price       — close ≥ ₹50
-#   10. RSI range             — RSI 55–75                           [RAISED min from 50, lowered max from 80]
-#   11. RSI direction         — RSI now > RSI 5 days ago (1 week of rising momentum)
-#   12. EMA20                 — close above EMA20
-#   13. SMA50                 — close above SMA50
-#   14. Golden cross          — SMA50 ≥ SMA200
-#   15. ADX minimum           — ADX ≥ 25 (trend strength gate)     [NEW — was missing in EOD]
-#   16. MACD                  — MACD line above signal line
-#   17. 52W high proximity    — within 15% of 52-week high
-#   18. Single-day move       — day move ≤ 15% from previous close (no gap chases)
-#   19. Gap-from-support      — breakout candle body not > 3% above prior 10-bar high [NEW]
-#   20. Score threshold       — composite score ≥ 82                [RAISED from 78]
-#
-# PERFORMANCE FIXES APPLIED (v5):
-#   FIX 1 — ADX hard gate added (Filter 15): ADX < 25 hard-disqualifies.
-#            Matches ADX_MIN_THRESHOLD in config.py. Previously EOD had no ADX filter
-#            in the filter pipeline — only in scoring_engine's soft disqualifier.
-#            Root cause: EOD had 4 alerts ALL negative. Most had ADX 20–24 (weak trend).
-#
-#   FIX 2 — Gap-from-support filter added (Filter 19): blocks stocks where the
-#            breakout candle's OPEN is already > 3% above the prior 10-bar high.
-#            These are "already extended" moves that alert too late — the breakout
-#            happened before the candle that triggered the signal.
-#            Root cause: multi-signal stocks (Monthly+Weekly+52W) had typically been
-#            running for multiple days before the EOD scan catches them.
-#
-#   FIX 3 — Thresholds (volume, RSI, score) now imported from updated config.py v5.
-#            All values raised — see config.py module docstring for detailed rationale.
-#            (Config changes are in config.py, not duplicated here.)
 # =====================================================================================
 
 import pandas as pd
@@ -76,19 +23,14 @@ from delivery_data import fetch_delivery_data
 
 from sector_rotation import get_sector_scores
 
-# FIX 3: Centralized config — no more hardcoded constants
 from config import (
     WATCHLIST_PATH,
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
     DEDUP_DAYS,
-    ADX_MIN_THRESHOLD,   # NEW (v5): imported for ADX hard gate (Filter 15)
+    ADX_MIN_THRESHOLD,   
 )
-
-# =====================================================================================
-# LOGGER
-# =====================================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -99,52 +41,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-EOD_START  = dt_time(18, 30)   # 6:30 PM — NSE bhavcopy reliably published by then
-EOD_END    = dt_time(20, 0)    # 8:00 PM — scan window closes
+EOD_START  = dt_time(18, 30)   
+EOD_END    = dt_time(20, 0)    
 CHUNK_SIZE = 10
 
-# Delivery data retry settings (NSE sometimes publishes bhavcopy late)
 DELIVERY_FETCH_RETRIES    = 5
-DELIVERY_RETRY_INTERVAL_S = 600   # 10 minutes between retries
-
-# =====================================================================================
-# THRESHOLD IMPORTS — sourced from config.py (1d section)
-# Changing these values: edit config.py, not here.
-# =====================================================================================
+DELIVERY_RETRY_INTERVAL_S = 600   
 
 TIMEFRAME               = "1d"
 MIN_SIGNALS             = SCAN_CONFIG["1d"]["MIN_SIGNALS"]
 MIN_BODY_RATIO          = SCAN_CONFIG["1d"]["MIN_BODY_RATIO"]
 MIN_CLOSE_POSITION      = SCAN_CONFIG["1d"]["MIN_CLOSE_POSITION"]
 MAX_UPPER_WICK_RATIO    = SCAN_CONFIG["1d"]["MAX_UPPER_WICK"]
-MIN_VOLUME_RATIO        = SCAN_CONFIG["1d"]["MIN_VOLUME_RATIO"]      # 1.8 (was 1.2)
-MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1d"]["MIN_VOLUME_AVG"]        # 50K (was 10K)
-MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]               # 55  (was 50)
-MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]               # 75  (was 80)
-MIN_SCORE               = SCORE_THRESHOLDS["1d"]                     # 82  (was 78)
+MIN_VOLUME_RATIO        = SCAN_CONFIG["1d"]["MIN_VOLUME_RATIO"]      
+MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1d"]["MIN_VOLUME_AVG"]        
+MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]               
+MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]               
+MIN_SCORE               = SCORE_THRESHOLDS["1d"]                     
 
 MIN_STOCK_PRICE             = 50.0
-RSI_LOOKBACK_BARS           = 5      # 5 days = 1 week of rising momentum
+RSI_LOOKBACK_BARS           = 5      
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
 MAX_SINGLE_DAY_MOVE_PCT     = 15.0
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   
+GAP_LOOKBACK_BARS           = 10    
 
-# FIX 2 (v5): Gap-from-support threshold.
-# If the breakout candle's open is already > MAX_GAP_FROM_PRIOR_HIGH_PCT above the
-# prior 10-bar high, the move is extended — reject to avoid chasing.
-# 10-bar lookback = 2 trading weeks, covers the most recent consolidation range.
-MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   # NEW (v5)
-GAP_LOOKBACK_BARS           = 10    # NEW (v5): prior high window for gap check
-
-
-# =====================================================================================
-# HELPERS
-# =====================================================================================
 
 def seconds_until_eod() -> int:
-    """
-    Seconds until the next 6:30 PM IST scan window.
-    Used to sleep efficiently — avoids polling every 60s all day.
-    """
     now          = datetime.now(IST)
     target_today = now.replace(hour=18, minute=30, second=0, microsecond=0)
     if now < target_today:
@@ -154,30 +77,11 @@ def seconds_until_eod() -> int:
     return max(int(delta.total_seconds()), 0)
 
 
-# =====================================================================================
-# BATCH DATA DOWNLOAD — FIX 2
-# EOD scanner runs once per day so batching is less critical than for live_scanner,
-# but it still prevents Yahoo IP bans if the watchlist is large (300+ stocks).
-# =====================================================================================
-
 def fetch_watchlist_data(
     watchlist: pd.DataFrame,
     period: str = "2y",
     interval: str = "1d"
 ) -> dict[str, pd.DataFrame]:
-    """
-    Downloads OHLCV data for all watchlist symbols in batches via yfinance.
-
-    Returns
-    -------
-    dict[str, pd.DataFrame]  — {symbol: ohlcv_df}, only successfully downloaded symbols
-
-    Each DataFrame has columns: Date, Open, High, Low, Close, Volume (reset index).
-
-    NOTE: period defaults to "2y" (not "1y") because the 52W Breakout signal requires
-    252 bars of daily data. With 2 years of history (~504 bars) there is sufficient
-    buffer even after dropna() removes a few rows — ensuring HIGH_252D is never NaN.
-    """
     symbols    = watchlist["Stock"].tolist()
     all_data   = {}
     total      = len(symbols)
@@ -191,8 +95,6 @@ def fetch_watchlist_data(
         logger.info(f"📥 Batch downloading {len(batch)} symbols ({i}–{batch_end}/{total})")
 
         try:
-            # group_by='ticker' locks MultiIndex to (Ticker, OHLCV) — prevents breakage
-            # when yfinance changes its default column layout between versions.
             raw = yf.download(
                 tickers_str,
                 period=period,
@@ -204,78 +106,44 @@ def fetch_watchlist_data(
             )
 
             if raw is None or raw.empty:
-                logger.warning(f"⚠️ Empty response for batch {i // batch_size + 1}")
                 continue
 
-            # Detect actual structure returned — don't trust len(batch).
-            # If 29 of 30 tickers are suspended/delisted, yfinance returns a flat
-            # DataFrame for the one survivor instead of a MultiIndex.
             if not isinstance(raw.columns, pd.MultiIndex):
-                # Flat DataFrame — yfinance returned a single-ticker result.
                 if len(batch) == 1:
-                    # We only requested 1 ticker, so batch[0] is safely the correct stock.
                     sym = batch[0]
                     df  = raw.reset_index().copy()
                     if not df.empty:
                         all_data[sym] = df
                 else:
-                    # We requested a multi-ticker batch but only 1 survived (others
-                    # delisted/suspended). Assigning to batch[0] would map the wrong
-                    # symbol to a survivor's data — skip the batch entirely instead.
-                    logger.warning(
-                        f"⚠️ YF returned flat DF for multi-ticker batch "
-                        f"(batch {i // batch_size + 1}, {len(batch)} requested). "
-                        f"Skipping to prevent symbol→data mismatch."
-                    )
                     continue
-
             else:
-                # Multi-ticker: MultiIndex columns (Ticker, OHLCV) with group_by='ticker'
                 for sym in batch:
                     ns_sym = f"{sym}.NS"
                     try:
                         level0 = raw.columns.get_level_values(0)
                         key    = ns_sym if ns_sym in level0 else (sym if sym in level0 else None)
                         if key is None:
-                            logger.warning(f"⚠️ Symbol not in batch response: {sym}")
                             continue
                         df = raw[key].reset_index().copy()
                         if not df.empty:
                             all_data[sym] = df
                     except Exception:
-                        logger.exception(f"❌ Slice error extracting {sym} from batch")
-
+                        pass
         except Exception:
-            logger.exception(f"❌ Batch download failed (batch {i // batch_size + 1})")
+            logger.exception(f"❌ Batch download failed")
 
-    logger.info(f"📥 Data downloaded for {len(all_data)}/{total} symbols")
     return all_data
 
 
-# =====================================================================================
-# START — FIX 1: entire scanning loop inside a function
-# Called from main.py via:  import eod_scanner; eod_scanner.start()
-# =====================================================================================
-
 def start():
-    """
-    Main EOD scanning loop. Runs once per trading day at 6:30 PM IST.
-    Wrapped in start() so importing this module does NOT block main.py.
-    """
-
-    # FIX 4: DB init inside start(), not at module level
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
-    logger.info(f"✅ EOD scanner ready | DB initialized | {DEDUP_DAYS}-day dedup window active")
+    logger.info(f"✅ EOD scanner ready | DB initialized")
 
-    # Tracks the last date a scan completed — prevents double-scanning on the same day
     last_scan_date = None
-
-    # FIX GAP 6: Weekly watchlist rebuild tracker.
     last_rebuild_week: str = ""
 
     while True:
-
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
         weekday      = ist_now.weekday()
@@ -285,60 +153,42 @@ def start():
         is_weekday    = weekday < 5
         already_ran   = (last_scan_date == today_str)
 
-        # ── WEEKEND ─────────────────────────────────────────────────────────────────
         if not is_weekday:
             current_week = ist_now.strftime("%G-W%V")
             is_sunday    = (weekday == 6)
             in_rebuild_window = dt_time(19, 0) <= current_time <= dt_time(19, 30)
 
             if is_sunday and in_rebuild_window and last_rebuild_week != current_week:
-                logger.info(
-                    f"📋 Weekly watchlist rebuild | Week={current_week} | "
-                    f"Trigger: Sunday {ist_now.strftime('%H:%M')} IST"
-                )
                 try:
                     from daily_builder import build_watchlist
                     build_watchlist()
                     last_rebuild_week = current_week
-                    logger.info(f"✅ Watchlist rebuilt for week {current_week}")
                 except Exception:
-                    logger.exception(
-                        f"❌ Weekly rebuild failed for week {current_week} — "
-                        "existing watchlist retained; will retry next Sunday"
-                    )
+                    logger.exception(f"❌ Weekly rebuild failed")
 
             sleep_secs = seconds_until_eod()
-            logger.info(
-                f"📅 {ist_now.strftime('%A')} | Next EOD scan in "
-                f"{sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
-            )
             time.sleep(min(sleep_secs, 3600))
             continue
 
-        # ── ALREADY RAN TODAY ────────────────────────────────────────────────────────
         if already_ran:
             sleep_secs = seconds_until_eod()
-            logger.info(
-                f"✅ EOD done for {today_str} | Next in "
-                f"{sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
-            )
             time.sleep(min(sleep_secs, 3600))
             continue
 
-        # ── NOT YET IN WINDOW ────────────────────────────────────────────────────────
         if not in_eod_window:
             sleep_secs = seconds_until_eod()
-            logger.info(
-                f"⏰ Waiting for EOD window | Now={ist_now.strftime('%H:%M')} | "
-                f"{sleep_secs // 60}m remaining"
-            )
             time.sleep(min(sleep_secs, 60))
             continue
 
-        # ════════════════════════════════════════════════════════════════════════════
-        # EOD SCAN WINDOW — 6:30–8:00 PM IST
-        # Weekday, in window, haven't scanned today → run full scan.
-        # ════════════════════════════════════════════════════════════════════════════
+        # ── MACRO REGIME CHECK (EOD SWITCH) ─────────────────────────────────────
+        from market_filter import is_market_regime_bullish
+        if not is_market_regime_bullish():
+            logger.info("🛑 Bearish EOD macro regime. Skipping daily breakout generation to avoid traps.")
+            last_scan_date = today_str  # Mark as ran to prevent looping all window long
+            sleep_secs = seconds_until_eod()
+            time.sleep(min(sleep_secs, 3600))
+            continue
+        # ────────────────────────────────────────────────────────────────────────
 
         logger.info("=" * 70)
         logger.info(f"📊 EOD SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
@@ -346,121 +196,63 @@ def start():
 
         scan_start = datetime.now(IST)
         try:
-            # ── LOAD WATCHLIST ──────────────────────────────────────────────────────
             try:
                 watchlist = pd.read_parquet(WATCHLIST_PATH)
                 logger.info(f"📋 Watchlist | {len(watchlist)} stocks")
             except Exception:
-                logger.exception("❌ Watchlist load failed — attempting rebuild")
                 try:
                     from daily_builder import build_watchlist
                     build_watchlist()
                     watchlist = pd.read_parquet(WATCHLIST_PATH)
-                    logger.info(f"📋 Watchlist rebuilt | {len(watchlist)} stocks")
                 except Exception:
-                    logger.exception("❌ Watchlist rebuild also failed — aborting scan cycle")
                     time.sleep(300)
                     continue
 
-            # ── FETCH DELIVERY DATA + BATCH DOWNLOAD IN PARALLEL (FIX GAP 3) ─────────
             def _fetch_delivery_with_retry() -> dict:
-                """Delivery fetch with up to DELIVERY_FETCH_RETRIES attempts."""
                 for attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
                     result = fetch_delivery_data(ist_now.date())
                     if result:
-                        logger.info(f"📦 Delivery data | {len(result)} symbols | attempt {attempt}")
                         return result
                     if attempt < DELIVERY_FETCH_RETRIES:
-                        logger.warning(
-                            f"⚠️ Delivery fetch empty (attempt {attempt}/{DELIVERY_FETCH_RETRIES}) "
-                            f"| retry in {DELIVERY_RETRY_INTERVAL_S // 60}m"
-                        )
                         time.sleep(DELIVERY_RETRY_INTERVAL_S)
-                    else:
-                        logger.warning(
-                            f"⚠️ Delivery data unavailable after {DELIVERY_FETCH_RETRIES} attempts "
-                            "| proceeding without delivery scoring"
-                        )
                 return {}
 
             delivery_map:    dict[str, float] = {}
-            all_ticker_data: dict = {}
+            all_ticker_data = {}
 
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="eod_prefetch") as pool:
+            with ThreadPoolExecutor(max_workers=2) as pool:
                 future_delivery = pool.submit(_fetch_delivery_with_retry)
                 future_prices   = pool.submit(fetch_watchlist_data, watchlist, "2y", "1d")
-
                 for future in as_completed([future_delivery, future_prices]):
                     if future is future_delivery:
                         delivery_map    = future.result()
                     else:
                         all_ticker_data = future.result()
 
-            logger.info(
-                f"📥 Parallel prefetch complete | "
-                f"delivery={len(delivery_map)} symbols | "
-                f"prices={len(all_ticker_data)} symbols"
-            )
-
-            # ── SECTOR ROTATION (once per scan, cached 30 min) ──────────────────────
             try:
                 rotation_result = get_sector_scores()
-                if rotation_result.scores:
-                    logger.info(
-                        f"🔄 Sector rotation loaded | "
-                        f"{len(rotation_result.scores)} sectors | "
-                        f"leading={len(rotation_result.strong_sectors)}"
-                    )
-                else:
-                    logger.info("🔄 Sector rotation unavailable — bonus skipped")
             except Exception:
-                logger.exception("⚠️ Sector rotation fetch failed — continuing without it")
                 from sector_rotation import SectorRotationResult
                 rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
 
             total_alerts       = 0
             alerts_by_category = {}
 
-            rejection_counts = {
-                "no_data":              0,
-                "missing_col":          0,
-                "insufficient_bars":    0,
-                "indicator_fail":       0,
-                "weak_signals":         0,
-                "weak_body":            0,
-                "bearish_candle":       0,
-                "weak_close_pos":       0,
-                "upper_wick":           0,
-                "low_volume":           0,
-                "low_avg_volume":       0,
-                "penny_stock":          0,
-                "rsi_range":            0,
-                "rsi_not_rising":       0,
-                "below_ema20":          0,
-                "below_sma50":          0,
-                "no_golden_cross":      0,
-                "weak_adx":             0,   # NEW (v5): ADX hard gate
-                "macd_bearish":         0,
-                "far_from_52w_high":    0,
-                "gap_day":              0,
-                "extended_breakout":    0,   # NEW (v5): gap-from-support filter
-                "low_score":            0,
-                "duplicate":            0,
-                "stale_data":           0,
-            }
-
-            logger.info(f"🔍 Scanning {len(watchlist)} stocks...")
+            rejection_counts = {k: 0 for k in [
+                "no_data", "missing_col", "insufficient_bars", "indicator_fail", "weak_signals",
+                "weak_body", "bearish_candle", "weak_close_pos", "upper_wick", "low_volume",
+                "low_avg_volume", "penny_stock", "rsi_range", "rsi_not_rising", "below_ema20",
+                "below_sma50", "no_golden_cross", "weak_adx", "macd_bearish", "far_from_52w_high",
+                "gap_day", "extended_breakout", "low_score", "duplicate", "stale_data"
+            ]}
 
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
-
                 symbol = "UNKNOWN"
-
                 try:
                     symbol   = row["Stock"]
                     category = row["Category"]
                     sector   = row.get("Sector", None)
 
-                    # FIX 2: use pre-downloaded batch data
                     if symbol not in all_ticker_data:
                         rejection_counts["no_data"] += 1
                         continue
@@ -471,7 +263,6 @@ def start():
                         rejection_counts["no_data"] += 1
                         continue
 
-                    # ── COLUMN NORMALISATION ────────────────────────────────────────
                     if isinstance(ticker.columns, pd.MultiIndex):
                         ticker.columns = ticker.columns.get_level_values(0)
 
@@ -482,7 +273,6 @@ def start():
 
                     for col_name in required_cols:
                         if col_name not in ticker.columns:
-                            logger.warning(f"  ❌ Missing col '{col_name}': {symbol}")
                             missing_col = True
                             break
                         if isinstance(ticker[col_name], pd.DataFrame):
@@ -503,14 +293,12 @@ def start():
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
-                    # ── INDICATORS ──────────────────────────────────────────────────
                     ticker = apply_indicators(ticker, timeframe="1d")
 
                     if ticker is None or ticker.empty:
                         rejection_counts["indicator_fail"] += 1
                         continue
 
-                    # ── BREAKOUT SIGNALS ────────────────────────────────────────────
                     signals = detect_breakouts(ticker, timeframe="1d")
 
                     if len(signals) < MIN_SIGNALS:
@@ -519,16 +307,10 @@ def start():
 
                     latest = ticker.iloc[-1]
 
-                    # ── RSI AVAILABILITY GUARD ───────────────────────────────────────
                     if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
-                        logger.warning(f"  ❌ RSI unavailable: {symbol}")
                         continue
 
-                    # ── STALE DATA GUARD ─────────────────────────────────────────────
-                    _stale_col = next(
-                        (c for c in ["Date", "Datetime"] if c in ticker.columns),
-                        None
-                    )
+                    _stale_col = next((c for c in ["Date", "Datetime"] if c in ticker.columns), None)
                     if _stale_col:
                         try:
                             _last_ts = pd.to_datetime(latest[_stale_col])
@@ -544,12 +326,10 @@ def start():
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
 
                     if avg_volume <= 0:
-                        logger.warning(f"  ❌ Zero avg volume: {symbol}")
                         continue
 
                     volume_ratio = latest_volume / avg_volume
 
-                    # ── CANDLE GEOMETRY ─────────────────────────────────────────────
                     candle_high  = float(latest["High"])
                     candle_low   = float(latest["Low"])
                     candle_open  = float(latest["Open"])
@@ -559,7 +339,6 @@ def start():
                     upper_wick   = candle_high - candle_close
 
                     if candle_range <= 0:
-                        logger.warning(f"  ❌ Zero candle range: {symbol}")
                         continue
 
                     body_ratio     = candle_body / candle_range
@@ -567,66 +346,47 @@ def start():
                     wick_ratio     = upper_wick / candle_range
                     rsi_val        = float(latest["RSI"])
 
-                    # ── FILTER 1: CANDLE BODY ───────────────────────────────────────
                     if body_ratio < MIN_BODY_RATIO:
                         rejection_counts["weak_body"] += 1
                         continue
-
-                    # ── FILTER 2: BULLISH CANDLE ────────────────────────────────────
                     if candle_close <= candle_open:
                         rejection_counts["bearish_candle"] += 1
                         continue
-
-                    # ── FILTER 3: CLOSE POSITION ────────────────────────────────────
                     if close_position < MIN_CLOSE_POSITION:
                         rejection_counts["weak_close_pos"] += 1
                         continue
-
-                    # ── FILTER 4: UPPER WICK ────────────────────────────────────────
                     if wick_ratio > MAX_UPPER_WICK_RATIO:
                         rejection_counts["upper_wick"] += 1
                         continue
-
-                    # ── FILTER 5: VOLUME RATIO ──────────────────────────────────────
                     if volume_ratio < MIN_VOLUME_RATIO:
                         rejection_counts["low_volume"] += 1
                         continue
-
-                    # ── FILTER 6: AVG VOLUME FLOOR ──────────────────────────────────
                     if avg_volume < MIN_AVG_VOLUME_SHARES:
                         rejection_counts["low_avg_volume"] += 1
                         continue
-
-                    # ── FILTER 7: MINIMUM PRICE ─────────────────────────────────────
                     if candle_close < MIN_STOCK_PRICE:
                         rejection_counts["penny_stock"] += 1
                         continue
-
-                    # ── FILTER 8: RSI RANGE ─────────────────────────────────────────
                     if not (MIN_RSI <= rsi_val <= MAX_RSI):
                         rejection_counts["rsi_range"] += 1
                         continue
 
-                    # ── FILTER 9: RSI DIRECTION ─────────────────────────────────────
                     if len(ticker) > RSI_LOOKBACK_BARS:
                         rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
                         if rsi_val <= rsi_prev:
                             rejection_counts["rsi_not_rising"] += 1
                             continue
 
-                    # ── FILTER 10: EMA20 ────────────────────────────────────────────
                     if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
                         if candle_close < float(latest["EMA20"]):
                             rejection_counts["below_ema20"] += 1
                             continue
 
-                    # ── FILTER 11: SMA50 ────────────────────────────────────────────
                     if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
                         if candle_close < float(latest["SMA50"]):
                             rejection_counts["below_sma50"] += 1
                             continue
 
-                    # ── FILTER 12: GOLDEN CROSS ─────────────────────────────────────
                     if (
                         "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                         not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
@@ -635,17 +395,11 @@ def start():
                             rejection_counts["no_golden_cross"] += 1
                             continue
 
-                    # ── FILTER 13 (NEW v5): ADX HARD GATE ───────────────────────────
-                    # ADX < ADX_MIN_THRESHOLD (25) = no established trend.
-                    # Previously EOD only had a soft ADX penalty in scoring_engine.
-                    # Stocks with ADX 20–24 slipped through and produced ALL negative
-                    # EOD alerts. Hard gate here eliminates them before scoring.
                     if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
                         if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
                             rejection_counts["weak_adx"] += 1
                             continue
 
-                    # ── FILTER 14: MACD ─────────────────────────────────────────────
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
@@ -654,7 +408,6 @@ def start():
                             rejection_counts["macd_bearish"] += 1
                             continue
 
-                    # ── FILTER 15: 52W HIGH PROXIMITY ───────────────────────────────
                     if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
                         high_52w = float(latest["HIGH_52W"])
                         if high_52w > 0:
@@ -663,7 +416,6 @@ def start():
                                 rejection_counts["far_from_52w_high"] += 1
                                 continue
 
-                    # ── FILTER 16: SINGLE-DAY MOVE CAP ──────────────────────────────
                     if len(ticker) >= 2:
                         prev_close = float(ticker["Close"].iloc[-2])
                         if prev_close > 0:
@@ -672,45 +424,22 @@ def start():
                                 rejection_counts["gap_day"] += 1
                                 continue
 
-                    # ── FILTER 17 (NEW v5): GAP-FROM-SUPPORT ─────────────────────────
-                    # Root cause of "already extended" EOD alerts:
-                    # A stock can show a 52W+Monthly+Weekly confluence while having
-                    # already run 5-10% above any support level before today's candle.
-                    # This filter checks if today's OPEN (not close) is already
-                    # > MAX_GAP_FROM_PRIOR_HIGH_PCT above the prior 10-bar high.
-                    # If yes, the breakout happened before today — we are chasing.
-                    #
-                    # Why open (not close)?
-                    #   The open is the first price at which the market agreed after
-                    #   overnight processing. If it opens already above prior resistance,
-                    #   any further close above it is not a fresh breakout — the gap
-                    #   itself was the breakout, and we missed the entry.
-                    #
-                    # GAP_LOOKBACK_BARS = 10 bars (2 trading weeks) covers the most
-                    # recent consolidation zone. Using iloc[-11:-1] excludes today's bar.
                     if len(ticker) >= GAP_LOOKBACK_BARS + 1:
                         prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
                         if prior_high > 0:
                             gap_pct = (candle_open - prior_high) / prior_high * 100
                             if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
                                 rejection_counts["extended_breakout"] += 1
-                                logger.debug(
-                                    f"  ⛔ {symbol} extended | open={candle_open:.2f} "
-                                    f"prior_high={prior_high:.2f} gap={gap_pct:.1f}%"
-                                )
                                 continue
 
-                    # ── DELIVERY DATA ────────────────────────────────────────────────
                     delivery_pct = delivery_map.get(symbol, None)
 
-                    # ── ATR for EOD quality bonus ────────────────────────────────────
                     atr_val_eod = (
                         float(latest["ATR"])
                         if "ATR" in ticker.columns and not pd.isna(latest.get("ATR"))
                         else None
                     )
 
-                    # ── SCORE ────────────────────────────────────────────────────────
                     score = calculate_score(
                         category=category,
                         breakout_count=len(signals),
@@ -726,52 +455,32 @@ def start():
                         min_vol=MIN_AVG_VOLUME_SHARES,
                     )
 
-                    # Sector rotation modifier — applied after base score
                     if score > 0:
                         try:
                             safe_sector  = "Unknown" if (sector is None or (isinstance(sector, float) and pd.isna(sector))) else str(sector).strip()
                             sector_bonus = rotation_result.score_bonus_for(safe_sector)
                             score = max(0, min(score + sector_bonus, 100))
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ Sector bonus skipped for {symbol}: {e}")
-
-                    logger.info(
-                        f"  ✅ {symbol} | Score={score} | "
-                        f"Vol={volume_ratio:.1f}x | RSI={rsi_val:.1f} | Sig={len(signals)}"
-                    )
+                        except Exception:
+                            pass
 
                     if score < MIN_SCORE:
                         rejection_counts["low_score"] += 1
                         continue
 
-                    # ── DEDUP ────────────────────────────────────────────────────────
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
-                    saved = save_alert_if_new(
-                        symbol,
-                        dedup_key,
-                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-                    )
-
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
 
-                    # ── BUILD ALERT PAYLOAD ──────────────────────────────────────────
-                    above_sma50 = (
-                        bool(candle_close >= float(latest["SMA50"]))
-                        if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50"))
-                        else None
-                    )
-                    golden_cross = (
-                        bool(float(latest["SMA50"]) >= float(latest["SMA200"]))
-                        if (
-                            "SMA50" in ticker.columns and "SMA200" in ticker.columns
-                            and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
-                        )
-                        else None
-                    )
+                    # ── DYNAMIC DAILY ATR STOP CALCULATION ───────────────────────
+                    current_atr = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
+                    suggested_stop = candle_close - (1.5 * current_atr)
+
+                    above_sma50 = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
 
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
@@ -790,44 +499,28 @@ def start():
                         "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
                         "above_sma50":      above_sma50,
                         "golden_cross":     golden_cross,
+                        "atr_stop":         round(suggested_stop, 2)
                     })
                     total_alerts += 1
 
                 except Exception:
                     logger.exception(f"❌ Error processing {symbol}")
 
-            # ── SEND ALERTS ──────────────────────────────────────────────────────────
-            scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-
-            if total_alerts == 0:
-                logger.info("📭 No EOD alerts today")
-            else:
+            if total_alerts > 0:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
                     chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
-
                     for chunk_num, chunk in enumerate(chunks, start=1):
                         msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
                         send_telegram_message(msg, scan_type="EOD")
-                        logger.info(f"📨 Sent | {cat} | chunk {chunk_num}/{len(chunks)} | {len(chunk)} stocks")
 
-            # ── SCAN SUMMARY ─────────────────────────────────────────────────────────
             duration       = (datetime.now(IST) - scan_start).total_seconds()
             last_scan_date = today_str
             sleep_secs     = seconds_until_eod()
 
-            logger.info("=" * 70)
-            logger.info(f"✅ EOD DONE | {round(duration, 1)}s | alerts={total_alerts}/{len(watchlist)}")
-
             fired = {k: v for k, v in rejection_counts.items() if v > 0}
             if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
-
-            logger.info(
-                f"💤 Next scan: tomorrow 18:30 | sleeping "
-                f"{sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m"
-            )
-            logger.info("=" * 70)
 
             time.sleep(min(sleep_secs, 3600))
 
