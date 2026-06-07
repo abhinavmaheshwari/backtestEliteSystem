@@ -1,11 +1,12 @@
 # =====================================================================================
 # app/email_engine.py
-# CLOUD-OPTIMIZED EMAIL PIPELINE (IPv4 Forced + TLS)
+# CLOUD-OPTIMIZED EMAIL PIPELINE (IPv4 Forced + TLS + Attachments)
 # =====================================================================================
 
 import smtplib
 import socket
 from email.message import EmailMessage
+import mimetypes
 import logging
 import os
 
@@ -13,25 +14,20 @@ logger = logging.getLogger(__name__)
 
 # ============================================================================
 # 🚨 CRITICAL CLOUD FIX: Force IPv4 Resolution
-# Railway and other cloud providers often have broken IPv6 routing for Google.
-# This patch forces Python's socket library to only use IPv4 for the connection,
-# which bypasses the [Errno 101] Network is unreachable error.
 # ============================================================================
 original_getaddrinfo = socket.getaddrinfo
 
 def ipv4_getaddrinfo(*args, **kwargs):
     responses = original_getaddrinfo(*args, **kwargs)
-    # Filter out IPv6 (AF_INET6), keep only IPv4 (AF_INET)
     return [res for res in responses if res[0] == socket.AF_INET]
 
-# Apply the patch
 socket.getaddrinfo = ipv4_getaddrinfo
 # ============================================================================
 
-def send_html_email(subject: str, html_content: str) -> bool:
+def send_html_email(subject: str, html_content: str, attachment_path: str = None) -> bool:
     """
-    Assembles and pushes custom metrics to your personal mailbox using 
-    Railway injected container context parameters.
+    Attempts to send an HTML email with an optional file attachment EXACTLY ONCE.
+    Returns True if successful, False if blocked/failed.
     """
     sender_email    = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
@@ -50,28 +46,32 @@ def send_html_email(subject: str, html_content: str) -> bool:
         msg.set_content("Please enable HTML viewing features to safely render today's metrics table.")
         msg.add_alternative(html_content, subtype='html')
 
+        # Attach the CSV file if provided
+        if attachment_path and os.path.exists(attachment_path):
+            ctype, encoding = mimetypes.guess_type(attachment_path)
+            if ctype is None or encoding is not None:
+                ctype = 'application/octet-stream'
+            maintype, subtype = ctype.split('/', 1)
+            
+            with open(attachment_path, 'rb') as f:
+                msg.add_attachment(f.read(), maintype=maintype, subtype=subtype, filename=os.path.basename(attachment_path))
+
         logger.info("🔌 Connecting to SMTP server over IPv4 (Port 587)...")
         
+        # EXACTLY ONE ATTEMPT with a 15-second timeout
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
             smtp.ehlo()
-            smtp.starttls()  # Secure the connection
+            smtp.starttls()
             smtp.ehlo()
-            
-            logger.info("🔐 Authenticating...")
             smtp.login(sender_email, sender_password)
-            
-            logger.info("📤 Dispatching payload...")
             smtp.send_message(msg)
             
-        logger.info("✅ Daily Consolidated Summary pushed to system mailbox destination.")
+        logger.info("📧 Email successfully sent.")
         return True
 
     except TimeoutError:
-        logger.error("❌ Email connection timed out after 15 seconds.")
-        return False
-    except smtplib.SMTPAuthenticationError:
-        logger.error("❌ Email Auth Failed. Check your SENDER_PASSWORD (16-char App Password).")
+        logger.error("❌ Email connection timed out after 15 seconds. (Firewall block)")
         return False
     except Exception as e:
-        logger.error(f"❌ Critical exception encountered during email generation workflow: {e}")
+        logger.error(f"❌ Email generation failed: {e}")
         return False
