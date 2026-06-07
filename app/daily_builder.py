@@ -1,6 +1,6 @@
 # =====================================================================================
 # app/daily_builder.py  —  v3 (Financial sector dual-path)
-# WITH SILENT EXECUTION & ENHANCED ERROR LOGGING
+# SILENT EXECUTION + EMAIL DISPATCH WITH TELEGRAM FALLBACK
 # =====================================================================================
 
 import os
@@ -8,10 +8,10 @@ import traceback
 import threading
 import pandas as pd
 import logging
-
+import requests
 from datetime import datetime
-from tradingview_screener import Query, col
 
+from tradingview_screener import Query, col
 from config import WATCHLIST_PATH
 
 # ── LOGGING SETUP ────────────────────────────────────────────────────────────────────
@@ -92,8 +92,7 @@ def log_exclusion(symbol: str, reason: str) -> None:
             "Reason":    reason,
             "Scan Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
-    # REMOVED LOG SPAM: We no longer print this to the console. 
-    # It will silently save to the CSV file instead to prevent Railway log flooding.
+    # SILENT EXECUTION: No print statement here to prevent Railway log flooding.
 
 # =====================================================================================
 # FETCH UNIVERSE
@@ -447,11 +446,11 @@ def main():
     print(final_df.head(10).to_string(index=False))
 
     # =================================================================================
-    # EMAIL DISPATCH
+    # EMAIL DISPATCH WITH TELEGRAM FALLBACK (EXACTLY ONCE)
     # =================================================================================
     try:
         from email_engine import send_html_email
-        logger.info("📧 Compiling fundamental watchlist for email delivery...")
+        logger.info("📧 Attempting to email fundamental watchlist...")
         
         email_df = final_df[['Stock', 'Category', 'Sector', 'CMP', 'Fundamental Score', 'ROE %', 'YOY Profit %']]
         table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
@@ -463,12 +462,9 @@ def main():
                 body {{ font-family: Arial, sans-serif; background-color: #f4f7f6; color: #333; padding: 20px; }}
                 .container {{ max-width: 900px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }}
                 h1 {{ color: #2c3e50; text-align: center; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
-                h2 {{ color: #34495e; margin-top: 30px; }}
                 .styled-table {{ border-collapse: collapse; margin: 15px 0; font-size: 0.9em; width: 100%; }}
                 .styled-table thead tr {{ background-color: #34495e; color: #ffffff; text-align: left; }}
                 .styled-table th, .styled-table td {{ padding: 12px 15px; border-bottom: 1px solid #dddddd; }}
-                .styled-table tbody tr:nth-of-type(even) {{ background-color: #f9f9f9; }}
-                .styled-table tbody tr:last-of-type {{ border-bottom: 2px solid #34495e; }}
             </style>
         </head>
         <body>
@@ -484,16 +480,32 @@ def main():
         
         subject = f"🌟 Daily Fundamental Watchlist - {datetime.now().strftime('%Y-%m-%d')}"
         
-        email_success = send_html_email(subject, html_content)
+        # ── 1. ATTEMPT EMAIL (Exactly Once) ──────────────────────────────────────
+        email_success = send_html_email(subject, html_content, attachment_path=OUTPUT_CSV)
         
-        if email_success:
-            logger.info("✅ Watchlist successfully emailed to your inbox.")
-        else:
-            logger.error("⚠️ Email function returned False. Check environment variables.")
+        # ── 2. TELEGRAM FALLBACK (If Email Fails) ────────────────────────────────
+        if not email_success:
+            logger.warning("⚠️ Email delivery failed or timed out. Activating Telegram Fallback...")
             
+            bot_token = os.getenv("BOT_TOKEN")
+            chat_id   = os.getenv("CHAT_ID")
+            
+            if bot_token and chat_id and os.path.exists(OUTPUT_CSV):
+                url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+                caption = f"🌟 *Daily Fundamental Watchlist*\nDate: {datetime.now().strftime('%Y-%m-%d')}\nTotal Stocks: {len(final_df)}\n\n_Email delivery blocked. CSV attached._"
+                
+                with open(OUTPUT_CSV, 'rb') as doc:
+                    resp = requests.post(url, data={'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}, files={'document': doc}, timeout=15)
+                
+                if resp.status_code == 200:
+                    logger.info("✅ Watchlist CSV successfully delivered to Telegram.")
+                else:
+                    logger.error(f"❌ Telegram fallback failed: {resp.text}")
+            else:
+                logger.error("❌ Cannot execute Telegram fallback: Missing BOT_TOKEN/CHAT_ID or CSV file.")
+                
     except Exception as e:
-        logger.error(f"❌ CRITICAL ERROR emailing watchlist: {e}")
-        # This traceback will print exactly what caused the crash (e.g. SMTPAuthenticationError)
+        logger.error(f"❌ CRITICAL ERROR in dispatch block: {e}")
         logger.error(traceback.format_exc())
 
 # =====================================================================================
