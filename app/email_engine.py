@@ -1,6 +1,6 @@
 # =====================================================================================
 # app/email_engine.py
-# DYNAMIC ENVIRONMENT CONTROLLED EMAIL PIPELINE
+# CLOUD-OPTIMIZED EMAIL PIPELINE (TLS + TIMEOUT)
 # =====================================================================================
 
 import smtplib
@@ -32,13 +32,30 @@ def send_html_email(subject: str, html_content: str) -> bool:
         msg.set_content("Please enable HTML viewing features to safely render today's metrics table.")
         msg.add_alternative(html_content, subtype='html')
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        # FIX 1 & 2: Use Port 587 (TLS) instead of 465 (SSL) and enforce a 15-second timeout
+        # This guarantees the script will never freeze and cause Railway to kill the container.
+        logger.info("🔌 Connecting to SMTP server (Port 587)...")
+        
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
+            smtp.ehlo()
+            smtp.starttls()  # Secure the connection
+            smtp.ehlo()
+            
+            logger.info("🔐 Authenticating...")
             smtp.login(sender_email, sender_password)
+            
+            logger.info("📤 Dispatching payload...")
             smtp.send_message(msg)
             
-        logger.info("📧 Daily Consolidated Summary pushed to system mailbox destination.")
+        logger.info("✅ Daily Consolidated Summary pushed to system mailbox destination.")
         return True
 
+    except TimeoutError:
+        logger.error("❌ Email connection timed out after 15 seconds. (Network blocked)")
+        return False
+    except smtplib.SMTPAuthenticationError:
+        logger.error("❌ Email Auth Failed. Check your SENDER_PASSWORD (16-char App Password).")
+        return False
     except Exception as e:
         logger.error(f"❌ Critical exception encountered during email generation workflow: {e}")
         return False
