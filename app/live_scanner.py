@@ -385,23 +385,28 @@ def start():
                     suggested_stop = candle_close - (1.5 * current_atr)
 
                     alerts_by_category.setdefault(category, []).append({
-                        "symbol":           symbol,
-                        "category":         category,
-                        "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
-                        "price":            round(candle_close, 2),
-                        "open":             round(candle_open, 2),
-                        "day_high":         round(candle_high, 2),
-                        "day_low":          round(candle_low, 2),
-                        "rsi":              round(rsi_val, 1),
-                        "volume_ratio":     round(volume_ratio, 2),
-                        "body_ratio":       round(body_ratio * 100),
-                        "close_position":   round(close_position * 100),
-                        "score":            score,
-                        "above_ema20":      bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None,
-                        "above_sma50":      bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None,
-                        "golden_cross":     bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None,
-                        "atr_stop":         round(suggested_stop, 2)
-                    })
+                    "symbol":           symbol,
+                    "category":         category,
+                    "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
+                    "price":            round(candle_close, 2),
+                    "open":             round(float(latest["Open"]), 2),
+                    "day_high":         round(float(latest["High"]), 2),
+                    "day_low":          round(float(latest["Low"]), 2),
+                    "rsi":              round(float(latest["RSI"]), 1),
+                    "volume_ratio":     round(vol_ratio, 2),
+                    "body_ratio":       round(body_ratio, 1),
+                    "score":            score,
+                    "above_ema20":      above_ema20,
+                    "above_sma50":      above_sma50,
+                    "golden_cross":     golden_cross,
+                    "atr_stop":         round(suggested_stop, 2),
+                    
+                    # ── NEW FORENSIC METRICS ADDED HERE ──
+                    "peg":              row.get("PEG Ratio"),
+                    "yoy_rev":          row.get("YOY Revenue %"),
+                    "yoy_profit":       row.get("YOY Profit %"),
+                    "roe":              row.get("ROE %")
+                })
                     total_alerts += 1
 
                 except Exception:
