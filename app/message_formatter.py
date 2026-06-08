@@ -1,8 +1,6 @@
 # =====================================================================================
 # app/message_formatter.py
-# TELEGRAM MESSAGE FORMATTER
-# parse_mode: HTML  — uses <b>, <i>, <code> tags (safer than Markdown)
-# Rules: no box-drawing chars, no block chars — emoji + hyphens only
+# TELEGRAM MESSAGE FORMATTER WITH FORENSIC VALUATION
 # =====================================================================================
 
 # =====================================================================================
@@ -15,12 +13,6 @@ def score_tier(score):
     if score >= 75: return "SOLID ★"
     return             "WATCH"
 
-def score_badge(score):
-    if score >= 95: return "🏆"
-    if score >= 85: return "🔥"
-    if score >= 75: return "⚡"
-    return             "📌"
-
 def score_bar(score):
     filled = round(score / 10)
     return "🟢" * filled + "⚫" * (10 - filled)
@@ -30,6 +22,7 @@ def score_bar(score):
 # =====================================================================================
 
 _CAT_ICON = {
+    "Diamond Hold":             "💎",
     "Elite Compounder":         "💎",
     "Financial Compounder":     "💎",
     "High Growth":              "📈",
@@ -56,7 +49,7 @@ def category_label(category):
     return "\n".join(parts)
 
 # =====================================================================================
-# BREAKOUT SIGNALS — one per line with emoji
+# BREAKOUT SIGNALS
 # =====================================================================================
 
 _BK_ICON = {
@@ -72,7 +65,6 @@ _BK_ICON = {
 
 def breakout_lines(signals):
     return "\n".join(
-        # If the signal already has an emoji (like our Reversal signals), we just use a bullet point
         f"{_BK_ICON.get(s, '•')} {s}"
         for s in signals
     )
@@ -83,7 +75,6 @@ def breakout_lines(signals):
 
 def trend_structure_lines(alert):
     lines = []
-
     above_ema20  = alert.get("above_ema20")
     above_sma50  = alert.get("above_sma50")
     golden_cross = alert.get("golden_cross")
@@ -107,7 +98,6 @@ def trend_structure_lines(alert):
 _TOP = "= = = = = = = = = = = = = = = = ="
 _DIV = "- " * 16
 
-# ── NEW: Added REVERSAL header label ─────────────────────────────────────────────────
 _SCANNER_LABEL = {
     "EOD":      "📊 EOD BREAKOUT ALERT",
     "1H":       "🚀 TREND CONFIRMED ALERT — 1H",
@@ -115,7 +105,6 @@ _SCANNER_LABEL = {
     "REVERSAL": "🔄 DEEP VALUE REVERSAL ALERT",
 }
 
-# ── NEW: Added REVERSAL bar label ────────────────────────────────────────────────────
 _BAR_LABEL = {
     "EOD":      "Daily (EOD)",
     "1H":       "1H (completed)",
@@ -131,39 +120,57 @@ def format_alert(a, scanner="1H"):
     trend    = trend_structure_lines(a)
     bar_type = _BAR_LABEL.get(scanner, scanner)
 
+    # ── VALUATION BADGE (PEG) ──
+    peg = a.get("peg")
+    peg_badge = ""
+    if peg is not None:
+        if peg < 1.0:
+            peg_badge = " 🔥 <b>[DEEP VALUE]</b>"
+        elif peg <= 1.5:
+            peg_badge = " ✅ <b>[FAIR VALUE]</b>"
+        elif peg >= 2.0:
+            peg_badge = " ⚠️ <b>[PREMIUM]</b>"
+
+    # ── FUNDAMENTAL MOAT BLOCK ──
+    yoy_rev = a.get("yoy_rev")
+    yoy_profit = a.get("yoy_profit")
+    roe = a.get("roe")
+    
+    moat_block = ""
+    if yoy_rev is not None and yoy_profit is not None:
+        moat_lines = ["", "📊 <b>Fundamental Engine:</b>"]
+        moat_lines.append(f"├─ YoY Revenue: +{yoy_rev}%")
+        moat_lines.append(f"├─ YoY Profit:  +{yoy_profit}%")
+        if roe: moat_lines.append(f"└─ ROE:         {roe}%")
+        moat_block = "\n".join(moat_lines)
+
+    # ── PRICE & DELIVERY ──
     open_price   = a.get("open")
     day_high     = a.get("day_high")
     day_low      = a.get("day_low")
     delivery_pct = a.get("delivery_pct")   
 
     price_lines = [f"Price:    ₹{a['price']}"]
-    if open_price is not None:
-        price_lines.append(f"Open:     ₹{open_price}")
-    if day_high is not None:
-        price_lines.append(f"Day High: ₹{day_high}")
-    if day_low is not None:
-        price_lines.append(f"Day Low:  ₹{day_low}")
-    if "atr_stop" in a:
-        price_lines.append(f"ATR Stop: ₹{a['atr_stop']} (Dynamic)")
+    if open_price is not None: price_lines.append(f"Open:     ₹{open_price}")
+    if day_high is not None:   price_lines.append(f"Day High: ₹{day_high}")
+    if day_low is not None:    price_lines.append(f"Day Low:  ₹{day_low}")
+    if "atr_stop" in a:        price_lines.append(f"ATR Stop: ₹{a['atr_stop']} (Dynamic)")
         
     price_block = "\n".join(price_lines)
 
     if delivery_pct is not None:
-        if delivery_pct >= 60:
-            deliv_label = "🏦 Institutional"
-        elif delivery_pct >= 40:
-            deliv_label = "📦 Positional"
-        elif delivery_pct >= 25:
-            deliv_label = "📬 Moderate"
-        else:
-            deliv_label = "🔄 Intraday churn"
+        if delivery_pct >= 60: deliv_label = "🏦 Institutional"
+        elif delivery_pct >= 40: deliv_label = "📦 Positional"
+        elif delivery_pct >= 25: deliv_label = "📬 Moderate"
+        else: deliv_label = "🔄 Intraday churn"
         delivery_line = f"Delivery:         {delivery_pct:.1f}%  {deliv_label}"
     else:
         delivery_line = None
 
+    # ── ASSEMBLE FINAL MESSAGE ──
     lines = [
         _DIV,
-        f"Stock: <b>{a['symbol']}</b>",
+        f"Stock: <b>{a['symbol']}</b>{peg_badge}",
         "",
         "Category:",
         cat,
@@ -179,6 +186,11 @@ def format_alert(a, scanner="1H"):
     ]
     if delivery_line:
         lines.append(delivery_line)
+        
+    # Append the new Moat Block
+    if moat_block:
+        lines.append(moat_block)
+        
     lines += [
         "",
         "Trend Structure:",
