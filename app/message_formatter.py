@@ -72,6 +72,7 @@ _BK_ICON = {
 
 def breakout_lines(signals):
     return "\n".join(
+        # If the signal already has an emoji (like our Reversal signals), we just use a bullet point
         f"{_BK_ICON.get(s, '•')} {s}"
         for s in signals
     )
@@ -106,16 +107,20 @@ def trend_structure_lines(alert):
 _TOP = "= = = = = = = = = = = = = = = = ="
 _DIV = "- " * 16
 
+# ── NEW: Added REVERSAL header label ─────────────────────────────────────────────────
 _SCANNER_LABEL = {
     "EOD":      "📊 EOD BREAKOUT ALERT",
     "1H":       "🚀 TREND CONFIRMED ALERT — 1H",
     "INTRADAY": "⚡ EARLY MOMENTUM ALERT — 15M",
+    "REVERSAL": "🔄 DEEP VALUE REVERSAL ALERT",
 }
 
+# ── NEW: Added REVERSAL bar label ────────────────────────────────────────────────────
 _BAR_LABEL = {
     "EOD":      "Daily (EOD)",
     "1H":       "1H (completed)",
     "INTRADAY": "15M (completed)",
+    "REVERSAL": "Daily (Mean Reversion)",
 }
 
 def format_alert(a, scanner="1H"):
@@ -163,7 +168,7 @@ def format_alert(a, scanner="1H"):
         "Category:",
         cat,
         "",
-        "Breakouts:",
+        "Technical Triggers:",
         bk,
         "",
         price_block,
@@ -179,7 +184,7 @@ def format_alert(a, scanner="1H"):
         "Trend Structure:",
         trend,
         "",
-        "Breakout Score:",
+        "Setup Score:",
         f"{a['score']}/100  {tier}",
         bar,
         "",
