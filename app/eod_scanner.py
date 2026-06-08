@@ -468,7 +468,13 @@ def start():
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
-                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
+                    saved = save_alert_if_new(
+                    symbol, 
+                    dedup_key, 
+                    datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                    float(candle_close),  # Ensure it is a float
+                    float(suggested_stop) # Ensure it is a float
+                    )
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
