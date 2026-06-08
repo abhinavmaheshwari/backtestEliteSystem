@@ -468,37 +468,37 @@ def start():
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
-                    # 1. CALCULATE TREND & STOP METRICS
-                    current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else ((candle_high - candle_low) * 1.5)
-                    suggested_stop = candle_close - (1.5 * current_atr)
-                    
-                    above_ema20  = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
-                    above_sma50  = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
-                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
-
-                    # 2. PERMANENT DATABASE SAVE
-                    saved = save_alert_if_new(
-                        symbol, 
-                        dedup_key, 
-                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                        float(candle_close), 
-                        float(suggested_stop)
-                    )
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
 
-                    # 3. APPEND TO JOURNAL DICTIONARY
+                    current_atr = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
+                    suggested_stop = candle_close - (1.5 * current_atr)
+
+                    # EXPLICITLY DEFINING TREND VARIABLES BEFORE APPEND
+                    above_ema20  = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
+                    above_sma50  = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
+
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
                         "category":         category,
                         "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
                         "price":            round(candle_close, 2),
+                        "open":             round(candle_open, 2),
+                        "day_high":         round(candle_high, 2),
+                        "day_low":          round(candle_low, 2),
+                        "rsi":              round(rsi_val, 1),
+                        "volume_ratio":     round(volume_ratio, 2),
+                        "body_ratio":       round(body_ratio * 100),
+                        "close_position":   round(close_position * 100),
                         "score":            score,
                         "above_ema20":      above_ema20,
                         "above_sma50":      above_sma50,
                         "golden_cross":     golden_cross,
                         "atr_stop":         round(suggested_stop, 2),
+                        "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                         "peg":              row.get("PEG Ratio"),
                         "yoy_rev":          row.get("YOY Revenue %"),
                         "yoy_profit":       row.get("YOY Profit %"),
