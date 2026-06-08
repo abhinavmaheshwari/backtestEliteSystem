@@ -25,18 +25,15 @@ def save_alert_if_new(symbol: str, breakout_type: str, alert_time: str, price: f
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
     cursor.execute("SELECT id FROM alerts WHERE symbol=? AND alert_date=? AND breakout_type=?", 
                    (symbol, today, breakout_type))
     if cursor.fetchone():
         conn.close()
         return False
-        
     cursor.execute('''
         INSERT INTO alerts (symbol, alert_date, alert_time, breakout_type, price, atr_stop)
         VALUES (?, ?, ?, ?, ?, ?)
     ''', (symbol, today, alert_time, breakout_type, price, atr_stop))
-    
     conn.commit()
     conn.close()
     return True
