@@ -1,6 +1,6 @@
 # =====================================================================================
-# app/daily_builder.py  —  v3 (Financial sector dual-path)
-# SILENT EXECUTION + EMAIL DISPATCH WITH TELEGRAM FALLBACK
+# app/daily_builder.py  —  v4 (Ultimate Long-Term & Momentum Hybrid)
+# SILENT EXECUTION + EMAIL DISPATCH WITH TELEGRAM FALLBACK + FORENSIC ACCOUNTING
 # =====================================================================================
 
 import os
@@ -38,6 +38,22 @@ FINANCIAL_SECTORS = {
     "Banks",
     "Insurance",
     "Financial Services",
+}
+
+# =====================================================================================
+# CATEGORY DICTIONARY (PLAIN ENGLISH EXPLANATIONS)
+# =====================================================================================
+CAT_DESCRIPTIONS = {
+    "High Growth":              "Explosive short-term sales & profit momentum.",
+    "Elite Compounder":         "High ROE, strong margins, and low debt.",
+    "Mature Quality":           "Large cap stability with consistent returns.",
+    "Turnaround":               "Recovering from previous losses with expanding margins.",
+    "Steady Compounder":        "Consistent, moderate growth with stable ROE.",
+    "Financial High Growth":    "Explosive recent Net Interest Income & profit momentum.",
+    "Financial Compounder":     "High ROE & ROA with strong consistent loan book growth.",
+    "Financial Mature Quality": "Large cap financial institution with highly stable returns.",
+    "Financial Turnaround":     "Recovering financial with improving asset quality.",
+    "Diamond Hold":             "💎 LONG TERM: 5Y+ Consistent Growth, Fair Valuation (PEG < 1.5), and Cash Flow Positive."
 }
 
 # =====================================================================================
@@ -92,14 +108,13 @@ def log_exclusion(symbol: str, reason: str) -> None:
             "Reason":    reason,
             "Scan Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
-    # SILENT EXECUTION: No print statement here to prevent Railway log flooding.
 
 # =====================================================================================
 # FETCH UNIVERSE
 # =====================================================================================
 
 def fetch_universe() -> pd.DataFrame:
-    logger.info("📡 Fetching NSE stocks from TradingView...")
+    logger.info("📡 Fetching NSE stocks and forensic accounting data from TradingView...")
 
     fields = [
         "name", "sector", "close", "average_volume_30d_calc",
@@ -109,6 +124,11 @@ def fetch_universe() -> pd.DataFrame:
         "earnings_per_share_diluted_yoy_growth_ttm", "earnings_per_share_diluted_qoq_growth_fq",
         "total_revenue_yoy_growth_ttm", "total_revenue_qoq_growth_fq",
         "net_income_yoy_growth_ttm", "net_income_qoq_growth_fq",
+        # NEW LONG-TERM METRICS
+        "price_earnings_ttm", 
+        "total_revenue_5y_growth",
+        "earnings_per_share_basic_5y_growth",
+        "free_cash_flow_margin_ttm"
     ]
 
     q = (
@@ -174,6 +194,12 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     yoy_profit  = fv("earnings_per_share_diluted_yoy_growth_ttm")
     qoq_profit  = fv("earnings_per_share_diluted_qoq_growth_fq")
 
+    # Long-term specific metrics
+    pe          = fv("price_earnings_ttm")
+    rev_5y      = fv("total_revenue_5y_growth")
+    eps_5y      = fv("earnings_per_share_basic_5y_growth")
+    fcf_margin  = fv("free_cash_flow_margin_ttm")
+
     missing = [
         name for name, val in [
             ("close", close_price), ("average_volume_30d_calc", avg_volume),
@@ -200,6 +226,11 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     if anomaly:
         return skip(anomaly)
 
+    # ── PEG RATIO CALCULATION ──
+    peg = None
+    if pe is not None and pe > 0 and yoy_profit > 0:
+        peg = pe / yoy_profit
+
     yoy_margin_expanding = (yoy_profit >= yoy_sales)
     qoq_margin_expanding = (qoq_profit > 0 and qoq_profit >= qoq_sales)
     low_debt             = (debt_equity <= 1.5 or debt_equity == 0.0)
@@ -210,10 +241,18 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     turnaround = (yoy_profit >= TURNAROUND_PROFIT and yoy_margin_expanding and opm >= 10 and yoy_sales >= -20.0 and roe >= 10)
     steady_compounder = (yoy_sales >= STEADY_YOY and yoy_profit >= STEADY_YOY and roe >= 12 and opm >= 10)
 
-    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder]):
+    # ── DIAMOND HOLD (LONG TERM) LOGIC ──
+    diamond_hold = False
+    if rev_5y is not None and eps_5y is not None and peg is not None:
+        fcf_ok = (fcf_margin is None) or (fcf_margin > 0) # Must not be burning cash structurally
+        if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5 and fcf_ok:
+            diamond_hold = True
+
+    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold]):
         return skip(f"No category — YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
+    if diamond_hold:      cats.append("Diamond Hold") # Appended first as highest priority
     if high_growth:       cats.append("High Growth")
     if elite_compounder:  cats.append("Elite Compounder")
     if mature_quality:    cats.append("Mature Quality")
@@ -225,7 +264,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     return _build_row(
         symbol=symbol, cats=cats, path="Non-Financial", row=row, close_price=close_price,
         market_cap=market_cap, roe=roe, opm=opm, debt_equity=debt_equity, debt_missing=debt_missing,
-        qoq_rev=qoq_sales, yoy_rev=yoy_sales, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score,
+        qoq_rev=qoq_sales, yoy_rev=yoy_sales, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, peg=peg
     )
 
 # =====================================================================================
@@ -251,6 +290,10 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     yoy_profit = fv("net_income_yoy_growth_ttm")
     qoq_profit = fv("net_income_qoq_growth_fq")
 
+    pe          = fv("price_earnings_ttm")
+    rev_5y      = fv("total_revenue_5y_growth")
+    eps_5y      = fv("earnings_per_share_basic_5y_growth")
+
     missing = [
         name for name, val in [
             ("close", close_price), ("average_volume_30d_calc", avg_volume),
@@ -273,6 +316,10 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     anomaly = _anomaly_check(symbol, yoy_rev, yoy_profit)
     if anomaly:
         return skip(anomaly)
+        
+    peg = None
+    if pe is not None and pe > 0 and yoy_profit > 0:
+        peg = pe / yoy_profit
 
     yoy_margin_expanding = (yoy_profit >= yoy_rev)
 
@@ -281,10 +328,16 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     fin_mature_quality = (roe >= 15 and roa >= 1.0 and market_cap >= 50_000_000_000)
     fin_turnaround = (yoy_profit >= FIN_TURNAROUND_PROFIT and yoy_margin_expanding and yoy_rev >= -10.0 and roe >= 10 and roa >= 0.8)
 
-    if not any([fin_high_growth, fin_compounder, fin_mature_quality, fin_turnaround]):
+    diamond_hold = False
+    if rev_5y is not None and eps_5y is not None and peg is not None:
+        if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5:
+            diamond_hold = True
+
+    if not any([fin_high_growth, fin_compounder, fin_mature_quality, fin_turnaround, diamond_hold]):
         return skip(f"No financial category — YoY NII={yoy_rev:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
+    if diamond_hold:       cats.append("Diamond Hold")
     if fin_high_growth:    cats.append("Financial High Growth")
     if fin_compounder:     cats.append("Financial Compounder")
     if fin_mature_quality: cats.append("Financial Mature Quality")
@@ -295,7 +348,7 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     return _build_row(
         symbol=symbol, cats=cats, path="Financial", row=row, close_price=close_price,
         market_cap=market_cap, roe=roe, opm=None, debt_equity=debt_equity, debt_missing=debt_missing,
-        qoq_rev=qoq_rev, yoy_rev=yoy_rev, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, roa=roa,
+        qoq_rev=qoq_rev, yoy_rev=yoy_rev, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, roa=roa, peg=peg
     )
 
 # =====================================================================================
@@ -356,25 +409,32 @@ def _score_fin(yoy_rev, yoy_profit, qoq_rev, qoq_profit, roe, roa, yoy_margin, f
 # ROW BUILDER (shared)
 # =====================================================================================
 
-def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None) -> dict:
+def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None, peg=None) -> dict:
+    
+    # Generate the plain English explanation for the selected categories
+    desc_list = [CAT_DESCRIPTIONS.get(c, "") for c in cats]
+    cat_desc = " | ".join(filter(None, desc_list))
+
     return {
-        "Stock":             symbol,
-        "Category":          " + ".join(cats),
-        "Path":              path,
-        "Sector":            row.get("sector", "Unknown"),
-        "CMP":               round(close_price, 2),
-        "Market Cap Cr":     round(market_cap / 10_000_000, 2),
-        "ROE %":             round(roe, 2),
-        "ROA %":             round(roa, 2) if roa is not None else None,
-        "OPM %":             round(opm, 2) if opm is not None else None,
-        "Debt/Equity":       round(debt_equity, 2),
-        "D/E Missing":       debt_missing,
-        "QOQ Revenue %":     round(qoq_rev,    2),
-        "YOY Revenue %":     round(yoy_rev,    2),
-        "QOQ Profit %":      round(qoq_profit, 2),
-        "YOY Profit %":      round(yoy_profit, 2),
-        "Fundamental Score": score,
-        "Scan Time":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Stock":                symbol,
+        "Category":             " + ".join(cats),
+        "Category Explanation": cat_desc,
+        "Path":                 path,
+        "Sector":               row.get("sector", "Unknown"),
+        "CMP":                  round(close_price, 2),
+        "Market Cap Cr":        round(market_cap / 10_000_000, 2),
+        "PEG Ratio":            round(peg, 2) if peg is not None else None,
+        "ROE %":                round(roe, 2),
+        "ROA %":                round(roa, 2) if roa is not None else None,
+        "OPM %":                round(opm, 2) if opm is not None else None,
+        "Debt/Equity":          round(debt_equity, 2),
+        "D/E Missing":          debt_missing,
+        "QOQ Revenue %":        round(qoq_rev,    2),
+        "YOY Revenue %":        round(yoy_rev,    2),
+        "QOQ Profit %":         round(qoq_profit, 2),
+        "YOY Profit %":         round(yoy_profit, 2),
+        "Fundamental Score":    score,
+        "Scan Time":            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 # =====================================================================================
@@ -452,7 +512,8 @@ def main():
         from email_engine import send_html_email
         logger.info("📧 Attempting to email fundamental watchlist...")
         
-        email_df = final_df[['Stock', 'Category', 'Sector', 'CMP', 'Fundamental Score', 'ROE %', 'YOY Profit %']]
+        # Include the new "Category Explanation" and "PEG Ratio" in the email table!
+        email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'Fundamental Score']]
         table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
         
         html_content = f"""
@@ -462,9 +523,12 @@ def main():
                 body {{ font-family: Arial, sans-serif; background-color: #f4f7f6; color: #333; padding: 20px; }}
                 .container {{ max-width: 900px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }}
                 h1 {{ color: #2c3e50; text-align: center; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
-                .styled-table {{ border-collapse: collapse; margin: 15px 0; font-size: 0.9em; width: 100%; }}
+                .styled-table {{ border-collapse: collapse; margin: 15px 0; font-size: 0.85em; width: 100%; }}
                 .styled-table thead tr {{ background-color: #34495e; color: #ffffff; text-align: left; }}
-                .styled-table th, .styled-table td {{ padding: 12px 15px; border-bottom: 1px solid #dddddd; }}
+                .styled-table th, .styled-table td {{ padding: 12px 10px; border-bottom: 1px solid #dddddd; }}
+                
+                /* Give the Explanation column slightly lighter text so it doesn't overwhelm the table */
+                .styled-table td:nth-child(3) {{ color: #555; font-style: italic; max-width: 250px; }}
             </style>
         </head>
         <body>
@@ -473,6 +537,11 @@ def main():
                 <p style="text-align: center; color: #7f8c8d;">Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 <h2>📋 Elite Universe ({len(final_df)} Stocks)</h2>
                 {table_html}
+                
+                <hr style="margin-top: 30px; border: 0; border-top: 1px solid #ddd;">
+                <p style="font-size: 12px; color: #7f8c8d; text-align: center;">
+                    <strong>PEG Ratio Legend:</strong> < 1.0 (Deep Value) | 1.0 to 1.5 (Fair Value) | > 2.0 (Overvalued)
+                </p>
             </div>
         </body>
         </html>
