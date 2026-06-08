@@ -1,7 +1,6 @@
 # =====================================================================================
 # app/reversal_scanner.py
-# DEEP DISCOUNT & MEAN REVERSION SCANNER
-# Finds fundamentally elite stocks bottoming out, regardless of macro trend.
+# DEEP DISCOUNT & MEAN REVERSION SCANNER (With Valuation Metrics)
 # =====================================================================================
 
 import pandas as pd
@@ -27,16 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
-# Reversals are best scanned at EOD to confirm the daily candle hasn't faded.
 REVERSAL_SCAN_START = dt_time(18, 45)  
 CHUNK_SIZE = 10
 
 # ── REVERSAL PARAMETERS ──────────────────────────────────────────────────────────────
-MIN_DROP_FROM_52W_HIGH = 18.0  # Must be at least 18% down from 52-week high
-MAX_DROP_FROM_52W_HIGH = 60.0  # Avoid stocks down more than 60% (structural damage)
-RSI_OVERSOLD_THRESHOLD = 35    # RSI must have been below this recently
-RSI_CURL_MIN           = 40    # Current RSI must have recovered above this
-MIN_VOLUME_RATIO       = 1.5   # Needs 1.5x average volume showing accumulation
+MIN_DROP_FROM_52W_HIGH = 18.0  
+MAX_DROP_FROM_52W_HIGH = 60.0  
+RSI_OVERSOLD_THRESHOLD = 35    
+RSI_CURL_MIN           = 40    
+MIN_VOLUME_RATIO       = 1.5   
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 def seconds_until_scan() -> int:
@@ -85,7 +83,6 @@ def start():
         current_time = ist_now.time()
         today_str = ist_now.strftime("%Y-%m-%d")
 
-        # Run only on weekdays, after 6:45 PM
         is_weekday = ist_now.weekday() < 5
         in_window = current_time >= REVERSAL_SCAN_START
         already_ran = (last_scan_date == today_str)
@@ -93,9 +90,6 @@ def start():
         if not is_weekday or already_ran or not in_window:
             time.sleep(min(seconds_until_scan(), 3600))
             continue
-
-        # NOTICE: No 'is_market_regime_bullish()' check here. 
-        # Reversals trigger irrespective of macro trends.
 
         logger.info("=" * 70)
         logger.info(f"🔄 MEAN REVERSION SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
@@ -117,13 +111,11 @@ def start():
                 ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
                 if len(ticker) < 100: continue
 
-                # Apply standard indicators
                 ticker = apply_indicators(ticker, timeframe="1d")
                 if ticker is None or ticker.empty: continue
 
                 latest = ticker.iloc[-1]
                 
-                # Check required columns
                 required = ["Close", "High", "Low", "Open", "Volume", "RSI", "EMA20", "MACD", "MACD_SIGNAL", "HIGH_52W"]
                 if not all(col in ticker.columns for col in required): continue
                 if pd.isna(latest["RSI"]) or pd.isna(latest["MACD"]): continue
@@ -131,27 +123,22 @@ def start():
                 close_price = float(latest["Close"])
                 high_52w = float(latest["HIGH_52W"])
                 
-                # ── LOGIC 1: THE DEEP DISCOUNT ─────────────────────────────────────
                 if high_52w <= 0: continue
                 drop_pct = ((high_52w - close_price) / high_52w) * 100
                 
                 if drop_pct < MIN_DROP_FROM_52W_HIGH or drop_pct > MAX_DROP_FROM_52W_HIGH:
                     continue
 
-                # ── LOGIC 2: RSI CURL (MOMENTUM SHIFT) ─────────────────────────────
                 current_rsi = float(latest["RSI"])
-                # Look back at the last 10 days to see if RSI dipped into oversold
                 past_10_rsi = ticker["RSI"].iloc[-11:-1].min()
                 
                 if current_rsi < RSI_CURL_MIN or past_10_rsi > RSI_OVERSOLD_THRESHOLD:
-                    continue # RSI hasn't dropped low enough, or hasn't curled up enough
+                    continue 
                     
-                # ── LOGIC 3: BASE BREAK (CLOSING ABOVE 20 EMA) ─────────────────────
                 ema20 = float(latest["EMA20"])
                 if close_price < ema20:
-                    continue # Still trapped under short term resistance
+                    continue 
 
-                # ── LOGIC 4: VOLUME ACCUMULATION ───────────────────────────────────
                 vol_now = float(latest["Volume"])
                 vol_avg = float(ticker["Volume"].iloc[-21:-1].mean())
                 if vol_avg <= 0: continue
@@ -160,16 +147,11 @@ def start():
                 if vol_ratio < MIN_VOLUME_RATIO:
                     continue
 
-                # ── LOGIC 5: MACD BULLISH CROSSOVER ────────────────────────────────
                 macd = float(latest["MACD"])
                 macd_sig = float(latest["MACD_SIGNAL"])
-                # Must be a recent cross (MACD > Signal) and ideally below the zero line
                 if macd < macd_sig or macd > 2.0: 
                     continue
 
-                # ── PASSED ALL REVERSAL LOGIC ──────────────────────────────────────
-                
-                # Build custom signals list for the message formatter
                 reversal_signals = [
                     f"📉 -{drop_pct:.1f}% from 52W High",
                     "📈 RSI Oversold Curl",
@@ -177,7 +159,6 @@ def start():
                     "📊 MACD Bullish Cross"
                 ]
 
-                # Deduplication
                 dedup_key = f"{category}|REVERSAL|{today_str}"
                 if not save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")):
                     continue
@@ -189,7 +170,7 @@ def start():
                 alerts_by_category.setdefault(category, []).append({
                     "symbol":           symbol,
                     "category":         category,
-                    "breakout_signals": reversal_signals, # Spoofing the breakout engine
+                    "breakout_signals": reversal_signals, 
                     "price":            round(close_price, 2),
                     "open":             round(float(latest["Open"]), 2),
                     "day_high":         round(float(latest["High"]), 2),
@@ -197,20 +178,24 @@ def start():
                     "rsi":              round(current_rsi, 1),
                     "volume_ratio":     round(vol_ratio, 2),
                     "body_ratio":       round(abs(close_price - float(latest["Open"])) / candle_range * 100) if candle_range > 0 else 0,
-                    "score":            85, # Hardcode a high score for reversals to trigger the 🔥 emoji
+                    "score":            85, 
                     "above_ema20":      True,
-                    "atr_stop":         round(suggested_stop, 2)
+                    "atr_stop":         round(suggested_stop, 2),
+                    
+                    # ── NEW FORENSIC METRICS ──
+                    "peg":              row.get("PEG Ratio"),
+                    "yoy_rev":          row.get("YOY Revenue %"),
+                    "yoy_profit":       row.get("YOY Profit %"),
+                    "roe":              row.get("ROE %")
                 })
                 total_alerts += 1
 
-            # ── SEND ALERTS ──────────────────────────────────────────────────────────
             if total_alerts > 0:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["symbol"])
                     chunks = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
                     for chunk_num, chunk in enumerate(chunks, start=1):
-                        # Spoof the scanner tag as "REVERSAL" so you know what it is in Telegram
                         msg = build_message("REVERSAL", cat, chunk, chunk_num, len(chunks), ist_now.strftime("%Y-%m-%d %H:%M:%S"))
                         send_telegram_message(msg, scan_type="REVERSAL")
             
