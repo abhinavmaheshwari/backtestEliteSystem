@@ -1,11 +1,5 @@
 # =====================================================================================
-# app/main.py  — launches all scanners in parallel threads (FIXED)
-# =====================================================================================
-#
-# FIX #1: Wrap scanner loops in functions before import
-# Previously: import intraday → runs while True at module level → blocks forever
-# Now: import intraday → call intraday.start() → runs while True inside function
-#
+# app/main.py  — launches all scanners in parallel threads
 # =====================================================================================
 
 import sys
@@ -63,6 +57,10 @@ WINDOWS = {
         dt_time(18, 30),
         dt_time(20, 0)
     ),
+    "reversal": (
+        dt_time(18, 45),
+        dt_time(20, 0)
+    ),
 }
 
 # =====================================================================================
@@ -103,21 +101,6 @@ def wait_for_window(name: str):
 # =====================================================================================
 
 from config import WATCHLIST_PATH
-
-# ── WATCHLIST PRE-FLIGHT — FIX GAP 5: non-blocking ──────────────────────────
-#
-# PROBLEM: the original synchronous build_watchlist() call (30–60s) blocked ALL
-# three scanner threads at t.start() until it finished. Railway's health check
-# or process monitor could interpret this silent pause as a hang and restart.
-#
-# FIX: Run the initial build in a background thread so main.py reaches the
-# thread-start loop and the alive-monitor loop immediately. The build thread logs
-# clearly when it finishes (or fails). Scanners that need the watchlist and find
-# it missing will trigger their own inline rebuild at first scan attempt.
-#
-# A threading.Event lets the alive-monitor log a one-time notice if the scanners
-# start before the build finishes, rather than silently racing.
-#
 import threading as _threading
 
 _watchlist_ready = _threading.Event()
@@ -136,7 +119,7 @@ def _build_watchlist_background():
     except Exception:
         logger.exception("❌ Daily builder failed — scanners will rebuild at first scan cycle")
     finally:
-        _watchlist_ready.set()   # release even on failure so nothing waits forever
+        _watchlist_ready.set()
 
 _watchlist_thread = _threading.Thread(
     target=_build_watchlist_background,
@@ -146,11 +129,10 @@ _watchlist_thread = _threading.Thread(
 _watchlist_thread.start()
 
 # =====================================================================================
-# SCANNER THREADS — FIX: Import then call function, don't rely on module-level loops
+# SCANNER THREADS
 # =====================================================================================
 
 def run_intraday_scanner():
-    """Import intraday module, then call start() function to avoid module-level blocking."""
     wait_for_window("intraday")
     logger.info("⚡ Starting INTRADAY SCANNER (15m candles)")
     try:
@@ -158,11 +140,10 @@ def run_intraday_scanner():
         intraday.start()
     except Exception:
         logger.exception("💀 INTRADAY SCANNER THREAD CRASHED — thread is dead")
-        raise  # re-raise so Railway/systemd can detect the failure
+        raise
 
 
 def run_live_scanner():
-    """Import live_scanner module, then call start() function."""
     wait_for_window("live")
     logger.info("🚀 Starting LIVE SCANNER (1h candles)")
     try:
@@ -174,7 +155,6 @@ def run_live_scanner():
 
 
 def run_eod_scanner():
-    """Import eod_scanner module, then call start() function."""
     wait_for_window("eod")
     logger.info("📊 Starting EOD SCANNER (Daily candles)")
     try:
@@ -182,6 +162,17 @@ def run_eod_scanner():
         eod_scanner.start()
     except Exception:
         logger.exception("💀 EOD SCANNER THREAD CRASHED — thread is dead")
+        raise
+
+
+def run_reversal_scanner():
+    wait_for_window("reversal")
+    logger.info("🔄 Starting REVERSAL SCANNER (Mean Reversion)")
+    try:
+        import reversal_scanner
+        reversal_scanner.start()
+    except Exception:
+        logger.exception("💀 REVERSAL SCANNER THREAD CRASHED — thread is dead")
         raise
 
 # =====================================================================================
@@ -216,6 +207,11 @@ if __name__ == "__main__":
             name="EODScanner",
             daemon=True
         ),
+        threading.Thread(
+            target=run_reversal_scanner,
+            name="ReversalScanner",
+            daemon=True
+        ),
     ]
 
     # Start threads
@@ -225,13 +221,12 @@ if __name__ == "__main__":
     # Summary
     logger.info("=" * 70)
     logger.info("✅ ALL SCANNER THREADS STARTED")
-    logger.info("⚡ intraday.py      | 15m | Opens 09:32 AM")
-    logger.info("🚀 live_scanner.py | 1h  | Opens 10:17 AM")
-    logger.info("📊 eod_scanner.py  | 1D  | Opens 06:30 PM")
+    logger.info("⚡ intraday.py         | 15m | Opens 09:32 AM")
+    logger.info("🚀 live_scanner.py    | 1h  | Opens 10:17 AM")
+    logger.info("📊 eod_scanner.py     | 1D  | Opens 06:30 PM")
+    logger.info("🔄 reversal_scanner.py| 1D  | Opens 06:45 PM")
     logger.info("=" * 70)
 
-    # Keep main thread alive — also monitor for dead threads and log clearly.
-    # Log once when the background watchlist build completes (Gap 5 FIX).
     _logged_ready = False
     while True:
         if not _logged_ready and _watchlist_ready.is_set():
