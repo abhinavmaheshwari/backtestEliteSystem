@@ -1,8 +1,15 @@
+# =====================================================================================
+# app/eod_scanner.py
+# EOD BREAKOUT SCANNER WITH CONSOLIDATED MAIL AUTOMATION
+# =====================================================================================
+
 import pandas as pd
 import yfinance as yf
 import time
 import logging
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from zoneinfo import ZoneInfo
 from datetime import datetime, date, time as dt_time, timedelta
 
@@ -13,97 +20,524 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_delivery_data
+
 from sector_rotation import get_sector_scores
+
 from config import (
-    WATCHLIST_PATH, SCORE_THRESHOLDS, SCAN_CONFIG, BATCH_DOWNLOAD_SIZE, 
-    DEDUP_DAYS, ADX_MIN_THRESHOLD
+    WATCHLIST_PATH,
+    SCORE_THRESHOLDS,
+    SCAN_CONFIG,
+    BATCH_DOWNLOAD_SIZE,
+    DEDUP_DAYS,
+    ADX_MIN_THRESHOLD, 
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
 logger = logging.getLogger(__name__)
 
-IST = ZoneInfo("Asia/Kolkata")
-EOD_START, EOD_END = dt_time(18, 30), dt_time(20, 0)
+IST        = ZoneInfo("Asia/Kolkata")
+EOD_START  = dt_time(18, 30) 
+EOD_END    = dt_time(20, 0)  
 CHUNK_SIZE = 10
-DELIVERY_FETCH_RETRIES = 5
-DELIVERY_RETRY_INTERVAL_S = 600
+
+DELIVERY_FETCH_RETRIES    = 5
+DELIVERY_RETRY_INTERVAL_S = 600 
+
+TIMEFRAME               = "1d"
+MIN_SIGNALS             = SCAN_CONFIG["1d"]["MIN_SIGNALS"]
+MIN_BODY_RATIO          = SCAN_CONFIG["1d"]["MIN_BODY_RATIO"]
+MIN_CLOSE_POSITION      = SCAN_CONFIG["1d"]["MIN_CLOSE_POSITION"]
+MAX_UPPER_WICK_RATIO    = SCAN_CONFIG["1d"]["MAX_UPPER_WICK"]
+MIN_VOLUME_RATIO        = SCAN_CONFIG["1d"]["MIN_VOLUME_RATIO"]    
+MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1d"]["MIN_VOLUME_AVG"]      
+MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]             
+MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]             
+MIN_SCORE               = SCORE_THRESHOLDS["1d"]                   
+
+MIN_STOCK_PRICE             = 50.0
+RSI_LOOKBACK_BARS           = 5    
+MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
+MAX_SINGLE_DAY_MOVE_PCT     = 15.0
+MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0  
+GAP_LOOKBACK_BARS           = 10   
+
 
 def seconds_until_eod() -> int:
-    now = datetime.now(IST)
+    now          = datetime.now(IST)
     target_today = now.replace(hour=18, minute=30, second=0, microsecond=0)
-    delta = (target_today - now) if now < target_today else (target_today + timedelta(days=1) - now)
+    if now < target_today:
+        delta = target_today - now
+    else:
+        delta = target_today + timedelta(days=1) - now
     return max(int(delta.total_seconds()), 0)
 
-def fetch_watchlist_data(watchlist, period="2y", interval="1d"):
-    symbols = watchlist["Stock"].tolist()
-    all_data = {}
-    for i in range(0, len(symbols), BATCH_DOWNLOAD_SIZE):
-        batch = symbols[i : i + BATCH_DOWNLOAD_SIZE]
+
+def fetch_watchlist_data(
+    watchlist: pd.DataFrame,
+    period: str = "2y",
+    interval: str = "1d"
+) -> dict[str, pd.DataFrame]:
+    symbols    = watchlist["Stock"].tolist()
+    all_data   = {}
+    total      = len(symbols)
+    batch_size = BATCH_DOWNLOAD_SIZE
+
+    for i in range(0, total, batch_size):
+        batch       = symbols[i : i + batch_size]
         tickers_str = " ".join(f"{sym}.NS" for sym in batch)
+        batch_end   = min(i + batch_size, total)
+
+        logger.info(f"📥 Batch downloading {len(batch)} symbols ({i}–{batch_end}/{total})")
+
         try:
-            raw = yf.download(tickers_str, period=period, interval=interval, progress=False, auto_adjust=True, group_by="ticker")
-            if not raw.empty:
+            raw = yf.download(
+                tickers_str,
+                period=period,
+                interval=interval,
+                progress=False,
+                auto_adjust=True,
+                threads=False,
+                group_by="ticker",
+            )
+
+            if raw is None or raw.empty:
+                continue
+
+            if not isinstance(raw.columns, pd.MultiIndex):
+                if len(batch) == 1:
+                    sym = batch[0]
+                    df  = raw.reset_index().copy()
+                    if not df.empty:
+                        all_data[sym] = df
+                else:
+                    continue
+            else:
                 for sym in batch:
-                    key = f"{sym}.NS" if f"{sym}.NS" in raw.columns else sym
-                    if key in raw.columns:
-                        all_data[sym] = raw[key].reset_index().copy()
+                    ns_sym = f"{sym}.NS"
+                    try:
+                        level0 = raw.columns.get_level_values(0)
+                        key    = ns_sym if ns_sym in level0 else (sym if sym in level0 else None)
+                        if key is None:
+                            continue
+                        df = raw[key].reset_index().copy()
+                        if not df.empty:
+                            all_data[sym] = df
+                    except Exception:
+                        pass
         except Exception:
-            logger.exception("Batch download failed")
+            logger.exception(f"❌ Batch download failed")
+
     return all_data
+
 
 def start():
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
+    logger.info(f"✅ EOD scanner ready | DB initialized")
+
     last_scan_date = None
-    
+    last_rebuild_week: str = ""
+
     while True:
-        ist_now = datetime.now(IST)
-        if EOD_START <= ist_now.time() <= EOD_END and ist_now.weekday() < 5 and last_scan_date != ist_now.strftime("%Y-%m-%d"):
-            scan_start = datetime.now(IST)
-            watchlist = pd.read_parquet(WATCHLIST_PATH)
-            all_ticker_data = fetch_watchlist_data(watchlist)
-            rotation_result = get_sector_scores()
+        ist_now      = datetime.now(IST)
+        current_time = ist_now.time()
+        weekday      = ist_now.weekday()
+        today_str    = ist_now.strftime("%Y-%m-%d")
+
+        in_eod_window = EOD_START <= current_time <= EOD_END
+        is_weekday    = weekday < 5
+        already_ran   = (last_scan_date == today_str)
+
+        if not is_weekday:
+            current_week = ist_now.strftime("%G-W%V")
+            is_sunday    = (weekday == 6)
+            in_rebuild_window = dt_time(19, 0) <= current_time <= dt_time(19, 30)
+
+            if is_sunday and in_rebuild_window and last_rebuild_week != current_week:
+                try:
+                    from daily_builder import build_watchlist
+                    build_watchlist()
+                    last_rebuild_week = current_week
+                except Exception:
+                    logger.exception(f"❌ Weekly rebuild failed")
+
+            sleep_secs = seconds_until_eod()
+            time.sleep(min(sleep_secs, 3600))
+            continue
+
+        if already_ran:
+            sleep_secs = seconds_until_eod()
+            time.sleep(min(sleep_secs, 3600))
+            continue
+
+        if not in_eod_window:
+            sleep_secs = seconds_until_eod()
+            time.sleep(min(sleep_secs, 60))
+            continue
+
+        from market_filter import is_market_regime_bullish
+        if not is_market_regime_bullish():
+            logger.info("🛑 Bearish EOD macro regime. Skipping daily breakout generation to avoid traps.")
+            last_scan_date = today_str
+            sleep_secs = seconds_until_eod()
+            time.sleep(min(sleep_secs, 3600))
+            continue
+
+        logger.info("=" * 70)
+        logger.info(f"📊 EOD SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
+        logger.info("=" * 70)
+
+        scan_start = datetime.now(IST)
+        try:
+            try:
+                watchlist = pd.read_parquet(WATCHLIST_PATH)
+                logger.info(f"📋 Watchlist | {len(watchlist)} stocks")
+            except Exception:
+                try:
+                    from daily_builder import build_watchlist
+                    build_watchlist()
+                    watchlist = pd.read_parquet(WATCHLIST_PATH)
+                except Exception:
+                    time.sleep(300)
+                    continue
+
+            def _fetch_delivery_with_retry() -> dict:
+                for attempt in range(1, DELIVERY_FETCH_RETRIES + 1):
+                    result = fetch_delivery_data(ist_now.date())
+                    if result:
+                        return result
+                    if attempt < DELIVERY_FETCH_RETRIES:
+                        time.sleep(DELIVERY_RETRY_INTERVAL_S)
+                return {}
+
+            delivery_map:    dict[str, float] = {}
+            all_ticker_data = {}
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_delivery = pool.submit(_fetch_delivery_with_retry)
+                future_prices   = pool.submit(fetch_watchlist_data, watchlist, "2y", "1d")
+                for future in as_completed([future_delivery, future_prices]):
+                    if future is future_delivery:
+                        delivery_map    = future.result()
+                    else:
+                        all_ticker_data = future.result()
+
+            try:
+                rotation_result = get_sector_scores()
+            except Exception:
+                from sector_rotation import SectorRotationResult
+                rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
+
+            total_alerts       = 0
             alerts_by_category = {}
-            total_alerts = 0
+
+            rejection_counts = {k: 0 for k in [
+                "no_data", "missing_col", "insufficient_bars", "indicator_fail", "weak_signals",
+                "weak_body", "bearish_candle", "weak_close_pos", "upper_wick", "low_volume",
+                "low_avg_volume", "penny_stock", "rsi_range", "rsi_not_rising", "below_ema20",
+                "below_sma50", "no_golden_cross", "weak_adx", "macd_bearish", "far_from_52w_high",
+                "gap_day", "extended_breakout", "low_score", "duplicate", "stale_data"
+            ]}
 
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
+                symbol = "UNKNOWN"
                 try:
-                    symbol, category = row["Stock"], row["Category"]
-                    ticker = all_ticker_data.get(symbol)
-                    if ticker is None or ticker.empty: continue
-                    
+                    symbol   = row["Stock"]
+                    category = row["Category"]
+                    sector   = row.get("Sector", None)
+
+                    if symbol not in all_ticker_data:
+                        rejection_counts["no_data"] += 1
+                        continue
+
+                    ticker = all_ticker_data[symbol].copy()
+
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
+
+                    if isinstance(ticker.columns, pd.MultiIndex):
+                        ticker.columns = ticker.columns.get_level_values(0)
+
+                    ticker = ticker.loc[:, ~ticker.columns.duplicated()]
+
+                    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+                    missing_col   = False
+
+                    for col_name in required_cols:
+                        if col_name not in ticker.columns:
+                            missing_col = True
+                            break
+                        if isinstance(ticker[col_name], pd.DataFrame):
+                            ticker[col_name] = ticker[col_name].iloc[:, 0]
+                        ticker[col_name] = pd.Series(ticker[col_name]).astype(float)
+
+                    if missing_col:
+                        rejection_counts["missing_col"] += 1
+                        continue
+
+                    ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+
+                    if ticker.empty:
+                        rejection_counts["no_data"] += 1
+                        continue
+
+                    if len(ticker) < 200:
+                        rejection_counts["insufficient_bars"] += 1
+                        continue
+
                     ticker = apply_indicators(ticker, timeframe="1d")
+
+                    if ticker is None or ticker.empty:
+                        rejection_counts["indicator_fail"] += 1
+                        continue
+
                     signals = detect_breakouts(ticker, timeframe="1d")
+
+                    if len(signals) < MIN_SIGNALS:
+                        rejection_counts["weak_signals"] += 1
+                        continue
+
                     latest = ticker.iloc[-1]
-                    
-                    # Calculations
-                    candle_close, candle_open = float(latest["Close"]), float(latest["Open"])
-                    candle_high, candle_low = float(latest["High"]), float(latest["Low"])
-                    
-                    current_atr = float(latest["ATR"]) if "ATR" in ticker.columns else ((candle_high - candle_low) * 1.5)
+
+                    if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
+                        continue
+
+                    _stale_col = next((c for c in ["Date", "Datetime"] if c in ticker.columns), None)
+                    if _stale_col:
+                        try:
+                            _last_ts = pd.to_datetime(latest[_stale_col])
+                            if _last_ts.tzinfo is not None:
+                                _last_ts = _last_ts.tz_convert("Asia/Kolkata")
+                            if _last_ts.date() != ist_now.date():
+                                rejection_counts["stale_data"] += 1
+                                continue
+                        except Exception:
+                            pass
+
+                    latest_volume = float(latest["Volume"])
+                    avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
+
+                    if avg_volume <= 0:
+                        continue
+
+                    volume_ratio = latest_volume / avg_volume
+
+                    candle_high  = float(latest["High"])
+                    candle_low   = float(latest["Low"])
+                    candle_open  = float(latest["Open"])
+                    candle_close = float(latest["Close"])
+                    candle_range = candle_high - candle_low
+                    candle_body  = abs(candle_close - candle_open)
+                    upper_wick   = candle_high - candle_close
+
+                    if candle_range <= 0:
+                        continue
+
+                    body_ratio     = candle_body / candle_range
+                    close_position = (candle_close - candle_low) / candle_range
+                    wick_ratio     = upper_wick / candle_range
+                    rsi_val        = float(latest["RSI"])
+
+                    if body_ratio < MIN_BODY_RATIO:
+                        rejection_counts["weak_body"] += 1
+                        continue
+                    if candle_close <= candle_open:
+                        rejection_counts["bearish_candle"] += 1
+                        continue
+                    if close_position < MIN_CLOSE_POSITION:
+                        rejection_counts["weak_close_pos"] += 1
+                        continue
+                    if wick_ratio > MAX_UPPER_WICK_RATIO:
+                        rejection_counts["upper_wick"] += 1
+                        continue
+                    if volume_ratio < MIN_VOLUME_RATIO:
+                        rejection_counts["low_volume"] += 1
+                        continue
+                    if avg_volume < MIN_AVG_VOLUME_SHARES:
+                        rejection_counts["low_avg_volume"] += 1
+                        continue
+                    if candle_close < MIN_STOCK_PRICE:
+                        rejection_counts["penny_stock"] += 1
+                        continue
+                    if not (MIN_RSI <= rsi_val <= MAX_RSI):
+                        rejection_counts["rsi_range"] += 1
+                        continue
+
+                    if len(ticker) > RSI_LOOKBACK_BARS:
+                        rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
+                        if rsi_val <= rsi_prev:
+                            rejection_counts["rsi_not_rising"] += 1
+                            continue
+
+                    if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
+                        if candle_close < float(latest["EMA20"]):
+                            rejection_counts["below_ema20"] += 1
+                            continue
+
+                    if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
+                        if candle_close < float(latest["SMA50"]):
+                            rejection_counts["below_sma50"] += 1
+                            continue
+
+                    if (
+                        "SMA50" in ticker.columns and "SMA200" in ticker.columns and
+                        not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
+                    ):
+                        if float(latest["SMA50"]) < float(latest["SMA200"]):
+                            rejection_counts["no_golden_cross"] += 1
+                            continue
+
+                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
+                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                            rejection_counts["weak_adx"] += 1
+                            continue
+
+                    if (
+                        "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
+                        not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
+                    ):
+                        if float(latest["MACD"]) < float(latest["MACD_SIGNAL"]):
+                            rejection_counts["macd_bearish"] += 1
+                            continue
+
+                    if "HIGH_52W" in ticker.columns and not pd.isna(latest.get("HIGH_52W")):
+                        high_52w = float(latest["HIGH_52W"])
+                        if high_52w > 0:
+                            pct_from_high = (high_52w - candle_close) / high_52w * 100
+                            if pct_from_high > MAX_DISTANCE_FROM_52W_HIGH_PCT:
+                                rejection_counts["far_from_52w_high"] += 1
+                                continue
+
+                    if len(ticker) >= 2:
+                        prev_close = float(ticker["Close"].iloc[-2])
+                        if prev_close > 0:
+                            single_move_pct = abs(candle_close - prev_close) / prev_close * 100
+                            if single_move_pct > MAX_SINGLE_DAY_MOVE_PCT:
+                                rejection_counts["gap_day"] += 1
+                                continue
+
+                    if len(ticker) >= GAP_LOOKBACK_BARS + 1:
+                        prior_high = float(ticker["High"].iloc[-(GAP_LOOKBACK_BARS + 1):-1].max())
+                        if prior_high > 0:
+                            gap_pct = (candle_open - prior_high) / prior_high * 100
+                            if gap_pct > MAX_GAP_FROM_PRIOR_HIGH_PCT:
+                                rejection_counts["extended_breakout"] += 1
+                                continue
+
+                    delivery_pct = delivery_map.get(symbol, None)
+
+                    atr_val_eod = (
+                        float(latest["ATR"])
+                        if "ATR" in ticker.columns and not pd.isna(latest.get("ATR"))
+                        else None
+                    )
+
+                    score = calculate_score(
+                        category=category,
+                        breakout_count=len(signals),
+                        rsi=rsi_val,
+                        volume_ratio=volume_ratio,
+                        breakout_signals=signals,
+                        ticker=ticker,
+                        latest=latest,
+                        symbol=symbol,
+                        timeframe="1d",
+                        atr_val=atr_val_eod,
+                        delivery_pct=delivery_pct,
+                        min_vol=MIN_AVG_VOLUME_SHARES,
+                    )
+
+                    if score > 0:
+                        try:
+                            safe_sector  = "Unknown" if (sector is None or (isinstance(sector, float) and pd.isna(sector))) else str(sector).strip()
+                            sector_bonus = rotation_result.score_bonus_for(safe_sector)
+                            score = max(0, min(score + sector_bonus, 100))
+                        except Exception:
+                            pass
+
+                    if score < MIN_SCORE:
+                        rejection_counts["low_score"] += 1
+                        continue
+
+                    signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
+                    dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
+
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
+                    if not saved:
+                        rejection_counts["duplicate"] += 1
+                        continue
+
+                    current_atr = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
                     suggested_stop = candle_close - (1.5 * current_atr)
-                    
-                    # TREND METRICS
-                    above_ema20  = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns else None
-                    above_sma50  = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns else None
-                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns) else None
 
-                    # DATABASE SAVE
-                    saved = save_alert_if_new(symbol, f"{category}|EOD", ist_now.strftime("%Y-%m-%d %H:%M:%S"), float(candle_close), float(suggested_stop))
-                    
-                    if saved:
-                        alerts_by_category.setdefault(category, []).append({
-                            "symbol": symbol, "category": category, "price": round(candle_close, 2),
-                            "above_ema20": above_ema20, "above_sma50": above_sma50, "golden_cross": golden_cross,
-                            "atr_stop": round(suggested_stop, 2), "score": 80 # Placeholder for score
-                        })
-                        total_alerts += 1
-                except Exception as e:
-                    logger.error(f"Error {symbol}: {e}")
+                    # EXPLICITLY DEFINING TREND VARIABLES BEFORE APPEND
+                    above_ema20  = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
+                    above_sma50  = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
 
-            # Reporting logic...
-            last_scan_date = ist_now.strftime("%Y-%m-%d")
-        time.sleep(300)
+                    alerts_by_category.setdefault(category, []).append({
+                        "symbol":           symbol,
+                        "category":         category,
+                        "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
+                        "price":            round(candle_close, 2),
+                        "open":             round(candle_open, 2),
+                        "day_high":         round(candle_high, 2),
+                        "day_low":          round(candle_low, 2),
+                        "rsi":              round(rsi_val, 1),
+                        "volume_ratio":     round(volume_ratio, 2),
+                        "body_ratio":       round(body_ratio * 100),
+                        "close_position":   round(close_position * 100),
+                        "score":            score,
+                        "above_ema20":      above_ema20,
+                        "above_sma50":      above_sma50,
+                        "golden_cross":     golden_cross,
+                        "atr_stop":         round(suggested_stop, 2),
+                        "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
+                        "peg":              row.get("PEG Ratio"),
+                        "yoy_rev":          row.get("YOY Revenue %"),
+                        "yoy_profit":       row.get("YOY Profit %"),
+                        "roe":              row.get("ROE %")
+                    })
+                    total_alerts += 1
 
-if __name__ == "__main__":
-    start()
+                except Exception:
+                    logger.exception(f"❌ Error processing {symbol}")
+
+            scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+            if total_alerts > 0:
+                for cat in sorted(alerts_by_category.keys()):
+                    cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
+                    chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
+                    for chunk_num, chunk in enumerate(chunks, start=1):
+                        msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
+                        send_telegram_message(msg, scan_type="EOD")
+
+            # ── SEND DAILY CONSOLIDATED SUMMARY EMAIL ────────────────────────────────
+            try:
+                from daily_report import generate_and_send_daily_summary
+                logger.info("📧 Compiling daily comprehensive email report payload...")
+                generate_and_send_daily_summary()
+            except Exception as e:
+                logger.error(f"❌ Failed to dispatch daily summary mail package: {e}")
+            # ────────────────────────────────────────────────────────────────────────
+
+            duration       = (datetime.now(IST) - scan_start).total_seconds()
+            last_scan_date = today_str
+            sleep_secs     = seconds_until_eod()
+
+            fired = {k: v for k, v in rejection_counts.items() if v > 0}
+            if fired:
+                logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
+
+            time.sleep(min(sleep_secs, 3600))
+
+        except Exception:
+            logger.exception("❌ CRITICAL EOD SCAN ERROR — will retry next cycle")
+            time.sleep(300)
