@@ -106,6 +106,7 @@ logger = logging.getLogger(__name__)
 SCORE_CATEGORY = {
     # ── Non-financial (PATH A) ────────────────────────────────────────────────────
     "Elite Compounder":     30,
+    "Diamond Hold":         22,   # FIX: was missing; 5Y+ compounder quality ≈ High Growth tier
     "High Growth":          22,
     "Steady Compounder":    18,
     "Mature Quality":       14,
