@@ -1,5 +1,5 @@
 # =====================================================================================
-# app/telegram_engine.py (RATE-LIMIT GUARDIAN EDITION)
+# app/telegram_engine.py
 # =====================================================================================
 #
 # HOW TO SET UP GROUP TOPICS
@@ -33,63 +33,94 @@ import time
 import requests
 import os
 
-from config import BOT_TOKEN, CHAT_ID, THREAD_EOD, THREAD_INTRADAY, THREAD_1H
+from config import BOT_TOKEN, CHAT_ID
 
 logger = logging.getLogger(__name__)
 
-def get_thread_id(scan_type: str) -> int | None:
-    if scan_type == "EOD":
-        return THREAD_EOD
-    elif scan_type == "INTRADAY":
-        return THREAD_INTRADAY
-    elif scan_type == "1H":
-        return THREAD_1H
-    return None
+# =====================================================================================
+# OPTIONAL THREAD IDs — loaded from config if present
+# =====================================================================================
 
-def send_telegram_message(message: str, scan_type: str = "GENERAL", retries: int = 3) -> bool:
-    """
-    Dispatches a message to the specified Telegram group/topic.
-    Includes smart rate-limit handling (429) to prevent bot bans.
-    """
-    # Environment variables override config.py imports to ensure cloud safety
-    bot_token = os.getenv("BOT_TOKEN", BOT_TOKEN)
-    chat_id   = os.getenv("CHAT_ID", CHAT_ID)
+try:
+    from config import THREAD_EOD
+except ImportError:
+    THREAD_EOD = None
 
-    if not bot_token or not chat_id:
-        logger.warning("⚠️ Telegram skipped: BOT_TOKEN or CHAT_ID missing.")
+try:
+    from config import THREAD_INTRADAY
+except ImportError:
+    THREAD_INTRADAY = None
+
+try:
+    from config import THREAD_1H
+except ImportError:
+    THREAD_1H = None
+
+# =====================================================================================
+# THREAD ROUTING — scan_type → message_thread_id
+# =====================================================================================
+
+THREAD_MAP = {
+    "EOD":      THREAD_EOD,
+    "INTRADAY": THREAD_INTRADAY,
+    "1H":       THREAD_1H,
+}
+
+# =====================================================================================
+# SEND
+# =====================================================================================
+
+def send_telegram_message(message: str, scan_type: str = None, retries: int = 3) -> bool:
+    """
+    Sends a message to the configured Telegram group.
+
+    Parameters
+    ----------
+    message   : str  — alert text (HTML tags supported: <b>, <i>, <code>, <pre>)
+    scan_type : str  — "EOD" | "INTRADAY" | "1H"
+                       Routes to the matching group topic if THREAD_* is set in config.
+                       Pass None to post to General.
+    retries   : int  — retry attempts on failure (default 3)
+
+    Returns True on success, False after all retries exhausted.
+    """
+    
+    # Cloud-safe fallback override
+    active_token = os.getenv("BOT_TOKEN", BOT_TOKEN)
+    active_chat  = os.getenv("CHAT_ID", CHAT_ID)
+
+    if not active_token or not active_chat:
+        logger.warning("⚠️ Telegram skipped: BOT_TOKEN or CHAT_ID is missing.")
         return False
 
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    thread_id = get_thread_id(scan_type)
+    url = f"https://api.telegram.org/bot{active_token}/sendMessage"
 
     payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
+        "chat_id":                  active_chat,
+        "text":                     message,
+        "parse_mode":               "HTML",   # safer than Markdown — no escaping issues
+        "disable_web_page_preview": True,     # Prevents ugly link bubbles in chat
     }
 
+    thread_id = THREAD_MAP.get(scan_type) if scan_type else None
     if thread_id:
         payload["message_thread_id"] = thread_id
 
-    attempt = 0
-    while attempt < retries:
-        attempt += 1
+    for attempt in range(1, retries + 1):
         try:
             response = requests.post(url, json=payload, timeout=10)
 
             if response.status_code == 200:
+                logger.info(f"📨 Sent | scan={scan_type} | thread={thread_id}")
                 return True
 
-            # ── SMART RATE LIMIT HANDLING (429) ──
+            # Telegram rate limit — respect retry_after
             if response.status_code == 429:
-                error_body = response.json()
-                retry_after = error_body.get("parameters", {}).get("retry_after", 5)
-                logger.warning(f"⏳ Telegram Rate Limited (429) — pausing thread for {retry_after}s (attempt {attempt}/{retries})...")
+                retry_after = response.json().get("parameters", {}).get("retry_after", 5)
+                logger.warning(f"⏳ Rate limited — waiting {retry_after}s (attempt {attempt}/{retries})")
                 time.sleep(retry_after)
-                continue # Retry without incrementing attempt counter heavily
+                continue
 
-            # ── TOPIC DELETION FALLBACK ──
             # Thread not found — the topic was deleted or the thread_id is wrong.
             # Fall back to General (remove message_thread_id and retry immediately)
             # so alerts are never silently lost due to a misconfigured topic ID.
@@ -97,21 +128,23 @@ def send_telegram_message(message: str, scan_type: str = "GENERAL", retries: int
                 error_body = response.json()
                 description = error_body.get("description", "")
                 if "message thread not found" in description and "message_thread_id" in payload:
-                    logger.warning(f"⚠️ Topic {thread_id} missing for {scan_type}. Falling back to main group.")
+                    logger.warning(
+                        f"⚠️ Thread {thread_id} not found for scan={scan_type} — "
+                        f"falling back to General chat"
+                    )
                     payload.pop("message_thread_id")
                     thread_id = None
-                    continue # Retry immediately in general chat
+                    continue  # retry immediately without thread_id
 
-            logger.error(f"❌ Telegram API {response.status_code}: {response.text}")
+            logger.error(f"❌ Telegram {response.status_code}: {response.text}")
 
         except requests.exceptions.Timeout:
-            logger.warning(f"⚠️ Telegram request timed out (attempt {attempt}/{retries})")
-        except Exception as e:
-            logger.exception(f"❌ Telegram unknown exception: {e}")
+            logger.warning(f"⚠️ Timeout (attempt {attempt}/{retries})")
+        except Exception:
+            logger.exception("❌ Telegram exception (unexpected)")
 
-        # Exponential backoff for generic errors
         if attempt < retries:
-            time.sleep(2 ** attempt)
+            time.sleep(2 * attempt)  # back-off: 2s, 4s
 
-    logger.error(f"❌ Telegram dispatch permanently failed after {retries} attempts.")
+    logger.error(f"❌ Failed after {retries} attempts | scan={scan_type}")
     return False
