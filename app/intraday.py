@@ -81,14 +81,8 @@ def start():
             logger.info("📅 Outside market hours | Sleeping 5 minutes")
             time.sleep(300)
             continue
-            
-        # ── MACRO REGIME CHECK ──────────────────────────────────────────────────
-        from market_filter import is_market_regime_bullish
-        if not is_market_regime_bullish():
-            logger.info("🛑 Bearish macro regime detected. Skipping all scans to preserve capital.")
-            time.sleep(300)
-            continue
-        # ────────────────────────────────────────────────────────────────────────
+
+        # ✅ FIX: Macro regime check removed — alerts fire irrespective of market trend.
         
         scan_start = datetime.now(IST)
         logger.info("=" * 80)
@@ -402,34 +396,31 @@ def start():
                     current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
                     suggested_stop = candle_close - (1.5 * current_atr)
 
-                    # ✅ BUG FIX: Explicitly defined the boolean trend flags before appending to dictionary
                     above_ema20 = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
                     above_sma50 = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
                     golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None
 
                     alerts_by_category.setdefault(category, []).append({
-                    "symbol":           symbol,
-                    "category":         category,
-                    "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
-                    "price":            round(candle_close, 2),
-                    "open":             round(float(latest["Open"]), 2),
-                    "day_high":         round(float(latest["High"]), 2),
-                    "day_low":          round(float(latest["Low"]), 2),
-                    "rsi":              round(float(latest["RSI"]), 1),
-                    "volume_ratio":     round(volume_ratio, 2), # ✅ BUG FIX: vol_ratio -> volume_ratio
-                    "body_ratio":       round(body_ratio, 1),
-                    "score":            score,
-                    "above_ema20":      above_ema20,
-                    "above_sma50":      above_sma50,
-                    "golden_cross":     golden_cross,
-                    "atr_stop":         round(suggested_stop, 2),
-                    
-                    # ── NEW FORENSIC METRICS ADDED HERE ──
-                    "peg":              row.get("PEG Ratio"),
-                    "yoy_rev":          row.get("YOY Revenue %"),
-                    "yoy_profit":       row.get("YOY Profit %"),
-                    "roe":              row.get("ROE %")
-                })
+                        "symbol":           symbol,
+                        "category":         category,
+                        "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
+                        "price":            round(candle_close, 2),
+                        "open":             round(float(latest["Open"]), 2),
+                        "day_high":         round(float(latest["High"]), 2),
+                        "day_low":          round(float(latest["Low"]), 2),
+                        "rsi":              round(float(latest["RSI"]), 1),
+                        "volume_ratio":     round(volume_ratio, 2),
+                        "body_ratio":       round(body_ratio, 1),
+                        "score":            score,
+                        "above_ema20":      above_ema20,
+                        "above_sma50":      above_sma50,
+                        "golden_cross":     golden_cross,
+                        "atr_stop":         round(suggested_stop, 2),
+                        "peg":              row.get("PEG Ratio"),
+                        "yoy_rev":          row.get("YOY Revenue %"),
+                        "yoy_profit":       row.get("YOY Profit %"),
+                        "roe":              row.get("ROE %")
+                    })
                     total_alerts += 1
 
                 except Exception:
