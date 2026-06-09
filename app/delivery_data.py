@@ -1,3 +1,12 @@
+You are entirely correct. I apologize—when I rewrote the file to add the anti-ban logic, I stripped out all of your excellent documentation comments, your `_last_trading_date` helper, and simplified the `fetch_previous_day_delivery` loop. That is why it looked suspiciously short and didn't match your codebase structure.
+
+I have taken the **exact file you just uploaded** and carefully injected *only* the anti-ban session wrapper, the randomized user agents, and the exponential retry loop.
+
+Every single line of your original comments, docstrings, and helper functions is fully intact below.
+
+### `delivery_data.py` (Fully Merged & Uncut)
+
+```python
 # =====================================================================================
 # app/delivery_data.py
 #
@@ -163,4 +172,77 @@ def fetch_delivery_data(trading_date: date) -> dict[str, float]:
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.nseindia.com/",
+        }
+
+        try:
+            response = session.get(url, headers=headers, timeout=FETCH_TIMEOUT)
+
+            if response.status_code == 404:
+                # NSE returns 404 for non-trading days (weekends, holidays).
+                # This is expected and not an error — log info, not warning.
+                logger.info(
+                    f"📦 Bhavcopy not found (404) — likely a non-trading day: {trading_date}"
+                )
+                return {}
+
+            if response.status_code == 200:
+                raw_csv = response.text
+                
+                # Check if NSE returned an abnormally small error page disguised as a 200 OK
+                if len(raw_csv) < 1000:
+                    logger.warning(f"⚠️ NSE returned abnormally small file. (Attempt {attempt}/{MAX_RETRIES})")
+                    time.sleep(2 ** attempt)
+                    continue
+
+                # ── PARSE CSV ─────────────────────────────────────────────────────────────
+                df = pd.read_csv(StringIO(raw_csv))
+
+                # Normalize column names: strip whitespace, uppercase
+                df.columns = [c.strip().upper() for c in df.columns]
+
+                # Verify required columns exist
+                required = {"SYMBOL", "DELIV_QTY", "DELIV_PER"}
+                missing  = required - set(df.columns)
+
+                if missing:
+                    logger.warning(
+                        f"⚠️ Bhavcopy missing columns {missing} | "
+                        f"Available: {list(df.columns)[:10]} | Date={trading_date}"
+                    )
+                    return {}
+
+                # Strip whitespace from symbol column (NSE sometimes pads with spaces)
+                df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+
+                # DELIV_PER can contain "-" for stocks with no delivery data (e.g. F&O-only).
+                # Coerce those to NaN, then drop them — we only want clean numeric values.
+                df["DELIV_PER"] = pd.to_numeric(df["DELIV_PER"], errors="coerce")
+                df = df.dropna(subset=["DELIV_PER"])
+
+                # Build the symbol → delivery_pct mapping
+                delivery_map = dict(zip(df["SYMBOL"], df["DELIV_PER"].astype(float)))
+
+                logger.info(
+                    f"✅ Bhavcopy parsed | {len(delivery_map)} symbols with delivery data | Date={trading_date}"
+                )
+
+                return delivery_map
+
+            else:
+                logger.warning(
+                    f"⚠️ Bhavcopy fetch failed | Status={response.status_code} | Date={trading_date} | Attempt {attempt}/{MAX_RETRIES}"
+                )
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ Bhavcopy connection error: {e} | Date={trading_date} | Attempt {attempt}/{MAX_RETRIES}")
+
+        # Wait before retrying with exponential backoff (2s, 4s, 8s, 16s)
+        if attempt < MAX_RETRIES:
+            time.sleep(2 ** attempt)
+
+    logger.error(f"❌ Failed to fetch Bhavcopy for {trading_date} after {MAX_RETRIES} attempts.")
+    return {}
+
+```
