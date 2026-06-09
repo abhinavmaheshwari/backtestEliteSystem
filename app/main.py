@@ -70,7 +70,11 @@ _threading.Thread(target=_build_watchlist_background, name="WatchlistBuilder", d
 active_threads = {}
 
 def _run(name, fn):
-    """Wrapper: marks thread completed_cleanly=True on normal exit, False on exception."""
+    """
+    Wrapper: marks thread completed_cleanly=True on normal exit, False on exception.
+    Normal exit means the scanner finished its job intentionally (e.g. EOD ran once).
+    Exception exit means the thread crashed and should be restarted by the watchdog.
+    """
     try:
         fn()
         threading.current_thread().completed_cleanly = True
@@ -139,9 +143,12 @@ if __name__ == "__main__":
         for name, thread in list(active_threads.items()):
             if not thread.is_alive():
                 if getattr(thread, "completed_cleanly", False):
-                    # Normal exit — one-shot scanner finished its job, no restart needed
-                    pass
+                    # ✅ FIX: Thread exited normally (e.g. EOD ran once and returned).
+                    # Remove from tracking — do NOT restart. No crash occurred.
+                    logger.info(f"✅ THREAD COMPLETED CLEANLY: {name} — removing from watchdog tracking.")
+                    del active_threads[name]
                 else:
+                    # ❌ Thread crashed with an unhandled exception — restart it.
                     logger.critical(f"💀 THREAD CRASH DETECTED: {name} has died. Auto-restarting in 10 seconds...")
                     time.sleep(10)
                     start_thread(name, THREAD_REGISTRY[name])
