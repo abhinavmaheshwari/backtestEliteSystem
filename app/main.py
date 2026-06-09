@@ -67,6 +67,17 @@ _threading.Thread(target=_build_watchlist_background, name="WatchlistBuilder", d
 # THREAD RUNNERS
 # =====================================================================================
 
+active_threads = {}
+
+def _run(name, fn):
+    """Wrapper: marks thread completed_cleanly=True on normal exit, False on exception."""
+    try:
+        fn()
+        threading.current_thread().completed_cleanly = True
+    except Exception:
+        logger.exception(f"❌ Unhandled exception in {name}")
+        threading.current_thread().completed_cleanly = False
+
 def run_intraday_scanner():
     wait_for_window("intraday")
     import intraday
@@ -92,24 +103,23 @@ def run_reversal_scanner():
 # =====================================================================================
 
 THREAD_REGISTRY = {
-    "IntradayScanner": run_intraday_scanner,
-    "LiveScanner": run_live_scanner,
-    "EODScanner": run_eod_scanner,
-    "ReversalScanner": run_reversal_scanner,
+    "IntradayScanner":  run_intraday_scanner,
+    "LiveScanner":      run_live_scanner,
+    "EODScanner":       run_eod_scanner,
+    "ReversalScanner":  run_reversal_scanner,
 }
+
+def start_thread(name, target):
+    t = threading.Thread(target=lambda: _run(name, target), name=name, daemon=True)
+    t.completed_cleanly = False
+    t.start()
+    active_threads[name] = t
+    return t
 
 if __name__ == "__main__":
     _missing_env = [v for v in ("BOT_TOKEN", "CHAT_ID") if not os.getenv(v)]
     if _missing_env:
         logger.error(f"❌ FATAL: Missing env vars: {_missing_env}")
-
-    active_threads = {}
-
-    def start_thread(name, target):
-        t = threading.Thread(target=target, name=name, daemon=True)
-        t.start()
-        active_threads[name] = t
-        return t
 
     # Initial Startup
     for name, target in THREAD_REGISTRY.items():
@@ -128,9 +138,13 @@ if __name__ == "__main__":
 
         for name, thread in list(active_threads.items()):
             if not thread.is_alive():
-                logger.critical(f"💀 THREAD CRASH DETECTED: {name} has died. Auto-restarting in 10 seconds...")
-                time.sleep(10) # Cool-down to prevent rapid crash loops
-                start_thread(name, THREAD_REGISTRY[name])
-                logger.info(f"🔄 THREAD REVIVED: {name} is back online.")
+                if getattr(thread, "completed_cleanly", False):
+                    # Normal exit — one-shot scanner finished its job, no restart needed
+                    pass
+                else:
+                    logger.critical(f"💀 THREAD CRASH DETECTED: {name} has died. Auto-restarting in 10 seconds...")
+                    time.sleep(10)
+                    start_thread(name, THREAD_REGISTRY[name])
+                    logger.info(f"🔄 THREAD REVIVED: {name} is back online.")
 
-        time.sleep(30) # Monitor health every 30 seconds
+        time.sleep(30)
