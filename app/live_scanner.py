@@ -424,4 +424,3 @@ def start():
             sleep_time = max(0, 300 - elapsed)
 
         time.sleep(sleep_time)
-Claude is AI and can make mistakes. Please double-check responses.
