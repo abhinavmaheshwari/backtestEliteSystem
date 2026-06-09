@@ -80,14 +80,6 @@ def start():
             logger.info("⏰ Outside 1H window | sleep 5m")
             time.sleep(300)
             continue
-            
-        # ── MACRO REGIME CHECK ──────────────────────────────────────────────────
-        from market_filter import is_market_regime_bullish
-        if not is_market_regime_bullish():
-            logger.info("🛑 Bearish macro regime detected. Skipping all scans to preserve capital.")
-            time.sleep(300)
-            continue
-        # ────────────────────────────────────────────────────────────────────────
 
         scan_start         = datetime.now(IST)
         total_alerts       = 0
@@ -432,3 +424,4 @@ def start():
             sleep_time = max(0, 300 - elapsed)
 
         time.sleep(sleep_time)
+Claude is AI and can make mistakes. Please double-check responses.
