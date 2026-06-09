@@ -383,3 +383,52 @@ def start():
 
                     current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
                     suggested_stop = candle_close - (1.5 * current_atr)
+
+                    alerts_by_category.setdefault(category, []).append({
+                    "symbol":           symbol,
+                    "category":         category,
+                    "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
+                    "price":            round(candle_close, 2),
+                    "open":             round(float(latest["Open"]), 2),
+                    "day_high":         round(float(latest["High"]), 2),
+                    "day_low":          round(float(latest["Low"]), 2),
+                    "rsi":              round(float(latest["RSI"]), 1),
+                    "volume_ratio":     round(vol_ratio, 2),
+                    "body_ratio":       round(body_ratio, 1),
+                    "score":            score,
+                    "above_ema20":      above_ema20,
+                    "above_sma50":      above_sma50,
+                    "golden_cross":     golden_cross,
+                    "atr_stop":         round(suggested_stop, 2),
+                    
+                    # ── NEW FORENSIC METRICS ADDED HERE ──
+                    "peg":              row.get("PEG Ratio"),
+                    "yoy_rev":          row.get("YOY Revenue %"),
+                    "yoy_profit":       row.get("YOY Profit %"),
+                    "roe":              row.get("ROE %")
+                })
+                    total_alerts += 1
+
+                except Exception:
+                    logger.exception(f"❌ Error processing {symbol}")
+
+            scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+            if total_alerts > 0:
+                for cat in sorted(alerts_by_category.keys()):
+                    cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
+                    chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
+
+                    for chunk_num, chunk in enumerate(chunks, start=1):
+                        msg = build_message("1H", cat, chunk, chunk_num, len(chunks), scan_time)
+                        send_telegram_message(msg, scan_type="1H")
+
+            elapsed    = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time = max(0, 300 - elapsed)
+
+        except Exception:
+            logger.exception("❌ CRITICAL 1H SCAN ERROR — will retry next cycle")
+            elapsed    = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time = max(0, 300 - elapsed)
+
+        time.sleep(sleep_time)
