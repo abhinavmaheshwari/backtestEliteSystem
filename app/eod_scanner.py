@@ -64,11 +64,6 @@ def start():
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
     
-    from market_filter import is_market_regime_bullish
-    if not is_market_regime_bullish():
-        logger.info("🛑 Bearish EOD macro regime. Skipping daily breakout generation to avoid traps.")
-        return
-
     ist_now = datetime.now(IST)
     logger.info("=" * 80)
     logger.info(f"📊 EOD SCAN START | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
@@ -334,15 +329,7 @@ def start():
                 current_atr = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
                 suggested_stop = candle_close - (1.5 * current_atr)
 
-                # ── ANALYTICS METRICS ADDED ──
-                metrics = {
-                    "scan_type": "EOD", "score": score, "rsi": round(rsi_val, 1),
-                    "volume_ratio": round(volume_ratio, 2), "delivery_pct": delivery_pct,
-                    "peg": row.get("PEG Ratio"), "roe": row.get("ROE %"),
-                    "yoy_profit": row.get("YOY Profit %"), "atr_stop": round(suggested_stop, 2)
-                }
-
-                saved = save_alert_if_new(symbol, dedup_key, ist_now.strftime("%Y-%m-%d %H:%M:%S"), metrics=metrics)
+                saved = save_alert_if_new(symbol, dedup_key, ist_now.strftime("%Y-%m-%d %H:%M:%S"))
                 if not saved:
                     rejection_counts["duplicate"] += 1
                     continue
