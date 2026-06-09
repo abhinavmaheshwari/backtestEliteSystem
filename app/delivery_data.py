@@ -1,5 +1,5 @@
 # =====================================================================================
-# app/delivery_data.py
+# app/delivery_data.py (ANTI-BAN & ROBUST FETCH EDITION)
 #
 # WHAT THIS FILE DOES:
 #   Fetches NSE end-of-day delivery volume data from the NSE bhavcopy archive.
@@ -24,186 +24,128 @@
 #
 # PUBLICATION TIMING:
 #   NSE publishes this file between 5:00 PM and 6:00 PM IST.
-#   eod_scanner.py starts at 6:30 PM and retries up to 5 times (10-min gaps)
-#   to handle delayed publication. intraday.py and live_scanner.py fetch the
-#   previous trading day's data once at scan-start — no retry needed there.
-#   If the fetch fails for any reason, callers receive an empty dict and proceed
-#   without delivery scoring (treated as an optional bonus, never a hard filter).
-#
-# WHY NOT USE THE NSE API ENDPOINT?
-#   NSE's equity API (quote-equity?section=trade_info) requires session cookies
-#   that expire frequently. Maintaining cookie sessions in a headless script is
-#   fragile and breaks silently. The bhavcopy archive URL is cookie-free, stable,
-#   and has been published in the same format since 2010.
-#
-# USAGE:
-#   from delivery_data import fetch_delivery_data
-#   delivery_map = fetch_delivery_data(date)   # returns {symbol: delivery_pct}
-#   pct = delivery_map.get("RELIANCE", None)   # None if data unavailable
 # =====================================================================================
 
-import logging
-import requests
 import pandas as pd
-
-from datetime import date
-from io import StringIO
+import requests
+import logging
+import io
+import random
+import time
+from datetime import date, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
-# NSE bhavcopy URL template — date formatted as DDMMYYYY
-BHAVCOPY_URL = (
-    "https://archives.nseindia.com/products/content/"
-    "sec_bhavdata_full_{date_str}.csv"
-)
+FETCH_TIMEOUT = 25
+MAX_RETRIES = 5
 
-# HTTP headers that mimic a browser — NSE returns 403 without a User-Agent
-REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Referer":         "https://www.nseindia.com/",
-}
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+]
 
-# Timeout for the bhavcopy download (seconds).
-# The file is ~3–5 MB. 30 seconds is generous for any reasonable connection.
-FETCH_TIMEOUT = 30
-
-
-def _last_trading_date(reference: date) -> date:
-    """
-    Returns the most recent trading weekday before `reference`.
-    Skips Saturday (5) and Sunday (6) by stepping back with timedelta.
-    Does not account for NSE holidays — bhavcopy fetch will return 404 on those,
-    which is handled gracefully by fetch_delivery_data() already.
-    """
-    from datetime import timedelta
-    d = reference - timedelta(days=1)
-    while d.weekday() >= 5:   # 5=Sat, 6=Sun
-        d -= timedelta(days=1)
-    return d
-
-
-def fetch_previous_day_delivery() -> dict[str, float]:
-    """
-    Fetches delivery data for the most recent completed trading day.
-    Tries up to 3 prior weekdays to handle NSE holidays gracefully.
-    Used by intraday.py and live_scanner.py at scan-start.
-    Returns an empty dict if unavailable — callers handle None gracefully.
-    """
-    from datetime import datetime as _dt, timedelta
-    today = _dt.now().date()
-
-    for days_back in range(1, 5):
-        candidate = today - timedelta(days=days_back)
-        while candidate.weekday() >= 5:
-            candidate -= timedelta(days=1)
-        result = fetch_delivery_data(candidate)
-        if result:
-            logger.info(f"📦 Previous-day delivery loaded | Date={candidate} | {len(result)} symbols")
-            return result
-        # 404 (holiday/weekend) → try the next day back silently
-
-    logger.info("📦 Previous-day delivery unavailable after 4-day lookback")
-    return {}
-
+def _get_robust_session() -> requests.Session:
+    """Creates a session that automatically handles temporary 5xx errors from NSE."""
+    session = requests.Session()
+    retry = Retry(
+        total=5,
+        read=5,
+        connect=5,
+        backoff_factor=1.5,
+        status_forcelist=(500, 502, 503, 504),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
 def fetch_delivery_data(trading_date: date) -> dict[str, float]:
     """
-    Download and parse the NSE security-wise delivery position file for a given date.
-
-    Parameters
-    ----------
-    trading_date : date
-        The trading date to fetch delivery data for.
-        Should always be called with today's date from eod_scanner.py.
-
-    Returns
-    -------
-    dict[str, float]
-        Mapping of NSE symbol → delivery percentage (0.0 to 100.0).
-        Returns an empty dict on any error — callers must handle None gracefully.
-
-    Examples
-    --------
-    >>> delivery_map = fetch_delivery_data(date(2025, 5, 15))
-    >>> delivery_map.get("RELIANCE")
-    54.32
-    >>> delivery_map.get("NONEXISTENT")   # returns None, not KeyError
-    None
+    Fetches the NSE sec_bhavdata_full.csv for a specific date.
+    Returns a dictionary of {SYMBOL: DELIVERY_PERCENTAGE}.
     """
-
     date_str = trading_date.strftime("%d%m%Y")
-    url      = BHAVCOPY_URL.format(date_str=date_str)
+    url = f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"
 
-    logger.info(f"📦 Fetching NSE bhavcopy | Date={trading_date} | URL={url}")
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+    }
 
-    try:
-        response = requests.get(url, headers=REQUEST_HEADERS, timeout=FETCH_TIMEOUT)
+    session = _get_robust_session()
 
-        if response.status_code == 404:
-            # NSE returns 404 for non-trading days (weekends, holidays).
-            # This is expected and not an error — log info, not warning.
-            logger.info(
-                f"📦 Bhavcopy not found (404) — likely a non-trading day: {trading_date}"
-            )
-            return {}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"🌐 Fetching Bhavcopy for {trading_date} | Attempt {attempt}/{MAX_RETRIES}...")
+            response = session.get(url, headers=headers, timeout=FETCH_TIMEOUT)
 
-        if response.status_code != 200:
-            logger.warning(
-                f"⚠️ Bhavcopy fetch failed | Status={response.status_code} | Date={trading_date}"
-            )
-            return {}
+            if response.status_code == 200:
+                content = response.content.decode("utf-8")
+                
+                # If NSE returns a tiny file, it's an error page or holidays
+                if len(content) < 1000:
+                    logger.warning(f"⚠️ NSE returned empty or invalid data for {trading_date}. (Holiday?)")
+                    return {}
 
-        # ── PARSE CSV ─────────────────────────────────────────────────────────────
-        # The bhavcopy CSV has a header row. Column names have leading/trailing spaces
-        # in some NSE versions — strip them all.
-        raw_csv = response.text
-        df      = pd.read_csv(StringIO(raw_csv))
+                df = pd.read_csv(io.StringIO(content))
 
-        # Normalize column names: strip whitespace, uppercase
-        df.columns = [c.strip().upper() for c in df.columns]
+                required = {"SYMBOL", "DELIV_QTY", "DELIV_PER"}
+                missing = required - set(df.columns)
 
-        # Verify required columns exist
-        required = {"SYMBOL", "DELIV_QTY", "DELIV_PER"}
-        missing  = required - set(df.columns)
+                if missing:
+                    logger.warning(f"⚠️ Bhavcopy missing columns {missing} | Available: {list(df.columns)[:10]}")
+                    return {}
 
-        if missing:
-            logger.warning(
-                f"⚠️ Bhavcopy missing columns {missing} | "
-                f"Available: {list(df.columns)[:10]} | Date={trading_date}"
-            )
-            return {}
+                # Strip whitespace from symbol column (NSE sometimes pads with spaces)
+                df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+                
+                # DELIV_PER can contain "-" for stocks with no delivery data.
+                df["DELIV_PER"] = pd.to_numeric(df["DELIV_PER"], errors="coerce")
+                df = df.dropna(subset=["DELIV_PER"])
 
-        # Strip whitespace from symbol column (NSE sometimes pads with spaces)
-        df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+                delivery_map = dict(zip(df["SYMBOL"], df["DELIV_PER"].astype(float)))
+                logger.info(f"✅ Bhavcopy parsed successfully | {len(delivery_map)} symbols loaded.")
+                return delivery_map
 
-        # DELIV_PER can contain "-" for stocks with no delivery data (e.g. F&O-only).
-        # Coerce those to NaN, then drop them — we only want clean numeric values.
-        df["DELIV_PER"] = pd.to_numeric(df["DELIV_PER"], errors="coerce")
-        df = df.dropna(subset=["DELIV_PER"])
+            elif response.status_code == 404:
+                logger.warning(f"⚠️ NSE Bhavcopy 404 Not Found for {trading_date}. (Market likely closed)")
+                return {}
+            else:
+                logger.warning(f"⚠️ NSE returned HTTP {response.status_code} on attempt {attempt}.")
 
-        # Build the symbol → delivery_pct mapping
-        delivery_map = dict(zip(df["SYMBOL"], df["DELIV_PER"].astype(float)))
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ Connection error on attempt {attempt}: {e}")
 
-        logger.info(
-            f"✅ Bhavcopy parsed | {len(delivery_map)} symbols with delivery data | Date={trading_date}"
-        )
+        # Sleep before retrying, increasing the delay each time
+        time.sleep(2 ** attempt)
 
-        return delivery_map
+    logger.error(f"❌ Failed to fetch Bhavcopy for {trading_date} after {MAX_RETRIES} attempts.")
+    return {}
 
-    except requests.exceptions.Timeout:
-        logger.warning(f"⚠️ Bhavcopy fetch timed out after {FETCH_TIMEOUT}s | Date={trading_date}")
-        return {}
-
-    except requests.exceptions.ConnectionError as e:
-        logger.warning(f"⚠️ Bhavcopy connection error: {e} | Date={trading_date}")
-        return {}
-
-    except Exception:
-        logger.exception(f"❌ Unexpected error fetching bhavcopy | Date={trading_date}")
-        return {}
+def fetch_previous_day_delivery() -> dict[str, float]:
+    """
+    Attempts to fetch yesterday's delivery data. If yesterday was a weekend/holiday,
+    it walks backward up to 5 days to find the last valid trading session.
+    """
+    for days_back in range(1, 6):
+        target_date = date.today() - timedelta(days=days_back)
+        if target_date.weekday() >= 5: # Skip weekends entirely
+            continue
+            
+        data = fetch_delivery_data(target_date)
+        if data:
+            return data
+            
+    logger.warning("⚠️ Could not find valid delivery data in the last 5 days.")
+    return {}
