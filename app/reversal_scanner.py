@@ -122,7 +122,8 @@ def _run_scan():
         ]
 
         today_str  = ist_now.strftime("%Y-%m-%d")
-        dedup_key  = f"{category}|{symbol}|REVERSAL|{today_str}"
+        # FIX: key order corrected to Category|Signals|Date|Scanner to match daily_report.py split logic
+        dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
 
         candle_range  = float(latest["High"]) - float(latest["Low"])
         atr_val       = float(latest["ATR"]) if "ATR" in ticker.columns else (candle_range * 1.5)
