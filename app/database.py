@@ -193,26 +193,11 @@ def save_alert_if_new(
 # =====================================================================================
 
 def cleanup_old_alerts(days=7):
-
+    """
+    Deletions disabled to preserve historical data needed for backtesting.
+    """
     with _db_lock:
-
-        try:
-
-            with get_connection() as conn:
-
-                conn.execute(
-                    """
-                    DELETE FROM alerts
-                    WHERE alert_time < datetime('now', ?)
-                    """,
-                    (f"-{days} days",)
-                )
-
-                conn.commit()
-
-            logger.info(
-                f"🧹 Cleaned alerts older than {days} days"
-            )
+        logger.info(f"ℹ️ Data Retention Active: Preserving old alerts for historical backtest engines.")
 
         except Exception:
 
