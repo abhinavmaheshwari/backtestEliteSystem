@@ -3,6 +3,7 @@
 # TREND CONFIRMATION SCANNER — 1H BARS + MULTI-TIMEFRAME ALIGNMENT
 # =====================================================================================
 
+import os
 import pandas as pd
 import yfinance as yf
 import time
@@ -70,6 +71,16 @@ def start():
     prev_delivery_map    = fetch_previous_day_delivery()
     _delivery_fetch_date = datetime.now(IST).date()
 
+    # ── SESSION-LEVEL CACHES (survive across scan cycles) ───────────────────────────
+    # 1h  data: ALWAYS re-fetched every cycle — a new bar closes every 60 minutes
+    # 1d  data: cached for the full trading day — daily bars don't change intraday
+    # watchlist: cached by file mtime — rebuilt only once per day by daily_builder
+    _daily_context_data: dict  = {}
+    _daily_context_date: date  = None           # type: ignore[assignment]
+    _watchlist             = None
+    _watchlist_mtime: float    = 0.0
+    # ────────────────────────────────────────────────────────────────────────────────
+
     while True:
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
@@ -90,32 +101,64 @@ def start():
         logger.info(f"⚡ 1H SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
 
+        # ── Refresh delivery map once per calendar day ───────────────────────────────
         if datetime.now(IST).date() != _delivery_fetch_date:
             prev_delivery_map    = fetch_previous_day_delivery()
             _delivery_fetch_date = datetime.now(IST).date()
 
         sleep_time = 300  
         try:
+            # ── WATCHLIST: reload only if file has changed on disk ───────────────────
             try:
-                watchlist = pd.read_parquet(WATCHLIST_PATH)
+                current_mtime = os.path.getmtime(WATCHLIST_PATH)
+                if _watchlist is None or current_mtime != _watchlist_mtime:
+                    _watchlist       = pd.read_parquet(WATCHLIST_PATH)
+                    _watchlist_mtime = current_mtime
+                    logger.info(f"📋 Watchlist loaded/refreshed | {len(_watchlist)} stocks")
+                watchlist = _watchlist
             except Exception:
                 try:
                     from daily_builder import build_watchlist
                     build_watchlist()
-                    watchlist = pd.read_parquet(WATCHLIST_PATH)
+                    _watchlist       = pd.read_parquet(WATCHLIST_PATH)
+                    _watchlist_mtime = os.path.getmtime(WATCHLIST_PATH)
+                    watchlist        = _watchlist
                 except Exception:
                     time.sleep(300)
                     continue
 
-            # ── BATCH DOWNLOAD: 1H + DAILY CONTEXT (MTA) ────────────────────────────
-            all_ticker_data = {}
-            daily_context_data = {}
-            
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                future_1h = pool.submit(fetch_watchlist_data, watchlist, "60d", "1h")
-                future_1d = pool.submit(fetch_watchlist_data, watchlist, "60d", "1d")
-                all_ticker_data = future_1h.result()
-                daily_context_data = future_1d.result()
+            # ── DATA DOWNLOAD STRATEGY ───────────────────────────────────────────────
+            # 1h  bars : ALWAYS downloaded fresh — a new bar closes every 60 minutes
+            # 1d  bars : downloaded ONCE per day — daily OHLCV does not change intraday
+            #            Refreshed at midnight (date change) or on first run of the day
+            today = datetime.now(IST).date()
+            need_daily_refresh = (
+                not _daily_context_data or
+                _daily_context_date != today
+            )
+
+            if need_daily_refresh:
+                # Download both 1h and daily in parallel on first run of the day
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    future_1h = pool.submit(fetch_watchlist_data, watchlist, "60d", "1h")
+                    future_1d = pool.submit(fetch_watchlist_data, watchlist, "60d", "1d")
+                    all_ticker_data     = future_1h.result()
+                    _daily_context_data = future_1d.result()
+                    _daily_context_date = today
+                logger.info(
+                    f"📥 Full download | 1h: {len(all_ticker_data)} | "
+                    f"Daily (fresh): {len(_daily_context_data)}"
+                )
+            else:
+                # Only re-download 1h — daily context is still valid for today
+                all_ticker_data = fetch_watchlist_data(watchlist, "60d", "1h")
+                logger.info(
+                    f"📥 1h refresh only | {len(all_ticker_data)} stocks | "
+                    f"Daily context cached ({_daily_context_date})"
+                )
+
+            daily_context_data = _daily_context_data
+            # ────────────────────────────────────────────────────────────────────────
 
             try:
                 rotation_result = get_sector_scores()
@@ -191,6 +234,20 @@ def start():
                         except Exception:
                             pass
 
+                    # ── STALE DATA CHECK (before indicator calc to avoid wasted work) ──
+                    _stale_col = next((c for c in ["Datetime", "Date", "index"] if c in ticker.columns), None)
+                    if _stale_col:
+                        try:
+                            _last_ts = pd.to_datetime(ticker.iloc[-1][_stale_col])
+                            if _last_ts.tzinfo is not None:
+                                _last_ts = _last_ts.tz_convert("Asia/Kolkata")
+                            if _last_ts.date() != ist_now.date():
+                                rejection_counts["stale_data"] += 1
+                                continue
+                        except Exception:
+                            pass
+                    # ────────────────────────────────────────────────────────────────────
+
                     if len(ticker) < 100:
                         rejection_counts["insufficient_bars"] += 1
                         continue
@@ -209,17 +266,7 @@ def start():
 
                     latest = ticker.iloc[-1]
 
-                    _stale_col = next((c for c in ["Datetime", "Date", "index"] if c in ticker.columns), None)
-                    if _stale_col:
-                        try:
-                            _last_ts = pd.to_datetime(latest[_stale_col])
-                            if _last_ts.tzinfo is not None:
-                                _last_ts = _last_ts.tz_convert("Asia/Kolkata")
-                            if _last_ts.date() != ist_now.date():
-                                rejection_counts["stale_data"] += 1
-                                continue
-                        except Exception:
-                            pass 
+                    # (stale check already done above before indicator computation)
 
                     if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
                         continue
