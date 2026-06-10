@@ -122,35 +122,50 @@ def _run_scan():
         ]
 
         today_str  = ist_now.strftime("%Y-%m-%d")
-        # FIX: key order corrected to Category|Signals|Date|Scanner to match daily_report.py split logic
         dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
 
-        candle_range  = float(latest["High"]) - float(latest["Low"])
-        atr_val       = float(latest["ATR"]) if "ATR" in ticker.columns else (candle_range * 1.5)
-        suggested_stop = close_price - (1.5 * atr_val)
+        candle_range   = float(latest["High"]) - float(latest["Low"])
+        atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
+        # ── Compute stop BEFORE saving so it gets persisted to DB ────────────────
+        suggested_stop = round(close_price - (1.5 * atr_val), 2)
 
-        if not save_alert_if_new(symbol, dedup_key, ist_now.strftime("%Y-%m-%d %H:%M:%S")):
+        signal_str = ", ".join(reversal_signals)
+
+        saved = save_alert_if_new(
+            symbol,
+            dedup_key,
+            ist_now.strftime("%Y-%m-%d %H:%M:%S"),
+            scanner="REVERSAL",
+            category=category,
+            entry_price=round(close_price, 2),
+            signals=signal_str,
+            score=85,
+            rsi=round(current_rsi, 1),
+            volume_ratio=round(vol_ratio, 2),
+            stop_loss=suggested_stop,
+        )
+        if not saved:
             continue
 
         alerts_by_category.setdefault(category, []).append({
-            "symbol":          symbol,
-            "category":        category,
+            "symbol":           symbol,
+            "category":         category,
             "breakout_signals": reversal_signals,
-            "price":           round(close_price, 2),
-            "open":            round(float(latest["Open"]), 2),
-            "day_high":        round(float(latest["High"]), 2),
-            "day_low":         round(float(latest["Low"]), 2),
-            "rsi":             round(current_rsi, 1),
-            "volume_ratio":    round(vol_ratio, 2),
-            "body_ratio":      round(abs(close_price - float(latest["Open"])) / candle_range * 100)
-                               if candle_range > 0 else 0,
-            "score":           85,
-            "above_ema20":     True,
-            "atr_stop":        round(suggested_stop, 2),
-            "peg":             row.get("PEG Ratio"),
-            "yoy_rev":         row.get("YOY Revenue %"),
-            "yoy_profit":      row.get("YOY Profit %"),
-            "roe":             row.get("ROE %"),
+            "price":            round(close_price, 2),
+            "open":             round(float(latest["Open"]), 2),
+            "day_high":         round(float(latest["High"]), 2),
+            "day_low":          round(float(latest["Low"]), 2),
+            "rsi":              round(current_rsi, 1),
+            "volume_ratio":     round(vol_ratio, 2),
+            "body_ratio":       round(abs(close_price - float(latest["Open"])) / candle_range * 100)
+                                if candle_range > 0 else 0,
+            "score":            85,
+            "above_ema20":      True,
+            "atr_stop":         suggested_stop,
+            "peg":              row.get("PEG Ratio"),
+            "yoy_rev":          row.get("YOY Revenue %"),
+            "yoy_profit":       row.get("YOY Profit %"),
+            "roe":              row.get("ROE %"),
         })
         total_alerts += 1
 
