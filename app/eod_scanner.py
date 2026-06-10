@@ -330,11 +330,12 @@ def start():
                     continue
 
                 signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
-                today_str = ist_now.strftime("%Y-%m-%d")
+                today_str  = ist_now.strftime("%Y-%m-%d")
                 dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
-                
-                current_atr = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
-                suggested_stop = candle_close - (1.5 * current_atr)
+
+                # ── Compute stop BEFORE saving so it gets persisted to DB ────────
+                current_atr    = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
+                suggested_stop = round(candle_close - (1.5 * current_atr), 2)
 
                 saved = save_alert_if_new(
                     symbol,
@@ -347,6 +348,7 @@ def start():
                     score=score,
                     rsi=round(rsi_val, 1),
                     volume_ratio=round(volume_ratio, 2),
+                    stop_loss=suggested_stop,
                 )
                 if not saved:
                     rejection_counts["duplicate"] += 1
@@ -372,7 +374,7 @@ def start():
                     "above_ema20":      above_ema20,
                     "above_sma50":      above_sma50,
                     "golden_cross":     golden_cross,
-                    "atr_stop":         round(suggested_stop, 2),
+                    "atr_stop":         suggested_stop,
                     "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                     "peg":              row.get("PEG Ratio"),
                     "yoy_rev":          row.get("YOY Revenue %"),
