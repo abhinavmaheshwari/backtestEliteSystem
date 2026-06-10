@@ -24,7 +24,7 @@ WINDOWS = {
     "live":        (dt_time(10, 17), dt_time(15, 30)),
     "eod":         (dt_time(18, 30), dt_time(20, 0)),
     "reversal":    (dt_time(18, 45), dt_time(20, 0)),
-    "performance": (dt_time(20, 15), dt_time(23, 59)),  # runs once after EOD + reversal settle
+    "performance": (dt_time(9, 30),  dt_time(10, 0)),   # refreshes every 5 min during morning window
 }
 
 def wait_for_window(name: str):
