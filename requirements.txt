@@ -8,3 +8,4 @@ requests
 tqdm
 openpyxl
 flask
+psycopg2-binary
