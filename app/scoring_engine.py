@@ -190,18 +190,30 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
 
     # ── DISQUALIFIER 4: NO DIRECTIONAL TREND (ADX) ──────────────────────────────────
     #
-    # FIX 1: Threshold raised from 22 → ADX_MIN_THRESHOLD (25, from config.py).
+    # PRACTICAL FIX: ADX threshold is now timeframe-aware.
     #
-    # ADX 22–24 is a "weak/establishing" trend. These stocks were generating alerts
-    # that reversed quickly because there was no committed directional movement
-    # behind the breakout. ADX ≥ 25 is the standard minimum for a trend worth trading.
+    # Why: ADX naturally reads lower on intraday bars than daily bars because
+    # short-term bars have more noise. A 15m or 1H ADX of 20 represents a genuinely
+    # trending stock — the same "trend strength" that shows as ADX 28 on a daily chart.
+    # Applying the strict EOD threshold (25) to intraday was disqualifying valid setups.
+    #
+    # Thresholds:
+    #   1d  → ADX_MIN_THRESHOLD (25 from config) — strict, EOD quality standard
+    #   1h  → 20  — intraday bars have lower ADX naturally; 20 is a real trend
+    #   15m → 18  — very short bars; 18 confirms directional movement exists
     #
     if "ADX" in ticker.columns:
         adx_val = float(latest.get("ADX", 0) or 0)
-        if 0 < adx_val < ADX_MIN_THRESHOLD:
+        if timeframe == "1d":
+            adx_floor = ADX_MIN_THRESHOLD   # 25
+        elif timeframe == "1h":
+            adx_floor = 20
+        else:                               # 15m
+            adx_floor = 18
+        if 0 < adx_val < adx_floor:
             reason = (
-                f"ADX {adx_val:.1f} < {ADX_MIN_THRESHOLD} "
-                f"(trend too weak — ranging or establishing)"
+                f"ADX {adx_val:.1f} < {adx_floor} "
+                f"(trend too weak for {timeframe} timeframe)"
             )
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason
@@ -237,16 +249,24 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
 
     # ── DISQUALIFIER 6: OVEREXTENSION WITHOUT VOLUME ────────────────────────────────
     #
-    # FIX 4: Volume threshold raised from 1.8 → 2.0.
-    # Consistent with the raised MIN_VOLUME_RATIO in config.py.
-    # A stock breaking above BB upper on only 1.8× volume is not convincing enough.
+    # PRACTICAL FIX: Volume conviction threshold is timeframe-aware.
+    #
+    # EOD: 2.0x required — daily bar needs real conviction to break BB upper
+    # 1H:  1.5x required — hourly breakouts are momentum-driven, 1.5x is real
+    # 15m: 1.3x required — 15m BB breaks happen frequently; even 1.3x is elevated
     #
     if "BB_UPPER" in ticker.columns:
         bb_upper = float(latest.get("BB_UPPER", 0) or 0)
-        if bb_upper > 0 and float(latest["Close"]) > bb_upper and volume_ratio < 2.0:
+        if timeframe == "1d":
+            bb_vol_floor = 2.0
+        elif timeframe == "1h":
+            bb_vol_floor = 1.5
+        else:   # 15m
+            bb_vol_floor = 1.3
+        if bb_upper > 0 and float(latest["Close"]) > bb_upper and volume_ratio < bb_vol_floor:
             reason = (
                 f"Price above BB upper (₹{float(latest['Close']):.2f} > ₹{bb_upper:.2f}) "
-                f"with weak volume ({volume_ratio:.1f}x < 2.0x) — overextension risk"
+                f"with weak volume ({volume_ratio:.1f}x < {bb_vol_floor}x) — overextension risk"
             )
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason
@@ -414,6 +434,15 @@ def bonus_modifiers(
         logger.debug(f"  ○ {tag}Prev-day delivery unavailable — bonus skipped (no penalty)")
 
     # ── PENALTY: UNSUSTAINED VOLUME ───────────────────────────────────────────────────
+    #
+    # PRACTICAL FIX: Penalty halved for intraday timeframes.
+    #
+    # Why: On a 15m/1H chart, it is completely normal for only 1 of the last 3 bars
+    # to have elevated volume — that IS the signal bar. The 3-bar sustained volume
+    # check is an EOD concept (3 consecutive days of elevated volume = conviction).
+    # On intraday bars it fires constantly and wipes out otherwise strong setups.
+    # Reduced to -4 for intraday so it flags but does not destroy the score.
+    #
     if len(ticker) >= 4:
         avg_vol_20   = float(ticker["Volume"].iloc[-21:-1].mean())
         recent_above = sum(
@@ -421,11 +450,12 @@ def bonus_modifiers(
             if float(ticker["Volume"].iloc[i]) > avg_vol_20 * 0.80
         )
         if recent_above < 2:
+            penalty = -4 if timeframe != "1d" else -8
             logger.warning(
-                f"  -8 {tag}Unsustained volume "
+                f"  {penalty} {tag}Unsustained volume "
                 f"(only {recent_above}/3 recent bars above 80% of avg)"
             )
-            bonus -= 8
+            bonus += penalty
 
     # ── PENALTY: GAP-UP CHASE — INTRADAY AND 1H ONLY ─────────────────────────────────
     if timeframe != "1d" and len(ticker) >= 2:
@@ -468,13 +498,23 @@ def bonus_modifiers(
         close = float(latest["Close"])
         if sma50 > 0:
             pct_above_sma50 = (close - sma50) / sma50 * 100
-            if pct_above_sma50 > 5.0:
+            # PRACTICAL FIX: Extension threshold and penalty are timeframe-aware.
+            # EOD: >5% above SMA50 = chasing, -6 pts (full penalty, daily SMA50 is key support)
+            # 1H:  >8% above SMA50 = chasing, -3 pts (hourly trends run further from SMA50)
+            # 15m: >10% above SMA50 = chasing, -3 pts (15m scalps can be far from SMA50)
+            if timeframe == "1d":
+                ext_threshold, ext_penalty = 5.0, -6
+            elif timeframe == "1h":
+                ext_threshold, ext_penalty = 8.0, -3
+            else:  # 15m
+                ext_threshold, ext_penalty = 10.0, -3
+            if pct_above_sma50 > ext_threshold:
                 logger.warning(
-                    f"  -6 {tag}Extended above SMA50 "
+                    f"  {ext_penalty} {tag}Extended above SMA50 "
                     f"({pct_above_sma50:.1f}% above — chasing extension, "
                     f"SMA50=₹{sma50:.2f}, Close=₹{close:.2f})"
                 )
-                bonus -= 6
+                bonus += ext_penalty
 
     return bonus
 
@@ -551,51 +591,71 @@ def calculate_score(
 
     # ── STEP 4: RSI QUALITY ──────────────────────────────────────────────────────────
     #
-    # FIX 2: Sweet spot tightened from 58–72 → 60–70.
-    # Tapering bands adjusted accordingly to avoid cliff edges.
+    # PRACTICAL FIX: RSI sweet spot is now timeframe-aware.
     #
-    # Old bands:  58–72 (15), 72–75 (10), 55–57 (6), 75–78 (3), 78–82 (1)
-    # New bands:  60–70 (15), 70–74 (10), 57–59 (6), 74–78 (3), 78–82 (1)
+    # Why: Intraday RSI is noisier and momentum stocks legitimately run RSI 65-75
+    # during strong trends. The tight 60-70 band was penalising healthy intraday
+    # momentum. EOD keeps the tight band because daily RSI is more meaningful.
     #
-    if 60 <= rsi <= 70:
-        rsi_pts = 15   # sweet spot: healthy momentum, not overbought
-    elif 70 < rsi <= 74:
-        rsi_pts = 10   # approaching upper edge — still acceptable
-    elif 57 <= rsi < 60:
-        rsi_pts = 6    # building momentum — partial credit
-    elif 74 < rsi <= 78:
-        rsi_pts = 3    # getting extended — small partial credit
-    elif 78 < rsi <= 82:
-        rsi_pts = 1    # near overbought — token credit before -5 penalty fires
-    else:
-        rsi_pts = 0    # RSI < 57 or > 82 — no points
+    # 1d  sweet spot: 60-70 (15pts) — tight, daily RSI is meaningful
+    # 1h  sweet spot: 58-74 (15pts) — wider, hourly momentum runs hotter
+    # 15m sweet spot: 55-75 (15pts) — widest, 15m RSI spikes are normal
+    #
+    if timeframe == "1d":
+        if 60 <= rsi <= 70:       rsi_pts = 15
+        elif 70 < rsi <= 74:      rsi_pts = 10
+        elif 57 <= rsi < 60:      rsi_pts = 6
+        elif 74 < rsi <= 78:      rsi_pts = 3
+        elif 78 < rsi <= 82:      rsi_pts = 1
+        else:                     rsi_pts = 0
+    elif timeframe == "1h":
+        if 58 <= rsi <= 74:       rsi_pts = 15  # wider sweet spot for hourly
+        elif 74 < rsi <= 78:      rsi_pts = 10
+        elif 55 <= rsi < 58:      rsi_pts = 6
+        elif 78 < rsi <= 82:      rsi_pts = 3
+        elif 82 < rsi <= 85:      rsi_pts = 1
+        else:                     rsi_pts = 0
+    else:  # 15m
+        if 55 <= rsi <= 75:       rsi_pts = 15  # widest for 15m momentum
+        elif 75 < rsi <= 80:      rsi_pts = 10
+        elif 52 <= rsi < 55:      rsi_pts = 6
+        elif 80 < rsi <= 84:      rsi_pts = 3
+        elif 84 < rsi <= 87:      rsi_pts = 1
+        else:                     rsi_pts = 0
 
     score += rsi_pts
-    logger.debug(f"  Score after RSI ({rsi:.1f}): {score} (+{rsi_pts})")
+    logger.debug(f"  Score after RSI ({rsi:.1f}, tf={timeframe}): {score} (+{rsi_pts})")
 
     # ── STEP 5: VOLUME QUALITY ───────────────────────────────────────────────────────
     #
-    # FIX 3: Low-end volume tiers reduced to remove easy point accumulation.
-    # 1.2× entry removed (was 2 pts) — 1.2× daily volume is not real conviction.
-    # 1.5× reduced from 5 → 3 pts.
-    # Upper tiers (2.5×, 3×) modestly reduced to maintain relative differentiation.
-    # 4× and above unchanged — climax volume still earns full points.
+    # PRACTICAL FIX: Volume scoring is now timeframe-aware.
     #
-    if volume_ratio >= 4.0:
-        vol_pts = 20   # unchanged — climax volume is the gold standard
-    elif volume_ratio >= 3.0:
-        vol_pts = 15   # reduced from 17 — still strong, slight tightening
-    elif volume_ratio >= 2.5:
-        vol_pts = 12   # reduced from 14
-    elif volume_ratio >= 2.0:
-        vol_pts = 7    # reduced from 10 — meaningful but not exceptional
-    elif volume_ratio >= 1.5:
-        vol_pts = 3    # reduced from 5 — entry-level, barely above average
-    else:
-        vol_pts = 0    # < 1.5× → no volume quality points (removed 1.2× tier)
+    # Why: The reduced intraday volume scores were compounding with the -8 unsustained
+    # penalty to make it nearly impossible to score well intraday. On a 15m/1H bar,
+    # 1.5x volume IS a meaningful spike — that is 15 minutes of 1.5x normal activity.
+    # The EOD bar needs higher conviction because it covers a full day.
+    #
+    # EOD (1d): strict tiers — full day conviction required
+    # 1H/15m:   restored closer to original tiers — single bar surge is the signal
+    #
+    if timeframe == "1d":
+        if volume_ratio >= 4.0:   vol_pts = 20
+        elif volume_ratio >= 3.0: vol_pts = 15
+        elif volume_ratio >= 2.5: vol_pts = 12
+        elif volume_ratio >= 2.0: vol_pts = 7
+        elif volume_ratio >= 1.5: vol_pts = 3
+        else:                     vol_pts = 0
+    else:  # 1h and 15m — single bar volume surge is the signal
+        if volume_ratio >= 4.0:   vol_pts = 20
+        elif volume_ratio >= 3.0: vol_pts = 17
+        elif volume_ratio >= 2.5: vol_pts = 14
+        elif volume_ratio >= 2.0: vol_pts = 10
+        elif volume_ratio >= 1.5: vol_pts = 6
+        elif volume_ratio >= 1.2: vol_pts = 2
+        else:                     vol_pts = 0
 
     score += vol_pts
-    logger.debug(f"  Score after volume ({volume_ratio:.2f}x): {score} (+{vol_pts})")
+    logger.debug(f"  Score after volume ({volume_ratio:.2f}x, tf={timeframe}): {score} (+{vol_pts})")
 
     # ── STEP 6: TREND STRENGTH ───────────────────────────────────────────────────────
     #
@@ -623,13 +683,20 @@ def calculate_score(
 
         if "ADX" in ticker.columns:
             adx_val = float(latest.get("ADX", 0) or 0)
-            if adx_val >= 30:
+            # ADX bonus floors aligned with timeframe-aware disqualifier
+            # 1d: strong=30, established=25 | 1h: strong=25, est=20 | 15m: strong=22, est=18
+            if timeframe == "1d":
+                strong_adx, est_adx = 30, ADX_MIN_THRESHOLD
+            elif timeframe == "1h":
+                strong_adx, est_adx = 25, 20
+            else:
+                strong_adx, est_adx = 22, 18
+            if adx_val >= strong_adx:
                 trend_pts += 2
-                logger.debug(f"  +2 {tag}ADX {adx_val:.1f} ≥ 30 (strong trend)")
-            elif adx_val >= ADX_MIN_THRESHOLD:   # 25
+                logger.debug(f"  +2 {tag}ADX {adx_val:.1f} ≥ {strong_adx} (strong trend for {timeframe})")
+            elif adx_val >= est_adx:
                 trend_pts += 1
-                logger.debug(f"  +1 {tag}ADX {adx_val:.1f} ≥ {ADX_MIN_THRESHOLD} (established trend)")
-            # ADX < ADX_MIN_THRESHOLD is a hard disqualifier — never reaches here
+                logger.debug(f"  +1 {tag}ADX {adx_val:.1f} ≥ {est_adx} (established trend for {timeframe})")
 
         if "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns:
             macd_val = float(latest.get("MACD", 0) or 0)
