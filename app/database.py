@@ -105,6 +105,7 @@ def init_db():
                         scanner       TEXT,
                         category      TEXT,
                         entry_price   REAL,
+                        stop_loss     REAL,
                         signals       TEXT,
                         score         INTEGER,
                         rsi           REAL,
@@ -112,10 +113,17 @@ def init_db():
                         UNIQUE (symbol, breakout_type, alert_date)
                     )
                 """)
+                # ── MIGRATION: add stop_loss to tables created before this change ────
+                # ALTER TABLE ... ADD COLUMN IF NOT EXISTS is safe to run every time
+                # because Postgres no-ops it when the column already exists.
+                cur.execute("""
+                    ALTER TABLE alerts
+                    ADD COLUMN IF NOT EXISTS stop_loss REAL
+                """)
                 conn.commit()
 
         _DB_INITIALIZED = True
-        logger.info("✅ Database ready (Postgres)")
+        logger.info("✅ Database ready (Postgres) — stop_loss column ensured")
         logger.info("ℹ️  Data Retention Active: preserving all alerts for historical analysis.")
 
 
@@ -128,6 +136,7 @@ def save_alert_if_new(
     scanner: str = None,
     category: str = None,
     entry_price: float = None,
+    stop_loss: float = None,
     signals: str = None,
     score: int = None,
     rsi: float = None,
@@ -143,11 +152,11 @@ def save_alert_if_new(
                 cur.execute("""
                     INSERT INTO alerts
                         (symbol, breakout_type, alert_time, scanner, category,
-                         entry_price, signals, score, rsi, volume_ratio)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         entry_price, stop_loss, signals, score, rsi, volume_ratio)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
                 """, (symbol, breakout_type, alert_time, scanner, category,
-                      entry_price, signals, score, rsi, volume_ratio))
+                      entry_price, stop_loss, signals, score, rsi, volume_ratio))
                 conn.commit()
                 return cur.rowcount > 0
             except Exception:
@@ -163,7 +172,7 @@ def get_all_alerts() -> list[dict]:
             cur.execute("""
                 SELECT
                     id, symbol, breakout_type, alert_time, alert_date,
-                    scanner, category, entry_price, signals, score,
+                    scanner, category, entry_price, stop_loss, signals, score,
                     rsi, volume_ratio
                 FROM alerts
                 ORDER BY alert_time DESC
