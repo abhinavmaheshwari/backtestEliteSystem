@@ -369,7 +369,18 @@ def start():
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
-                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
+                    saved = save_alert_if_new(
+                        symbol,
+                        dedup_key,
+                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                        scanner="1H",
+                        category=category,
+                        entry_price=round(candle_close, 2),
+                        signals=signal_str,
+                        score=score,
+                        rsi=round(float(latest["RSI"]), 1),
+                        volume_ratio=round(volume_ratio, 2),
+                    )
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
