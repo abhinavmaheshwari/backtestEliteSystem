@@ -62,8 +62,8 @@ SCAN_CONFIG = {
         "MAX_UPPER_WICK":     0.20,
         "MIN_VOLUME_RATIO":   2.5,
         "MIN_VOLUME_AVG":     150_000,
-        "MIN_RSI":            58,
-        "MAX_RSI":            85,  
+        "MIN_RSI":            52,
+        "MAX_RSI":            87,
     },
     "1h": {
         "MIN_SIGNALS":        3,
