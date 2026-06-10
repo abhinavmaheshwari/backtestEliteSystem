@@ -153,8 +153,10 @@ def build_performance_data():
             "signals":       signals,
             "entry_date":    alert_date,
             "entry_price":   entry_price,       # None until we enrich below
+            "stop_loss":     row.get("stop_loss"),
             "current_price": None,              # filled after price fetch
             "pnl_pct":       None,
+            "stopped_out":   False,             # True if current price breached stop
             "days_held":     days,
             "status":        "OPEN",
             "score":         row.get("score"),
@@ -171,17 +173,35 @@ def build_performance_data():
     for t in trades:
         sym   = t["symbol"]
         cur_p = current_prices.get(sym)
+        ep    = t["entry_price"]
+        sl    = t["stop_loss"]
+
         t["current_price"] = round(cur_p, 2) if cur_p else None
 
-        # Use stored entry_price; if missing use current as proxy (pnl = 0)
-        ep = t["entry_price"]
-        if ep and cur_p:
-            t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
-        elif cur_p and not ep:
-            # No entry price stored — can't judge P&L
-            t["pnl_pct"] = None
+        # ── Stop-loss breach detection ───────────────────────────────────────────────
+        # If we have both an entry price and a stop loss, check whether the current
+        # price has breached the stop. If yes, the trade is force-closed at the stop
+        # level — the P&L is calculated against stop_loss, NOT current_price.
+        # This is the correct accounting: once stopped out, any recovery is irrelevant.
+        if ep and sl and cur_p:
+            if cur_p <= sl:
+                # Price is AT or BELOW the stop — trade is stopped out
+                t["stopped_out"] = True
+                t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)  # loss locked at stop
+                logger.debug(f"🛑 {sym} stopped out | entry={ep} stop={sl} cur={cur_p} pnl={t['pnl_pct']}%")
+            else:
+                # Still open above stop — mark-to-market P&L
+                t["stopped_out"] = False
+                t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
+        elif ep and cur_p:
+            # No stop stored (legacy alert) — plain mark-to-market
+            t["stopped_out"] = False
+            t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
+        else:
+            t["stopped_out"] = False
+            t["pnl_pct"]     = None
 
-        t["status"] = _trade_status(t["pnl_pct"], t["days_held"])
+        t["status"] = _trade_status(t["pnl_pct"], t["days_held"], t["stopped_out"])
 
     # ── 5. Compute summary stats ─────────────────────────────────────────────────────
     judged  = [t for t in trades if t["status"] in ("WIN", "LOSS", "NEUTRAL")]
