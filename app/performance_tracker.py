@@ -80,6 +80,57 @@ def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
         return {}
 
 
+def _fetch_lowest_lows(symbol_dates: dict[str, str]) -> dict[str, float]:
+    """
+    For each symbol, fetch the lowest intraday Low from alert_date to today.
+
+    This is what makes SL detection correct: a stop can be hit intraday even
+    if the close that day recovered above the stop level.  Using only the current
+    close (as before) would miss those touches entirely.
+
+    Parameters
+    ----------
+    symbol_dates : {symbol: alert_date_str}  e.g. {"RELIANCE": "2024-05-10"}
+
+    Returns
+    -------
+    {symbol: lowest_low_since_entry}
+    """
+    if not symbol_dates:
+        return {}
+
+    lowest_lows: dict[str, float] = {}
+
+    for sym, alert_date_str in symbol_dates.items():
+        ticker = sym if sym.endswith(".NS") else f"{sym}.NS"
+        try:
+            alert_dt = date.fromisoformat(alert_date_str)
+            # yfinance start is inclusive, end is exclusive — add 1 day to include today
+            start = alert_dt.isoformat()
+            end   = (date.today()).isoformat()
+
+            hist = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+            if hist.empty:
+                continue
+
+            low_series = hist["Low"].dropna()
+            if low_series.empty:
+                continue
+
+            lowest_lows[sym] = float(low_series.min())
+        except Exception:
+            logger.debug(f"⚠️ Could not fetch low history for {sym}")
+
+    return lowest_lows
+
+
 def _days_held(alert_date_str: str) -> int:
     try:
         alert_dt = date.fromisoformat(alert_date_str)
@@ -88,7 +139,11 @@ def _days_held(alert_date_str: str) -> int:
         return 0
 
 
-def _trade_status(pnl_pct: float | None, days: int) -> str:
+def _trade_status(pnl_pct: float | None, days: int, stopped_out: bool = False) -> str:
+    # SL hit → immediate LOSS regardless of HOLD_DAYS or pnl threshold.
+    # The trade is closed the moment the stop is touched; no waiting period applies.
+    if stopped_out:
+        return "LOSS"
     if days < HOLD_DAYS:
         return "OPEN"
     if pnl_pct is None:
@@ -164,10 +219,23 @@ def build_performance_data():
             "volume_ratio":  row.get("volume_ratio"),
         })
 
-    # ── 3. Fetch current prices for all symbols ──────────────────────────────────────
+    # ── 3. Fetch current prices and lowest lows for all symbols ─────────────────────
     unique_symbols = list({t["symbol"] for t in trades})
     logger.info(f"📈 Fetching prices for {len(unique_symbols)} symbols...")
     current_prices = _fetch_current_prices(unique_symbols)
+
+    # Build {symbol: earliest_alert_date} so we fetch lows from alert day onwards.
+    # Using the earliest date per symbol gives us the full price history needed to
+    # detect any SL touch across all open trades for that symbol.
+    symbol_entry_dates: dict[str, str] = {}
+    for t in trades:
+        sym = t["symbol"]
+        ed  = t["entry_date"]
+        if ed and (sym not in symbol_entry_dates or ed < symbol_entry_dates[sym]):
+            symbol_entry_dates[sym] = ed
+
+    logger.info(f"📉 Fetching low history for SL-touch detection...")
+    lowest_lows = _fetch_lowest_lows(symbol_entry_dates)
 
     # ── 4. Enrich trades with prices + P&L ──────────────────────────────────────────
     for t in trades:
@@ -179,20 +247,33 @@ def build_performance_data():
         t["current_price"] = round(cur_p, 2) if cur_p else None
 
         # ── Stop-loss breach detection ───────────────────────────────────────────────
-        # If we have both an entry price and a stop loss, check whether the current
-        # price has breached the stop. If yes, the trade is force-closed at the stop
-        # level — the P&L is calculated against stop_loss, NOT current_price.
-        # This is the correct accounting: once stopped out, any recovery is irrelevant.
-        if ep and sl and cur_p:
-            if cur_p <= sl:
-                # Price is AT or BELOW the stop — trade is stopped out
+        # KEY FIX: Use the lowest intraday Low since entry, not just today's close.
+        # A stop can be touched intraday even if the stock closes above it.
+        # Before this fix, such trades were silently left OPEN with a misleading P&L.
+        #
+        # Logic:
+        #   lowest_low <= sl  →  stop was hit at some point since entry → STOPPED OUT
+        #                         P&L locked at stop price (sl - ep), not current price.
+        #   otherwise         →  mark-to-market against current close.
+        if ep and sl:
+            lowest_low = lowest_lows.get(sym)
+            sl_hit = (lowest_low is not None and lowest_low <= sl)
+
+            if sl_hit:
+                # Stop was touched intraday at some point since entry
                 t["stopped_out"] = True
-                t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)  # loss locked at stop
-                logger.debug(f"🛑 {sym} stopped out | entry={ep} stop={sl} cur={cur_p} pnl={t['pnl_pct']}%")
-            else:
-                # Still open above stop — mark-to-market P&L
+                t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
+                logger.debug(
+                    f"🛑 {sym} SL touched | entry={ep} stop={sl} "
+                    f"lowest_low={lowest_low} pnl={t['pnl_pct']}%"
+                )
+            elif cur_p:
+                # Stop never touched — mark-to-market against current close
                 t["stopped_out"] = False
                 t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
+            else:
+                t["stopped_out"] = False
+                t["pnl_pct"]     = None
         elif ep and cur_p:
             # No stop stored (legacy alert) — plain mark-to-market
             t["stopped_out"] = False
