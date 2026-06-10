@@ -420,24 +420,13 @@ def start():
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
-                    # ── Compute stop BEFORE saving so it's persisted in the DB ───────
-                    current_atr    = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
-                    suggested_stop = round(candle_close - (1.5 * current_atr), 2)
-
-                    saved = save_alert_if_new(
-                        symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                        scanner="1H",
-                        category=category,
-                        entry_price=round(candle_close, 2),
-                        stop_loss=suggested_stop,
-                        signals=signal_str,
-                        score=score,
-                        rsi=round(float(latest["RSI"]), 1),
-                        volume_ratio=round(volume_ratio, 2),
-                    )
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
+
+                    current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
+                    suggested_stop = candle_close - (1.5 * current_atr)
 
                     above_ema20  = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
                     above_sma50  = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
