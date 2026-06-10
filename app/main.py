@@ -1,5 +1,9 @@
 # =====================================================================================
 # app/main.py  — SELF-HEALING ORCHESTRATOR
+#
+# RAILWAY FIX: Flask (dashboard) runs in the MAIN thread so Railway's health check
+# gets a response immediately. The watchdog loop and all scanners run as daemon
+# threads in the background. This is the correct pattern for Railway deployments.
 # =====================================================================================
 
 import sys
@@ -24,7 +28,7 @@ WINDOWS = {
     "live":        (dt_time(10, 17), dt_time(15, 30)),
     "eod":         (dt_time(18, 30), dt_time(20, 0)),
     "reversal":    (dt_time(18, 45), dt_time(20, 0)),
-    "performance": (dt_time(9, 30),  dt_time(10, 0)),   # refreshes every 5 min during morning window
+    "performance": (dt_time(9, 30),  dt_time(10, 0)),
 }
 
 def wait_for_window(name: str):
@@ -71,11 +75,6 @@ _threading.Thread(target=_build_watchlist_background, name="WatchlistBuilder", d
 active_threads = {}
 
 def _run(name, fn):
-    """
-    Wrapper: marks thread completed_cleanly=True on normal exit, False on exception.
-    Normal exit means the scanner finished its job intentionally (e.g. EOD ran once).
-    Exception exit means the thread crashed and should be restarted by the watchdog.
-    """
     try:
         fn()
         threading.current_thread().completed_cleanly = True
@@ -105,26 +104,31 @@ def run_reversal_scanner():
 
 def run_performance_tracker():
     """
-    Waits until 20:15 IST (after EOD + reversal have both settled),
-    then regenerates performance_data.json once per trading day.
-    Skips weekends automatically via wait_for_window.
-    Sleeps 24 hours before looping so it only runs once per day.
+    Every trading day between 09:30–10:00 IST, refreshes performance_data.json
+    every 5 minutes so the dashboard reflects overnight price changes at market open.
+    After 10:00, sleeps until the next day's 09:30 window.
     """
     while True:
         wait_for_window("performance")
-        try:
-            from performance_tracker import generate_performance_data
-            logger.info("📊 PERFORMANCE TRACKER | Starting daily P&L refresh...")
-            generate_performance_data()
-            logger.info("✅ PERFORMANCE TRACKER | Done — dashboard data refreshed")
-        except Exception:
-            logger.exception("❌ PERFORMANCE TRACKER | Failed")
-        # Sleep 24 hours before next run (avoids re-triggering in the same window)
-        logger.info("⏳ PERFORMANCE TRACKER | Next run in 24 hours")
-        time.sleep(86_400)
+        logger.info("📊 PERFORMANCE TRACKER | Morning refresh window open (09:30–10:00 IST)")
+
+        while True:
+            now = datetime.now(IST)
+            if now.time() > dt_time(10, 0) or now.weekday() >= 5:
+                logger.info("📊 PERFORMANCE TRACKER | Window closed — sleeping until tomorrow 09:30")
+                break
+            try:
+                from performance_tracker import generate_performance_data
+                generate_performance_data()
+                logger.info("✅ PERFORMANCE TRACKER | Dashboard refreshed")
+            except Exception:
+                logger.exception("❌ PERFORMANCE TRACKER | Refresh failed")
+            time.sleep(300)  # 5 minutes
+
+        time.sleep(3600)
 
 # =====================================================================================
-# SELF-HEALING WATCHDOG
+# SELF-HEALING WATCHDOG  (runs in background thread)
 # =====================================================================================
 
 THREAD_REGISTRY = {
@@ -133,8 +137,6 @@ THREAD_REGISTRY = {
     "EODScanner":         run_eod_scanner,
     "ReversalScanner":    run_reversal_scanner,
     "PerformanceTracker": run_performance_tracker,
-    # DashboardServer is NOT in the registry — it's a permanent blocking thread
-    # managed separately and never restarted by the watchdog.
 }
 
 def start_thread(name, target):
@@ -144,36 +146,21 @@ def start_thread(name, target):
     active_threads[name] = t
     return t
 
-if __name__ == "__main__":
+def run_watchdog():
+    """Watchdog loop — runs as a background daemon thread so Flask owns the main thread."""
     _missing_env = [v for v in ("BOT_TOKEN", "CHAT_ID") if not os.getenv(v)]
     if _missing_env:
         logger.error(f"❌ FATAL: Missing env vars: {_missing_env}")
 
-    # ── Start Dashboard Server (permanent — runs for the lifetime of the process) ──
-    try:
-        from dashboard_server import start_dashboard_server
-        _dash_thread = threading.Thread(
-            target=start_dashboard_server,
-            name="DashboardServer",
-            daemon=True,
-        )
-        _dash_thread.start()
-        logger.info(f"🌐 Dashboard server started on PORT={os.getenv('PORT', 8080)}")
-    except ImportError:
-        logger.warning("⚠️ dashboard_server.py not found — web dashboard disabled")
-    except Exception:
-        logger.exception("❌ Dashboard server failed to start")
-
-    # ── Start All Scanner + Tracker Threads ─────────────────────────────────────────
+    # Start all scanner + tracker threads
     for name, target in THREAD_REGISTRY.items():
         start_thread(name, target)
 
     logger.info("=" * 70)
     logger.info("🛡️  SELF-HEALING WATCHDOG ACTIVE | All Scanners Initialized")
-    logger.info("🌐  Dashboard: https://your-app.railway.app/")
+    logger.info("🌐  Dashboard: https://elitebreakoutsystem-production.up.railway.app/")
     logger.info("=" * 70)
 
-    # ── Watchdog Loop ────────────────────────────────────────────────────────────────
     _logged_ready = False
     while True:
         if not _logged_ready and _watchlist_ready.is_set():
@@ -183,15 +170,39 @@ if __name__ == "__main__":
         for name, thread in list(active_threads.items()):
             if not thread.is_alive():
                 if getattr(thread, "completed_cleanly", False):
-                    # ✅ Thread exited normally (e.g. EOD ran once and returned).
-                    # Remove from tracking — do NOT restart.
                     logger.info(f"✅ THREAD COMPLETED CLEANLY: {name} — removing from watchdog tracking.")
                     del active_threads[name]
                 else:
-                    # ❌ Thread crashed — restart it.
                     logger.critical(f"💀 THREAD CRASH DETECTED: {name} has died. Auto-restarting in 10 seconds...")
                     time.sleep(10)
                     start_thread(name, THREAD_REGISTRY[name])
                     logger.info(f"🔄 THREAD REVIVED: {name} is back online.")
 
         time.sleep(30)
+
+# =====================================================================================
+# ENTRY POINT
+# =====================================================================================
+
+if __name__ == "__main__":
+    # ── Launch watchdog + all scanners in background ─────────────────────────────────
+    watchdog_thread = threading.Thread(target=run_watchdog, name="Watchdog", daemon=True)
+    watchdog_thread.start()
+
+    # ── Flask runs in the MAIN thread — Railway health checks pass immediately ────────
+    # This is the critical fix: Railway expects the process to bind to PORT within
+    # a few seconds of startup. Running Flask in a daemon thread meant the main
+    # thread could finish before Flask was ready, causing "application failed to respond".
+    try:
+        from dashboard_server import start_dashboard_server
+        port = int(os.getenv("PORT", 8080))
+        logger.info(f"🌐 Dashboard server binding to port {port} (main thread)")
+        start_dashboard_server()   # blocks here — this is intentional
+    except ImportError:
+        logger.error("❌ dashboard_server.py not found — Railway will show 'failed to respond'")
+        logger.error("   Make sure dashboard_server.py is in the app/ folder")
+        # Keep the process alive so scanners keep running even without the dashboard
+        watchdog_thread.join()
+    except Exception:
+        logger.exception("❌ Dashboard server crashed")
+        watchdog_thread.join()
