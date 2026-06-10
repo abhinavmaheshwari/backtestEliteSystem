@@ -1,351 +1,341 @@
 # =====================================================================================
 # app/performance_tracker.py
-#
-# WHAT THIS DOES:
-#   Reads every alert from alerts.db, fetches the entry-day close price
-#   and the current market price via yfinance, and calculates P&L, win-rate,
-#   and per-scanner/per-category statistics.
-#
-#   Outputs:
-#     1. JSON file  → data/performance_data.json  (consumed by the dashboard)
-#     2. Console summary
-#
-#   Run manually:
-#       python app/performance_tracker.py
-#
-#   Or import and call generate_performance_data() from another module.
+# Builds performance_data.json from the Postgres alerts table + live yfinance prices.
+# Called every 5 minutes from main.py (same thread as before).
 # =====================================================================================
 
-import sqlite3
+import os
 import json
 import logging
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 import yfinance as yf
 
-try:
-    from config import DB_PATH, DATA_DIR
-except ImportError:
-    import os
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    DB_PATH  = os.path.join(BASE_DIR, "data", "alerts.db")
-    DATA_DIR = os.path.join(BASE_DIR, "data")
+from database import get_all_alerts
 
-import os
-OUTPUT_JSON = os.path.join(DATA_DIR, "performance_data.json")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 logger = logging.getLogger(__name__)
-
 IST = ZoneInfo("Asia/Kolkata")
 
-# How many calendar days back to fetch price history for entry-day lookups
-HISTORY_LOOKBACK = "2y"
+try:
+    from config import DATA_DIR
+except ImportError:
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = os.path.join(BASE_DIR, "data")
 
-# Minimum move (%) to be counted as a "win" for the win-rate calculation
-WIN_THRESHOLD_PCT = 2.0
+PERF_JSON_PATH = os.path.join(DATA_DIR, "performance_data.json")
 
-# ─────────────────────────────────────────────────────────────────────────────────────
-
-def _fetch_price_history(symbol: str) -> pd.DataFrame | None:
-    """Returns a daily OHLCV DataFrame for the NSE ticker, or None on failure."""
-    ns_sym = f"{symbol}.NS"
-    for attempt in range(3):
-        try:
-            df = yf.download(
-                ns_sym,
-                period=HISTORY_LOOKBACK,
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-                threads=False,
-            )
-            if df is not None and not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df.index = pd.to_datetime(df.index).tz_localize(None)
-                return df
-        except Exception as e:
-            logger.debug(f"  Attempt {attempt+1} failed for {symbol}: {e}")
-            time.sleep(1.5 ** attempt)
-    return None
+# How many calendar days after alert_date before we "close" a trade for judging
+HOLD_DAYS = 5
 
 
-def _get_price_on_date(df: pd.DataFrame, target_date: datetime.date) -> float | None:
+# =====================================================================================
+# HELPERS
+# =====================================================================================
+
+def _parse_dedup_key(breakout_type: str) -> tuple[str, str, str]:
     """
-    Returns the closing price on target_date.
-    Falls back to the next available trading day if target_date is a weekend/holiday.
+    breakout_type format:  "{category}|{signals}|{date}|{scanner}"
+    Returns (category, signals, scanner).  Safe for old rows without the format.
     """
-    if df is None or df.empty:
-        return None
-    df_dates = df.index.normalize()
-    target_ts = pd.Timestamp(target_date)
-    # Look within 5 trading days forward (handles bank holidays, weekends)
-    for offset in range(6):
-        candidate = target_ts + pd.Timedelta(days=offset)
-        matches = df[df_dates == candidate]
-        if not matches.empty:
-            return float(matches["Close"].iloc[0])
-    return None
-
-
-def _latest_price(df: pd.DataFrame) -> float | None:
-    if df is None or df.empty:
-        return None
-    return float(df["Close"].iloc[-1])
-
-
-def _parse_scanner(breakout_type: str) -> str:
-    """Extracts scanner name from the dedup key: Category|Signals|Date|SCANNER"""
     parts = breakout_type.split("|")
     if len(parts) >= 4:
-        return parts[-1].strip()
-    return "UNKNOWN"
+        return parts[0].strip(), parts[1].strip(), parts[3].strip()
+    if len(parts) == 3:
+        return parts[0].strip(), parts[1].strip(), "UNKNOWN"
+    return "Unknown", breakout_type, "UNKNOWN"
 
 
-def _parse_category(breakout_type: str) -> str:
-    parts = breakout_type.split("|")
-    if len(parts) >= 1:
-        return parts[0].strip()
-    return "UNKNOWN"
+def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
+    """Batch-fetch latest close prices for a list of NSE symbols."""
+    if not symbols:
+        return {}
+    tickers = [s if s.endswith(".NS") else f"{s}.NS" for s in symbols]
+    try:
+        raw = yf.download(
+            tickers,
+            period="2d",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+        prices = {}
+        if len(tickers) == 1:
+            sym = symbols[0]
+            try:
+                prices[sym] = float(raw["Close"].dropna().iloc[-1])
+            except Exception:
+                pass
+        else:
+            for sym, ticker in zip(symbols, tickers):
+                try:
+                    prices[sym] = float(raw[ticker]["Close"].dropna().iloc[-1])
+                except Exception:
+                    pass
+        return prices
+    except Exception:
+        logger.warning("⚠️ yfinance price fetch failed in performance_tracker")
+        return {}
 
 
-def _parse_signals(breakout_type: str) -> str:
-    parts = breakout_type.split("|")
-    if len(parts) >= 2:
-        return parts[1].strip()
-    return ""
+def _days_held(alert_date_str: str) -> int:
+    try:
+        alert_dt = date.fromisoformat(alert_date_str)
+        return (date.today() - alert_dt).days
+    except Exception:
+        return 0
 
 
-# ─────────────────────────────────────────────────────────────────────────────────────
-
-def load_alerts() -> pd.DataFrame:
-    """Read all alerts from the SQLite database."""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    df = pd.read_sql_query(
-        "SELECT symbol, breakout_type, alert_time, alert_date FROM alerts ORDER BY alert_date ASC",
-        conn,
-    )
-    conn.close()
-    df["alert_date"] = pd.to_datetime(df["alert_date"]).dt.date
-    return df
+def _trade_status(pnl_pct: float | None, days: int) -> str:
+    if days < HOLD_DAYS:
+        return "OPEN"
+    if pnl_pct is None:
+        return "OPEN"
+    if pnl_pct >= 2.0:
+        return "WIN"
+    if pnl_pct <= -2.0:
+        return "LOSS"
+    return "NEUTRAL"
 
 
-# ─────────────────────────────────────────────────────────────────────────────────────
+# =====================================================================================
+# MAIN BUILD FUNCTION
+# =====================================================================================
 
-def generate_performance_data() -> dict:
-    """
-    Core function. Returns a dict that is both saved as JSON and returned to callers.
-
-    Structure:
-    {
-      "generated_at": "ISO string",
-      "summary": { total_alerts, winners, losers, open, win_rate, avg_return_pct, ... },
-      "by_scanner": { "EOD": {...}, "INTRADAY": {...}, ... },
-      "by_category": { "Elite Compounder": {...}, ... },
-      "trades": [ { symbol, scanner, category, entry_date, entry_price, current_price,
-                     pnl_pct, status }, ... ],
-      "equity_curve": [ { date, cumulative_return }, ... ],
-      "monthly": [ { month, alerts, wins, win_rate }, ... ]
-    }
-    """
+def build_performance_data():
     logger.info("=" * 70)
     logger.info("📊 PERFORMANCE TRACKER | Building performance data...")
     logger.info("=" * 70)
 
-    if not os.path.exists(DB_PATH):
-        logger.error(f"❌ Database not found at {DB_PATH}")
-        return {}
+    # ── 1. Load all alerts from Postgres ────────────────────────────────────────────
+    try:
+        raw_alerts = get_all_alerts()
+    except Exception:
+        logger.exception("❌ Could not load alerts from database")
+        _write_empty()
+        return
 
-    alerts = load_alerts()
-    if alerts.empty:
+    if not raw_alerts:
         logger.warning("⚠️ No alerts in database yet.")
-        return {"generated_at": datetime.now(IST).isoformat(), "trades": [], "summary": {}}
+        _write_empty()
+        return
 
-    logger.info(f"📋 Loaded {len(alerts)} alert records for {alerts['symbol'].nunique()} unique symbols")
+    logger.info(f"📋 {len(raw_alerts)} total alerts in database")
 
-    # ── FETCH PRICE HISTORY (one batch per unique symbol) ────────────────────────────
-    unique_symbols = alerts["symbol"].unique().tolist()
-    price_cache: dict[str, pd.DataFrame | None] = {}
-
-    for i, sym in enumerate(unique_symbols, 1):
-        logger.info(f"  [{i}/{len(unique_symbols)}] Fetching price history for {sym}")
-        price_cache[sym] = _fetch_price_history(sym)
-        time.sleep(0.3)  # gentle rate limiting
-
-    # ── BUILD TRADE RECORDS ──────────────────────────────────────────────────────────
-    today = datetime.now(IST).date()
+    # ── 2. Build trade objects ───────────────────────────────────────────────────────
     trades = []
+    for row in raw_alerts:
+        symbol       = row["symbol"]
+        alert_date   = row.get("alert_date") or (row["alert_time"][:10] if row.get("alert_time") else "")
+        entry_price  = row.get("entry_price")
 
-    for _, row in alerts.iterrows():
-        symbol        = row["symbol"]
-        alert_date    = row["alert_date"]
-        breakout_type = row["breakout_type"]
-        scanner       = _parse_scanner(breakout_type)
-        category      = _parse_category(breakout_type)
-        signals       = _parse_signals(breakout_type)
+        # Parse category / signals / scanner from breakout_type if not stored separately
+        cat_stored     = row.get("category")
+        scanner_stored = row.get("scanner")
+        sig_stored     = row.get("signals")
 
-        df = price_cache.get(symbol)
-        entry_price   = _get_price_on_date(df, alert_date)
-        current_price = _latest_price(df)
+        category, signals, scanner = _parse_dedup_key(row["breakout_type"])
+        if cat_stored:
+            category = cat_stored
+        if scanner_stored:
+            scanner = scanner_stored
+        if sig_stored:
+            signals = sig_stored
 
-        if entry_price is None or entry_price <= 0:
-            status    = "NO_DATA"
-            pnl_pct   = None
-        elif current_price is None:
-            status    = "NO_DATA"
-            pnl_pct   = None
-        else:
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100
-            days_held = (today - alert_date).days
-
-            if days_held <= 1:
-                status = "OPEN"          # Only held since yesterday — too early to judge
-            elif pnl_pct >= WIN_THRESHOLD_PCT:
-                status = "WIN"
-            elif pnl_pct <= -WIN_THRESHOLD_PCT:
-                status = "LOSS"
-            else:
-                status = "NEUTRAL"
+        days = _days_held(alert_date)
 
         trades.append({
             "symbol":        symbol,
             "scanner":       scanner,
             "category":      category,
             "signals":       signals,
-            "entry_date":    str(alert_date),
-            "entry_price":   round(entry_price, 2) if entry_price else None,
-            "current_price": round(current_price, 2) if current_price else None,
-            "pnl_pct":       round(pnl_pct, 2) if pnl_pct is not None else None,
-            "status":        status,
-            "days_held":     (today - alert_date).days,
+            "entry_date":    alert_date,
+            "entry_price":   entry_price,       # None until we enrich below
+            "current_price": None,              # filled after price fetch
+            "pnl_pct":       None,
+            "days_held":     days,
+            "status":        "OPEN",
+            "score":         row.get("score"),
+            "rsi":           row.get("rsi"),
+            "volume_ratio":  row.get("volume_ratio"),
         })
 
-    # ── SUMMARY STATS ────────────────────────────────────────────────────────────────
-    judged   = [t for t in trades if t["status"] in ("WIN", "LOSS", "NEUTRAL")]
-    winners  = [t for t in judged if t["status"] == "WIN"]
-    losers   = [t for t in judged if t["status"] == "LOSS"]
-    open_pos = [t for t in trades if t["status"] == "OPEN"]
+    # ── 3. Fetch current prices for all symbols ──────────────────────────────────────
+    unique_symbols = list({t["symbol"] for t in trades})
+    logger.info(f"📈 Fetching prices for {len(unique_symbols)} symbols...")
+    current_prices = _fetch_current_prices(unique_symbols)
 
-    win_rate   = (len(winners) / len(judged) * 100) if judged else 0
-    pnl_values = [t["pnl_pct"] for t in judged if t["pnl_pct"] is not None]
-    avg_return = sum(pnl_values) / len(pnl_values) if pnl_values else 0
-    best_trade = max(pnl_values) if pnl_values else 0
-    worst_trade= min(pnl_values) if pnl_values else 0
-    avg_win    = sum(t["pnl_pct"] for t in winners if t["pnl_pct"] is not None) / len(winners) if winners else 0
-    avg_loss   = sum(t["pnl_pct"] for t in losers  if t["pnl_pct"] is not None) / len(losers)  if losers  else 0
+    # ── 4. Enrich trades with prices + P&L ──────────────────────────────────────────
+    for t in trades:
+        sym   = t["symbol"]
+        cur_p = current_prices.get(sym)
+        t["current_price"] = round(cur_p, 2) if cur_p else None
+
+        # Use stored entry_price; if missing use current as proxy (pnl = 0)
+        ep = t["entry_price"]
+        if ep and cur_p:
+            t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
+        elif cur_p and not ep:
+            # No entry price stored — can't judge P&L
+            t["pnl_pct"] = None
+
+        t["status"] = _trade_status(t["pnl_pct"], t["days_held"])
+
+    # ── 5. Compute summary stats ─────────────────────────────────────────────────────
+    judged  = [t for t in trades if t["status"] in ("WIN", "LOSS", "NEUTRAL")]
+    winners = [t for t in judged if t["status"] == "WIN"]
+    losers  = [t for t in judged if t["status"] == "LOSS"]
+    open_p  = [t for t in trades if t["status"] == "OPEN"]
+
+    pnls    = [t["pnl_pct"] for t in judged if t["pnl_pct"] is not None]
+    win_pnl = [t["pnl_pct"] for t in winners if t["pnl_pct"] is not None]
+    los_pnl = [t["pnl_pct"] for t in losers  if t["pnl_pct"] is not None]
+
+    n_judged  = len(judged)
+    wr        = round(len(winners) / n_judged * 100, 1) if n_judged else 0
+    avg_ret   = round(sum(pnls) / len(pnls), 2)          if pnls     else 0
+    avg_win   = round(sum(win_pnl) / len(win_pnl), 2)    if win_pnl  else 0
+    avg_loss  = round(sum(los_pnl) / len(los_pnl), 2)    if los_pnl  else 0
+    best      = round(max(pnls), 2)                       if pnls     else 0
+    worst     = round(min(pnls), 2)                       if pnls     else 0
+    expectancy = round((wr / 100) * avg_win + (1 - wr / 100) * avg_loss, 2)
 
     summary = {
-        "total_alerts":   len(trades),
-        "judged":         len(judged),
-        "winners":        len(winners),
-        "losers":         len(losers),
-        "open_positions": len(open_pos),
-        "win_rate":       round(win_rate, 1),
-        "avg_return_pct": round(avg_return, 2),
-        "avg_win_pct":    round(avg_win, 2),
-        "avg_loss_pct":   round(avg_loss, 2),
-        "best_trade_pct": round(best_trade, 2),
-        "worst_trade_pct":round(worst_trade, 2),
-        "expectancy":     round((win_rate/100 * avg_win) + ((1 - win_rate/100) * avg_loss), 2),
+        "total_alerts":    len(trades),
+        "judged":          n_judged,
+        "winners":         len(winners),
+        "losers":          len(losers),
+        "open_positions":  len(open_p),
+        "win_rate":        wr,
+        "avg_return_pct":  avg_ret,
+        "avg_win_pct":     avg_win,
+        "avg_loss_pct":    avg_loss,
+        "best_trade_pct":  best,
+        "worst_trade_pct": worst,
+        "expectancy":      expectancy,
     }
 
-    # ── BY SCANNER ───────────────────────────────────────────────────────────────────
-    by_scanner: dict[str, dict] = {}
-    for scanner_name in set(t["scanner"] for t in trades):
-        st = [t for t in judged if t["scanner"] == scanner_name]
-        sw = [t for t in st if t["status"] == "WIN"]
-        pnls = [t["pnl_pct"] for t in st if t["pnl_pct"] is not None]
-        by_scanner[scanner_name] = {
-            "total":    len([t for t in trades if t["scanner"] == scanner_name]),
-            "judged":   len(st),
-            "win_rate": round(len(sw) / len(st) * 100, 1) if st else 0,
-            "avg_return": round(sum(pnls) / len(pnls), 2) if pnls else 0,
-        }
-
-    # ── BY CATEGORY ──────────────────────────────────────────────────────────────────
-    by_category: dict[str, dict] = {}
-    for cat_name in set(t["category"] for t in trades):
-        ct = [t for t in judged if t["category"] == cat_name]
-        cw = [t for t in ct if t["status"] == "WIN"]
-        pnls = [t["pnl_pct"] for t in ct if t["pnl_pct"] is not None]
-        by_category[cat_name] = {
-            "total":    len([t for t in trades if t["category"] == cat_name]),
-            "judged":   len(ct),
-            "win_rate": round(len(cw) / len(ct) * 100, 1) if ct else 0,
-            "avg_return": round(sum(pnls) / len(pnls), 2) if pnls else 0,
-        }
-
-    # ── MONTHLY BREAKDOWN ────────────────────────────────────────────────────────────
-    monthly_map: dict[str, dict] = {}
-    for t in judged:
-        month_key = t["entry_date"][:7]  # "YYYY-MM"
-        if month_key not in monthly_map:
-            monthly_map[month_key] = {"alerts": 0, "wins": 0, "pnls": []}
-        monthly_map[month_key]["alerts"] += 1
-        if t["status"] == "WIN":
-            monthly_map[month_key]["wins"] += 1
-        if t["pnl_pct"] is not None:
-            monthly_map[month_key]["pnls"].append(t["pnl_pct"])
-
-    monthly = [
-        {
-            "month":       k,
-            "alerts":      v["alerts"],
-            "wins":        v["wins"],
-            "win_rate":    round(v["wins"] / v["alerts"] * 100, 1) if v["alerts"] else 0,
-            "avg_return":  round(sum(v["pnls"]) / len(v["pnls"]), 2) if v["pnls"] else 0,
-        }
-        for k, v in sorted(monthly_map.items())
-    ]
-
-    # ── EQUITY CURVE (cumulative avg return over time) ───────────────────────────────
+    # ── 6. Equity curve ─────────────────────────────────────────────────────────────
     sorted_judged = sorted(judged, key=lambda t: t["entry_date"])
-    equity_curve  = []
-    running_total = 0.0
-    for i, t in enumerate(sorted_judged, 1):
+    cum = 0.0
+    equity_curve = []
+    for i, t in enumerate(sorted_judged):
         if t["pnl_pct"] is not None:
-            running_total += t["pnl_pct"]
+            cum += t["pnl_pct"]
             equity_curve.append({
                 "date":              t["entry_date"],
                 "symbol":            t["symbol"],
-                "cumulative_return": round(running_total / i, 2),
                 "trade_return":      t["pnl_pct"],
+                "cumulative_return": round(cum / (i + 1), 2),
             })
 
-    # ── ASSEMBLE OUTPUT ──────────────────────────────────────────────────────────────
-    output = {
+    # ── 7. Monthly breakdown ─────────────────────────────────────────────────────────
+    mmap: dict[str, dict] = {}
+    for t in judged:
+        m = t["entry_date"][:7]
+        if m not in mmap:
+            mmap[m] = {"alerts": 0, "wins": 0, "pnls": []}
+        mmap[m]["alerts"] += 1
+        if t["status"] == "WIN":
+            mmap[m]["wins"] += 1
+        if t["pnl_pct"] is not None:
+            mmap[m]["pnls"].append(t["pnl_pct"])
+
+    monthly = []
+    for m in sorted(mmap):
+        v = mmap[m]
+        avg_m = round(sum(v["pnls"]) / len(v["pnls"]), 2) if v["pnls"] else 0
+        monthly.append({
+            "month":      m,
+            "alerts":     v["alerts"],
+            "wins":       v["wins"],
+            "win_rate":   round(v["wins"] / v["alerts"] * 100, 1) if v["alerts"] else 0,
+            "avg_return": avg_m,
+        })
+
+    # ── 8. By scanner ────────────────────────────────────────────────────────────────
+    all_scanners = {t["scanner"] for t in trades}
+    by_scanner: dict[str, dict] = {}
+    for sc in all_scanners:
+        sc_judged = [t for t in judged  if t["scanner"] == sc]
+        sc_wins   = [t for t in sc_judged if t["status"] == "WIN"]
+        sc_pnls   = [t["pnl_pct"] for t in sc_judged if t["pnl_pct"] is not None]
+        by_scanner[sc] = {
+            "total":      len([t for t in trades if t["scanner"] == sc]),
+            "judged":     len(sc_judged),
+            "win_rate":   round(len(sc_wins) / len(sc_judged) * 100, 1) if sc_judged else 0,
+            "avg_return": round(sum(sc_pnls) / len(sc_pnls), 2) if sc_pnls else 0,
+        }
+
+    # ── 9. By category ───────────────────────────────────────────────────────────────
+    all_cats = {t["category"] for t in trades}
+    by_category: dict[str, dict] = {}
+    for cat in all_cats:
+        cat_judged = [t for t in judged  if t["category"] == cat]
+        cat_wins   = [t for t in cat_judged if t["status"] == "WIN"]
+        cat_pnls   = [t["pnl_pct"] for t in cat_judged if t["pnl_pct"] is not None]
+        by_category[cat] = {
+            "total":      len([t for t in trades if t["category"] == cat]),
+            "judged":     len(cat_judged),
+            "win_rate":   round(len(cat_wins) / len(cat_judged) * 100, 1) if cat_judged else 0,
+            "avg_return": round(sum(cat_pnls) / len(cat_pnls), 2) if cat_pnls else 0,
+        }
+
+    # ── 10. Write JSON ───────────────────────────────────────────────────────────────
+    payload = {
         "generated_at": datetime.now(IST).isoformat(),
         "summary":      summary,
-        "by_scanner":   by_scanner,
-        "by_category":  by_category,
         "trades":       sorted(trades, key=lambda t: t["entry_date"], reverse=True),
         "equity_curve": equity_curve,
         "monthly":      monthly,
+        "by_scanner":   by_scanner,
+        "by_category":  by_category,
     }
 
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(OUTPUT_JSON, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    with open(PERF_JSON_PATH, "w") as f:
+        json.dump(payload, f, default=str)
 
-    logger.info(f"✅ Performance data saved → {OUTPUT_JSON}")
     logger.info(
-        f"   Summary | Alerts: {summary['total_alerts']} | "
-        f"Win Rate: {summary['win_rate']}% | "
-        f"Avg Return: {summary['avg_return_pct']}%"
+        f"✅ PERFORMANCE TRACKER | Dashboard refreshed | "
+        f"{len(trades)} alerts | {len(winners)}W / {len(losers)}L / {len(open_p)} open"
     )
 
-    return output
+
+# =====================================================================================
+# EMPTY FALLBACK
+# =====================================================================================
+
+def _write_empty():
+    payload = {
+        "generated_at": datetime.now(IST).isoformat(),
+        "trades":       [],
+        "summary": {
+            "total_alerts": 0, "judged": 0, "winners": 0, "losers": 0,
+            "open_positions": 0, "win_rate": 0, "avg_return_pct": 0,
+            "avg_win_pct": 0, "avg_loss_pct": 0, "best_trade_pct": 0,
+            "worst_trade_pct": 0, "expectancy": 0,
+        },
+        "equity_curve": [],
+        "monthly":      [],
+        "by_scanner":   {},
+        "by_category":  {},
+    }
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(PERF_JSON_PATH, "w") as f:
+        json.dump(payload, f)
+    logger.info("✅ PERFORMANCE TRACKER | Dashboard refreshed (empty — no alerts yet)")
 
 
-# ─────────────────────────────────────────────────────────────────────────────────────
+# =====================================================================================
+# STANDALONE RUN
+# =====================================================================================
 
 if __name__ == "__main__":
-    generate_performance_data()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+    build_performance_data()
