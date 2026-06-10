@@ -325,6 +325,18 @@ def start():
                             rejection_counts["rsi_not_rising"] += 1
                             continue
 
+                    # ── ADX: timeframe-aware floor (matches scoring engine disqualifier) ──────
+                    # EOD=25, 1H=20, 15m=18 — intraday bars naturally read lower ADX
+                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
+                        adx_floor_1h = 20
+                        if float(latest["ADX"]) < adx_floor_1h:
+                            rejection_counts["weak_adx"] += 1
+                            continue
+
+                    # ── EMA20/SMA50/Golden Cross on 1H ───────────────────────────────────────
+                    # 1H EMA20 = last 20 hours (~3.5 trading days): acceptable signal
+                    # 1H SMA50 = last 50 hours (~9 trading days): meaningful
+                    # Keep these checks for 1H — they are less noisy than 15m
                     if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
                         if candle_close < float(latest["EMA20"]):
                             rejection_counts["below_ema20"] += 1
@@ -340,10 +352,7 @@ def start():
                         if float(latest["SMA50"]) < float(latest["SMA200"]):
                             rejection_counts["no_golden_cross"] += 1
                             continue
-                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
-                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
-                            rejection_counts["weak_adx"] += 1
-                            continue
+
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
