@@ -336,7 +336,18 @@ def start():
                 current_atr = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
                 suggested_stop = candle_close - (1.5 * current_atr)
 
-                saved = save_alert_if_new(symbol, dedup_key, ist_now.strftime("%Y-%m-%d %H:%M:%S"))
+                saved = save_alert_if_new(
+                    symbol,
+                    dedup_key,
+                    ist_now.strftime("%Y-%m-%d %H:%M:%S"),
+                    scanner="EOD",
+                    category=category,
+                    entry_price=round(candle_close, 2),
+                    signals=signal_str,
+                    score=score,
+                    rsi=round(rsi_val, 1),
+                    volume_ratio=round(volume_ratio, 2),
+                )
                 if not saved:
                     rejection_counts["duplicate"] += 1
                     continue
