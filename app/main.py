@@ -28,7 +28,6 @@ WINDOWS = {
     "live":        (dt_time(10, 17), dt_time(15, 30)),
     "eod":         (dt_time(18, 30), dt_time(20, 0)),
     "reversal":    (dt_time(18, 45), dt_time(20, 0)),
-    "performance": (dt_time(9, 30),  dt_time(10, 0)),
 }
 
 def wait_for_window(name: str):
@@ -104,28 +103,27 @@ def run_reversal_scanner():
 
 def run_performance_tracker():
     """
-    Every trading day between 09:30–10:00 IST, refreshes performance_data.json
-    every 5 minutes so the dashboard reflects overnight price changes at market open.
-    After 10:00, sleeps until the next day's 09:30 window.
+    Runs every 5 minutes ALL day on weekdays — not just a 30-min morning window.
+    This ensures the dashboard always reflects the latest prices and new alerts
+    regardless of when they fire (intraday, EOD, etc.).
     """
+    from performance_tracker import build_performance_data
+
     while True:
-        wait_for_window("performance")
-        logger.info("📊 PERFORMANCE TRACKER | Morning refresh window open (09:30–10:00 IST)")
+        now = datetime.now(IST)
 
-        while True:
-            now = datetime.now(IST)
-            if now.time() > dt_time(10, 0) or now.weekday() >= 5:
-                logger.info("📊 PERFORMANCE TRACKER | Window closed — sleeping until tomorrow 09:30")
-                break
-            try:
-                from performance_tracker import generate_performance_data
-                generate_performance_data()
-                logger.info("✅ PERFORMANCE TRACKER | Dashboard refreshed")
-            except Exception:
-                logger.exception("❌ PERFORMANCE TRACKER | Refresh failed")
-            time.sleep(300)  # 5 minutes
+        # Skip weekends
+        if now.weekday() >= 5:
+            logger.info("📊 PERFORMANCE TRACKER | Weekend | Sleeping 1 hour...")
+            time.sleep(3600)
+            continue
 
-        time.sleep(3600)
+        try:
+            build_performance_data()
+        except Exception:
+            logger.exception("❌ PERFORMANCE TRACKER | Refresh failed")
+
+        time.sleep(300)  # refresh every 5 minutes all day
 
 # =====================================================================================
 # SELF-HEALING WATCHDOG  (runs in background thread)
@@ -190,9 +188,6 @@ if __name__ == "__main__":
     watchdog_thread.start()
 
     # ── Flask runs in the MAIN thread — Railway health checks pass immediately ────────
-    # This is the critical fix: Railway expects the process to bind to PORT within
-    # a few seconds of startup. Running Flask in a daemon thread meant the main
-    # thread could finish before Flask was ready, causing "application failed to respond".
     try:
         from dashboard_server import start_dashboard_server
         port = int(os.getenv("PORT", 8080))
@@ -201,7 +196,6 @@ if __name__ == "__main__":
     except ImportError:
         logger.error("❌ dashboard_server.py not found — Railway will show 'failed to respond'")
         logger.error("   Make sure dashboard_server.py is in the app/ folder")
-        # Keep the process alive so scanners keep running even without the dashboard
         watchdog_thread.join()
     except Exception:
         logger.exception("❌ Dashboard server crashed")
