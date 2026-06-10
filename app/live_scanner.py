@@ -86,6 +86,10 @@ def start():
         total_alerts       = 0
         alerts_by_category = {}
 
+        logger.info("=" * 80)
+        logger.info(f"⚡ 1H SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("=" * 80)
+
         if datetime.now(IST).date() != _delivery_fetch_date:
             prev_delivery_map    = fetch_previous_day_delivery()
             _delivery_fetch_date = datetime.now(IST).date()
@@ -369,18 +373,7 @@ def start():
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
-                    saved = save_alert_if_new(
-                        symbol,
-                        dedup_key,
-                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                        scanner="1H",
-                        category=category,
-                        entry_price=round(candle_close, 2),
-                        signals=signal_str,
-                        score=score,
-                        rsi=round(float(latest["RSI"]), 1),
-                        volume_ratio=round(volume_ratio, 2),
-                    )
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
@@ -431,6 +424,14 @@ def start():
 
             elapsed    = (datetime.now(IST) - scan_start).total_seconds()
             sleep_time = max(0, 300 - elapsed)
+
+            rejection_summary = " | ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
+            if total_alerts == 0:
+                logger.info("📭 No 1H alerts this cycle")
+            logger.info("=" * 80)
+            logger.info(f"✅ 1H SCAN COMPLETE | {elapsed:.2f}s | Alerts={total_alerts}/{len(watchlist)}")
+            if rejection_summary:
+                logger.info(f"   Rejections: {rejection_summary}")
 
         except Exception:
             logger.exception("❌ CRITICAL 1H SCAN ERROR — will retry next cycle")
