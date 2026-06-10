@@ -1,6 +1,6 @@
 # =====================================================================================
-# app/intraday.py (ULTIMATE EDITION)
-# EARLY MOMENTUM SCANNER — 15M BARS + MULTI-TIMEFRAME ALIGNMENT + MORNING FILTER
+# app/live_scanner.py (ULTIMATE EDITION)
+# TREND CONFIRMATION SCANNER — 1H BARS + MULTI-TIMEFRAME ALIGNMENT
 # =====================================================================================
 
 import os
@@ -20,16 +20,17 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_previous_day_delivery
-from price_cache import fetch_watchlist_data  
+from price_cache import fetch_watchlist_data 
 
-from sector_rotation import get_sector_scores  
+from sector_rotation import get_sector_scores
 
 from config import (
     WATCHLIST_PATH,
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
+    BATCH_DOWNLOAD_SIZE,
     DEDUP_DAYS,
-    ADX_MIN_THRESHOLD,   
+    ADX_MIN_THRESHOLD, 
 )
 
 logging.basicConfig(
@@ -41,38 +42,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
-CHUNK_SIZE = 10   
+CHUNK_SIZE = 10  
 
-TIMEFRAME        = "15m"
-MIN_SIGNALS      = SCAN_CONFIG["15m"]["MIN_SIGNALS"]
-MIN_BODY_RATIO   = SCAN_CONFIG["15m"]["MIN_BODY_RATIO"]
-MIN_CLOSE_POSITION = SCAN_CONFIG["15m"]["MIN_CLOSE_POSITION"]
-MAX_UPPER_WICK   = SCAN_CONFIG["15m"]["MAX_UPPER_WICK"]
-MIN_VOLUME_RATIO = SCAN_CONFIG["15m"]["MIN_VOLUME_RATIO"]
-MIN_VOLUME_AVG   = SCAN_CONFIG["15m"]["MIN_VOLUME_AVG"]
-MIN_RSI          = SCAN_CONFIG["15m"]["MIN_RSI"]
-MAX_RSI          = SCAN_CONFIG["15m"]["MAX_RSI"]
-MIN_SCORE        = SCORE_THRESHOLDS["15m"]
+TIMEFRAME               = "1h"
+MIN_SIGNALS             = SCAN_CONFIG["1h"]["MIN_SIGNALS"]
+MIN_BODY_RATIO          = SCAN_CONFIG["1h"]["MIN_BODY_RATIO"]
+MIN_CLOSE_POSITION      = SCAN_CONFIG["1h"]["MIN_CLOSE_POSITION"]
+MAX_UPPER_WICK_RATIO    = SCAN_CONFIG["1h"]["MAX_UPPER_WICK"]
+MIN_VOLUME_RATIO        = SCAN_CONFIG["1h"]["MIN_VOLUME_RATIO"]
+MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1h"]["MIN_VOLUME_AVG"]
+MIN_RSI                 = SCAN_CONFIG["1h"]["MIN_RSI"]
+MAX_RSI                 = SCAN_CONFIG["1h"]["MAX_RSI"]
+MIN_SCORE               = SCORE_THRESHOLDS["1h"]
 
-MIN_STOCK_PRICE   = 50.0
-RSI_LOOKBACK_BARS = 5      
+MIN_STOCK_PRICE             = 50.0
+RSI_LOOKBACK_BARS           = 3
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
-MAX_SINGLE_BAR_MOVE_PCT        = 6.0
+MAX_SINGLE_CANDLE_MOVE_PCT  = 6.0
 MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   
 GAP_LOOKBACK_BARS           = 10    
 
+# ✅ NOTE: No macro regime check in this scanner — alerts fire irrespective of market trend.
 
 def start():
     init_db()
     cleanup_old_alerts(days=DEDUP_DAYS)
-
+    
     prev_delivery_map    = fetch_previous_day_delivery()
     _delivery_fetch_date = datetime.now(IST).date()
-    if prev_delivery_map:
-        logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
 
     # ── SESSION-LEVEL CACHES (survive across scan cycles) ───────────────────────────
-    # 15m data: ALWAYS re-fetched every cycle — new bar arrives every 15 min
+    # 1h  data: ALWAYS re-fetched every cycle — a new bar closes every 60 minutes
     # 1d  data: cached for the full trading day — daily bars don't change intraday
     # watchlist: cached by file mtime — rebuilt only once per day by daily_builder
     _daily_context_data: dict  = {}
@@ -85,19 +85,20 @@ def start():
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
         weekday      = ist_now.weekday()
-        
-        market_open  = dt_time(9, 32) <= current_time <= dt_time(15, 35)
-        
+
+        market_open = dt_time(10, 17) <= current_time <= dt_time(15, 35)
+
         if weekday >= 5 or not market_open:
-            logger.info("📅 Outside market hours | Sleeping 5 minutes")
+            logger.info("⏰ Outside 1H window | sleep 5m")
             time.sleep(300)
             continue
 
-        # ✅ FIX: Macro regime check removed — alerts fire irrespective of market trend.
-        
-        scan_start = datetime.now(IST)
+        scan_start         = datetime.now(IST)
+        total_alerts       = 0
+        alerts_by_category = {}
+
         logger.info("=" * 80)
-        logger.info(f"⚡ INTRADAY SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"⚡ 1H SCAN START | {scan_start.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
 
         # ── Refresh delivery map once per calendar day ───────────────────────────────
@@ -108,11 +109,10 @@ def start():
         sleep_time = 300  
         try:
             # ── WATCHLIST: reload only if file has changed on disk ───────────────────
-            # daily_builder.py rewrites this file once overnight; mtime detects that.
             try:
                 current_mtime = os.path.getmtime(WATCHLIST_PATH)
                 if _watchlist is None or current_mtime != _watchlist_mtime:
-                    _watchlist      = pd.read_parquet(WATCHLIST_PATH)
+                    _watchlist       = pd.read_parquet(WATCHLIST_PATH)
                     _watchlist_mtime = current_mtime
                     logger.info(f"📋 Watchlist loaded/refreshed | {len(_watchlist)} stocks")
                 watchlist = _watchlist
@@ -128,7 +128,7 @@ def start():
                     continue
 
             # ── DATA DOWNLOAD STRATEGY ───────────────────────────────────────────────
-            # 15m bars : ALWAYS downloaded fresh — a new bar closes every 15 minutes
+            # 1h  bars : ALWAYS downloaded fresh — a new bar closes every 60 minutes
             # 1d  bars : downloaded ONCE per day — daily OHLCV does not change intraday
             #            Refreshed at midnight (date change) or on first run of the day
             today = datetime.now(IST).date()
@@ -138,44 +138,43 @@ def start():
             )
 
             if need_daily_refresh:
-                # Download both 15m and daily in parallel on first run of the day
+                # Download both 1h and daily in parallel on first run of the day
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    future_15m = pool.submit(fetch_watchlist_data, watchlist, "10d", "15m")
-                    future_1d  = pool.submit(fetch_watchlist_data, watchlist, "60d", "1d")
-                    all_ticker_data    = future_15m.result()
+                    future_1h = pool.submit(fetch_watchlist_data, watchlist, "60d", "1h")
+                    future_1d = pool.submit(fetch_watchlist_data, watchlist, "60d", "1d")
+                    all_ticker_data     = future_1h.result()
                     _daily_context_data = future_1d.result()
                     _daily_context_date = today
                 logger.info(
-                    f"📥 Full download | 15m: {len(all_ticker_data)} | "
+                    f"📥 Full download | 1h: {len(all_ticker_data)} | "
                     f"Daily (fresh): {len(_daily_context_data)}"
                 )
             else:
-                # Only re-download 15m — daily context is still valid for today
-                all_ticker_data = fetch_watchlist_data(watchlist, "10d", "15m")
+                # Only re-download 1h — daily context is still valid for today
+                all_ticker_data = fetch_watchlist_data(watchlist, "60d", "1h")
                 logger.info(
-                    f"📥 15m refresh only | {len(all_ticker_data)} stocks | "
+                    f"📥 1h refresh only | {len(all_ticker_data)} stocks | "
                     f"Daily context cached ({_daily_context_date})"
                 )
 
             daily_context_data = _daily_context_data
             # ────────────────────────────────────────────────────────────────────────
-            
+
             try:
                 rotation_result = get_sector_scores()
             except Exception:
                 from sector_rotation import SectorRotationResult
                 rotation_result = SectorRotationResult({}, set(), set(), "", date.today(), 0.0)
-            
-            alerts_by_category = {}
-            rejection_counts   = {k: 0 for k in [
+
+            rejection_counts = {k: 0 for k in [
                 "no_data", "missing_col", "forming_candle_stripped", "insufficient_bars", 
                 "indicator_fail", "weak_signals", "weak_body", "bearish_candle", 
                 "weak_close_pos", "upper_wick", "low_volume", "low_avg_volume", 
-                "penny_stock", "rsi_range", "rsi_not_rising", "weak_adx", "below_ema20", 
-                "below_sma50", "no_golden_cross", "macd_bearish", "far_from_52w_high", 
-                "gap_bar", "extended_breakout", "below_daily_ema20", "low_score", "duplicate", "stale_data"
+                "penny_stock", "rsi_range", "rsi_not_rising", "below_ema20", 
+                "below_sma50", "no_golden_cross", "weak_adx", "macd_bearish", 
+                "far_from_52w_high", "gap_candle", "extended_breakout", "below_daily_ema20", "low_score", 
+                "duplicate", "stale_data"
             ]}
-            total_alerts = 0
 
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
                 symbol = "UNKNOWN"
@@ -227,7 +226,7 @@ def start():
                             if raw_ts.tzinfo is not None:
                                 raw_ts = raw_ts.tz_convert("Asia/Kolkata")
                             candle_start = raw_ts.replace(tzinfo=None)
-                            candle_end   = candle_start + pd.Timedelta(minutes=15)
+                            candle_end   = candle_start + pd.Timedelta(minutes=60)
                             now_naive    = datetime.now(IST).replace(tzinfo=None)
                             if now_naive < candle_end:
                                 ticker = ticker.iloc[:-1].copy()
@@ -236,7 +235,7 @@ def start():
                             pass
 
                     # ── STALE DATA CHECK (before indicator calc to avoid wasted work) ──
-                    _stale_col = next((c for c in ["Datetime", "Date"] if c in ticker.columns), None)
+                    _stale_col = next((c for c in ["Datetime", "Date", "index"] if c in ticker.columns), None)
                     if _stale_col:
                         try:
                             _last_ts = pd.to_datetime(ticker.iloc[-1][_stale_col])
@@ -249,17 +248,17 @@ def start():
                             pass
                     # ────────────────────────────────────────────────────────────────────
 
-                    if len(ticker) < 105:
+                    if len(ticker) < 100:
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
-                    ticker = apply_indicators(ticker, timeframe=TIMEFRAME)
+                    ticker = apply_indicators(ticker, timeframe="1h")
 
                     if ticker is None or ticker.empty:
                         rejection_counts["indicator_fail"] += 1
                         continue
 
-                    signals = detect_breakouts(ticker, timeframe=TIMEFRAME)
+                    signals = detect_breakouts(ticker, timeframe="1h")
 
                     if len(signals) < MIN_SIGNALS:
                         rejection_counts["weak_signals"] += 1
@@ -267,10 +266,10 @@ def start():
 
                     latest = ticker.iloc[-1]
 
+                    # (stale check already done above before indicator computation)
+
                     if "RSI" not in ticker.columns or pd.isna(latest["RSI"]):
                         continue
-
-                    # (stale check already done above before indicator computation)
 
                     latest_volume = float(latest["Volume"])
                     avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
@@ -305,20 +304,13 @@ def start():
                     if close_position < MIN_CLOSE_POSITION:
                         rejection_counts["weak_close_pos"] += 1
                         continue
-                    if wick_ratio > MAX_UPPER_WICK:
+                    if wick_ratio > MAX_UPPER_WICK_RATIO:
                         rejection_counts["upper_wick"] += 1
                         continue
-                        
-                    # ── DYNAMIC MORNING VOLATILITY FILTER ────────────────────────────────────
-                    is_morning_rush = current_time < dt_time(10, 0)
-                    required_vol_ratio = 4.0 if is_morning_rush else MIN_VOLUME_RATIO
-                    
-                    if volume_ratio < required_vol_ratio:
+                    if volume_ratio < MIN_VOLUME_RATIO:
                         rejection_counts["low_volume"] += 1
                         continue
-                    # ────────────────────────────────────────────────────────────────────────
-
-                    if avg_volume < MIN_VOLUME_AVG:
+                    if avg_volume < MIN_AVG_VOLUME_SHARES:
                         rejection_counts["low_avg_volume"] += 1
                         continue
                     if candle_close < MIN_STOCK_PRICE:
@@ -327,28 +319,20 @@ def start():
                     if not (MIN_RSI <= rsi_val <= MAX_RSI):
                         rejection_counts["rsi_range"] += 1
                         continue
-
                     if len(ticker) > RSI_LOOKBACK_BARS:
                         rsi_prev = float(ticker["RSI"].iloc[-1 - RSI_LOOKBACK_BARS])
                         if rsi_val <= rsi_prev:
                             rejection_counts["rsi_not_rising"] += 1
                             continue
 
-                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
-                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
-                            rejection_counts["weak_adx"] += 1
-                            continue
-
                     if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")):
                         if candle_close < float(latest["EMA20"]):
                             rejection_counts["below_ema20"] += 1
                             continue
-
                     if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")):
                         if candle_close < float(latest["SMA50"]):
                             rejection_counts["below_sma50"] += 1
                             continue
-
                     if (
                         "SMA50" in ticker.columns and "SMA200" in ticker.columns and
                         not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
@@ -356,7 +340,10 @@ def start():
                         if float(latest["SMA50"]) < float(latest["SMA200"]):
                             rejection_counts["no_golden_cross"] += 1
                             continue
-
+                    if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
+                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                            rejection_counts["weak_adx"] += 1
+                            continue
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
                         not pd.isna(latest.get("MACD")) and not pd.isna(latest.get("MACD_SIGNAL"))
@@ -385,13 +372,12 @@ def start():
                             if pct_from_high > MAX_DISTANCE_FROM_52W_HIGH_PCT:
                                 rejection_counts["far_from_52w_high"] += 1
                                 continue
-
                     if len(ticker) >= 2:
                         prev_close = float(ticker["Close"].iloc[-2])
                         if prev_close > 0:
                             single_move_pct = abs(candle_close - prev_close) / prev_close * 100
-                            if single_move_pct > MAX_SINGLE_BAR_MOVE_PCT:
-                                rejection_counts["gap_bar"] += 1
+                            if single_move_pct > MAX_SINGLE_CANDLE_MOVE_PCT:
+                                rejection_counts["gap_candle"] += 1
                                 continue
 
                     if len(ticker) >= GAP_LOOKBACK_BARS + 1:
@@ -413,9 +399,9 @@ def start():
                         ticker=ticker,
                         latest=latest,
                         symbol=symbol,
-                        timeframe=TIMEFRAME,
+                        timeframe="1h",
                         delivery_pct=delivery_pct,
-                        min_vol=MIN_VOLUME_AVG,
+                        min_vol=MIN_AVG_VOLUME_SHARES,
                     )
 
                     if score > 0:
@@ -432,20 +418,9 @@ def start():
 
                     signal_str = ", ".join(signals.keys() if isinstance(signals, dict) else signals)
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
-                    dedup_key  = f"{category}|{signal_str}|{today_str}|INTRADAY"
+                    dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
-                    saved = save_alert_if_new(
-                        symbol,
-                        dedup_key,
-                        datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                        scanner="INTRADAY",
-                        category=category,
-                        entry_price=round(candle_close, 2),
-                        signals=signal_str,
-                        score=score,
-                        rsi=round(float(latest["RSI"]), 1),
-                        volume_ratio=round(volume_ratio, 2),
-                    )
+                    saved = save_alert_if_new(symbol, dedup_key, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
@@ -453,9 +428,9 @@ def start():
                     current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
                     suggested_stop = candle_close - (1.5 * current_atr)
 
-                    above_ema20 = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
-                    above_sma50 = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
-                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None
+                    above_ema20  = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
+                    above_sma50  = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
 
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
@@ -481,33 +456,33 @@ def start():
                     total_alerts += 1
 
                 except Exception:
-                    logger.exception(f"❌ UNHANDLED ERROR processing {symbol}")
-            
+                    logger.exception(f"❌ Error processing {symbol}")
+
             scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-            
-            if total_alerts == 0:
-                logger.info("📭 No INTRADAY alerts this cycle")
-            else:
+
+            if total_alerts > 0:
                 for cat in sorted(alerts_by_category.keys()):
                     cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-                    chunks = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
-                    for chunk_num, chunk in enumerate(chunks, 1):
-                        msg = build_message("INTRADAY", cat, chunk, chunk_num, len(chunks), scan_time)
-                        send_telegram_message(msg, scan_type="INTRADAY")
+                    chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
 
-            duration = (datetime.now(IST) - scan_start).total_seconds()
+                    for chunk_num, chunk in enumerate(chunks, start=1):
+                        msg = build_message("1H", cat, chunk, chunk_num, len(chunks), scan_time)
+                        send_telegram_message(msg, scan_type="1H")
+
+            elapsed    = (datetime.now(IST) - scan_start).total_seconds()
+            sleep_time = max(0, 300 - elapsed)
+
+            rejection_summary = " | ".join(f"{k}={v}" for k, v in rejection_counts.items() if v > 0)
+            if total_alerts == 0:
+                logger.info("📭 No 1H alerts this cycle")
             logger.info("=" * 80)
-            logger.info(f"✅ INTRADAY SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")
-
-            fired = {k: v for k, v in rejection_counts.items() if v > 0}
-            if fired:
-                logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
-
-            elapsed     = (datetime.now(IST) - scan_start).total_seconds()
-            sleep_time  = max(0, 300 - elapsed)
-            time.sleep(sleep_time)
+            logger.info(f"✅ 1H SCAN COMPLETE | {elapsed:.2f}s | Alerts={total_alerts}/{len(watchlist)}")
+            if rejection_summary:
+                logger.info(f"   Rejections: {rejection_summary}")
 
         except Exception:
-            logger.exception("❌ CRITICAL SCAN ERROR")
+            logger.exception("❌ CRITICAL 1H SCAN ERROR — will retry next cycle")
             elapsed    = (datetime.now(IST) - scan_start).total_seconds()
-            time.sleep(max(0, 300 - elapsed))
+            sleep_time = max(0, 300 - elapsed)
+
+        time.sleep(sleep_time)
