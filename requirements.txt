@@ -7,3 +7,4 @@ pyarrow
 requests
 tqdm
 openpyxl
+flask
