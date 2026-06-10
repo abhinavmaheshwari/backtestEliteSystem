@@ -14,6 +14,50 @@ from datetime import datetime
 from tradingview_screener import Query, col
 from config import WATCHLIST_PATH
 
+# ── SEND GUARD — persisted in Postgres so restarts never re-send ────────────────────
+
+def _already_sent_today() -> bool:
+    """Returns True if the fundamental watchlist was already dispatched today."""
+    try:
+        from database import get_connection
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS daily_send_log (
+                        send_date TEXT PRIMARY KEY
+                    )
+                    """
+                )
+                cur.execute(
+                    "SELECT 1 FROM daily_send_log WHERE send_date = %s",
+                    (datetime.now().strftime("%Y-%m-%d"),)
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False  # if DB unreachable, allow send rather than silently suppress
+
+def _mark_sent_today():
+    """Persist today's date to Postgres so restarts don't re-send."""
+    try:
+        from database import get_connection
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS daily_send_log (
+                        send_date TEXT PRIMARY KEY
+                    )
+                    """
+                )
+                cur.execute(
+                    "INSERT INTO daily_send_log (send_date) VALUES (%s) ON CONFLICT DO NOTHING",
+                    (datetime.now().strftime("%Y-%m-%d"),)
+                )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"⚠️ Could not write send guard to DB: {e}")
+
 # ── LOGGING SETUP ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -506,8 +550,12 @@ def main():
     print(final_df.head(10).to_string(index=False))
 
     # =================================================================================
-    # EMAIL DISPATCH WITH TELEGRAM FALLBACK (EXACTLY ONCE)
+    # EMAIL DISPATCH WITH TELEGRAM FALLBACK (EXACTLY ONCE PER DAY)
     # =================================================================================
+    if _already_sent_today():
+        logger.info("📧 Fundamental watchlist already dispatched today — skipping send (restart guard).")
+        return
+
     try:
         from email_engine import send_html_email
         logger.info("📧 Attempting to email fundamental watchlist...")
@@ -576,6 +624,11 @@ def main():
     except Exception as e:
         logger.error(f"❌ CRITICAL ERROR in dispatch block: {e}")
         logger.error(traceback.format_exc())
+        return
+
+    # Mark as sent AFTER successful dispatch so a crash mid-send doesn't suppress the next attempt
+    _mark_sent_today()
+    logger.info("✅ Send guard updated — will not re-send today on restart")
 
 # =====================================================================================
 # ALIAS
