@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scanner Performance Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  /* ── TOKENS ── */
+  :root {
+    --bg:        #0b0e14;
+    --surface:   #13182000;
+    --card:      #1a2030;
+    --card2:     #1e2538;
+    --border:    #2a3248;
+    --accent:    #00e5a0;
+    --accent2:   #4f8fff;
+    --accent3:   #f7b731;
+    --warn:      #ff4f6b;
+    --text:      #e2e8f0;
+    --muted:     #7a8ba8;
+    --win:       #00e5a0;
+    --loss:      #ff4f6b;
+    --neutral:   #7a8ba8;
+    --open:      #4f8fff;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    --font-body: 'Inter', system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ── HEADER ── */
+  .header {
+    background: linear-gradient(135deg, #131a2e 0%, #0d1220 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .header-left h1 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: var(--text);
+  }
+  .header-left h1 span { color: var(--accent); }
+  .header-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+    font-family: var(--font-mono);
+  }
+  .refresh-btn {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    transition: all .15s;
+  }
+  .refresh-btn:hover { background: var(--card2); border-color: var(--accent); }
+
+  /* ── LAYOUT ── */
+  .container { max-width: 1340px; margin: 0 auto; padding: 24px 20px; }
+
+  /* ── KPI ROW ── */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .kpi {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--kpi-accent, var(--accent));
+  }
+  .kpi-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .kpi-value {
+    font-size: 26px;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    color: var(--kpi-color, var(--text));
+    line-height: 1;
+  }
+  .kpi-sub { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+  /* ── GRID 2-COL ── */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 900px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+
+  /* ── CARD ── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── CHART WRAPPER ── */
+  .chart-wrap { position: relative; height: 220px; }
+  .chart-wrap-tall { position: relative; height: 280px; }
+
+  /* ── TABLE ── */
+  .tbl-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  thead th {
+    background: #111827;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr {
+    border-bottom: 1px solid rgba(42,50,72,.5);
+    transition: background .1s;
+  }
+  tbody tr:hover { background: rgba(79,143,255,.05); }
+  tbody td {
+    padding: 8px 10px;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  /* ── BADGES ── */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .badge-win  { background: rgba(0,229,160,.12); color: var(--win); }
+  .badge-loss { background: rgba(255,79,107,.12); color: var(--loss); }
+  .badge-open { background: rgba(79,143,255,.12); color: var(--open); }
+  .badge-neutral { background: rgba(122,139,168,.12); color: var(--neutral); }
+  .badge-scanner {
+    background: rgba(247,183,49,.1);
+    color: var(--accent3);
+    font-family: var(--font-mono);
+  }
+
+  /* ── PNL COLOURING ── */
+  .pos { color: var(--win); }
+  .neg { color: var(--loss); }
+  .flat { color: var(--muted); }
+
+  /* ── TABS ── */
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    transition: all .15s;
+  }
+  .tab.active, .tab:hover {
+    background: var(--card2);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ── FILTER BAR ── */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .filter-bar select, .filter-bar input {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+  }
+  .filter-bar select:focus, .filter-bar input:focus { border-color: var(--accent); }
+
+  /* ── EMPTY STATE ── */
+  .empty {
+    text-align: center;
+    padding: 48px;
+    color: var(--muted);
+  }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
+
+  /* ── LOADING ── */
+  #loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #main { display: none; }
+
+  /* ── SCANNER BARS ── */
+  .scanner-stat {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(42,50,72,.4);
+  }
+  .scanner-stat:last-child { border-bottom: none; }
+  .scanner-name {
+    width: 90px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent3);
+    font-weight: 700;
+  }
+  .scanner-bar-wrap { flex: 1; background: var(--border); border-radius: 3px; height: 6px; }
+  .scanner-bar { height: 6px; border-radius: 3px; background: var(--accent); transition: width .6s ease; }
+  .scanner-numbers { font-family: var(--font-mono); font-size: 11px; color: var(--muted); text-align: right; min-width: 100px; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div style="color:var(--muted);font-family:var(--font-mono);font-size:13px;">Loading performance data…</div>
+</div>
+
+<div id="main">
+
+  <!-- ── HEADER ── -->
+  <div class="header">
+    <div class="header-left">
+      <h1>Scanner <span>Performance</span></h1>
+      <div class="header-sub" id="gen-time">—</div>
+    </div>
+    <button class="refresh-btn" onclick="location.reload()">⟳ Refresh</button>
+  </div>
+
+  <div class="container">
+
+    <!-- ── KPIs ── -->
+    <div class="kpi-row" id="kpis"></div>
+
+    <!-- ── ROW 1: equity curve + monthly bar ── -->
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">📈 Equity Curve (avg return per trade)</div>
+        <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📅 Monthly Win Rate</div>
+        <div class="chart-wrap"><canvas id="monthlyChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- ── ROW 2: by-scanner + by-category + distribution ── -->
+    <div class="grid3">
+      <div class="card">
+        <div class="card-title">🔬 By Scanner</div>
+        <div id="scannerStats"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🏷 By Category</div>
+        <div class="chart-wrap"><canvas id="categoryChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">📊 Return Distribution</div>
+        <div class="chart-wrap"><canvas id="distChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- ── TRADE TABLE ── -->
+    <div class="card">
+      <div class="card-title">📋 All Trades</div>
+
+      <div class="filter-bar">
+        <select id="filterScanner">
+          <option value="">All Scanners</option>
+        </select>
+        <select id="filterStatus">
+          <option value="">All Status</option>
+          <option value="WIN">Win</option>
+          <option value="LOSS">Loss</option>
+          <option value="OPEN">Open</option>
+          <option value="NEUTRAL">Neutral</option>
+        </select>
+        <select id="filterCategory">
+          <option value="">All Categories</option>
+        </select>
+        <input id="filterSymbol" type="text" placeholder="Search symbol…" style="width:140px">
+        <span id="tradeCount" style="margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--muted)"></span>
+      </div>
+
+      <div class="tbl-wrap">
+        <table id="tradeTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Date</th>
+              <th>Scanner</th>
+              <th>Category</th>
+              <th>Entry ₹</th>
+              <th>Current ₹</th>
+              <th>P&L %</th>
+              <th>Days</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="tradeBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /container -->
+</div><!-- /main -->
+
+<script>
+// ── CHART DEFAULTS ──────────────────────────────────────────────────────────────────
+const C = {
+  bg:     '#0b0e14',
+  card:   '#1a2030',
+  border: '#2a3248',
+  text:   '#e2e8f0',
+  muted:  '#7a8ba8',
+  accent: '#00e5a0',
+  accent2:'#4f8fff',
+  accent3:'#f7b731',
+  warn:   '#ff4f6b',
+};
+
+Chart.defaults.color        = C.muted;
+Chart.defaults.borderColor  = C.border;
+Chart.defaults.font.family  = "'JetBrains Mono', monospace";
+Chart.defaults.font.size    = 11;
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────────────
+const pct = v => v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) + '%' : '—';
+const pctClass = v => v == null ? 'flat' : v > 0 ? 'pos' : v < 0 ? 'neg' : 'flat';
+const badge = status => {
+  const map = { WIN:'badge-win', LOSS:'badge-loss', OPEN:'badge-open', NEUTRAL:'badge-neutral', NO_DATA:'badge-neutral' };
+  return `<span class="badge ${map[status]||'badge-neutral'}">${status}</span>`;
+};
+
+// ── LOAD DATA ────────────────────────────────────────────────────────────────────────
+async function loadData() {
+  // Try to load performance_data.json sitting next to this HTML file
+  // (i.e. data/performance_data.json relative to the app root)
+  const candidates = [
+    '../data/performance_data.json',
+    './data/performance_data.json',
+    'performance_data.json',
+  ];
+  for (const url of candidates) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return r.json();
+    } catch {}
+  }
+
+  // ── DEMO FALLBACK (when opened standalone, no server) ───────────────────────────
+  console.warn('performance_data.json not found — rendering with demo data');
+  return getDemoData();
+}
+
+function getDemoData() {
+  const scanners = ['EOD','INTRADAY','1H','REVERSAL'];
+  const cats = ['Elite Compounder','High Growth','Steady Compounder','Mature Quality','Turnaround'];
+  const trades = [];
+  const rng = (lo,hi) => lo + Math.random()*(hi-lo);
+  const today = new Date();
+
+  for (let i = 0; i < 80; i++) {
+    const d = new Date(today); d.setDate(d.getDate() - Math.floor(rng(1,90)));
+    const entry = Math.round(rng(100,3000)*100)/100;
+    const pnl   = Math.round(rng(-18,30)*100)/100;
+    const cur   = Math.round(entry*(1+pnl/100)*100)/100;
+    const days  = Math.floor(rng(1,90));
+    const st    = days<=1?'OPEN': pnl>=2?'WIN': pnl<=-2?'LOSS':'NEUTRAL';
+    trades.push({
+      symbol: ['RELIANCE','INFY','HDFCBANK','TCS','ICICIBANK','TATAMOTORS','WIPRO','ADANIENT','LT','SBIN'][i%10],
+      scanner: scanners[i%4],
+      category: cats[i%5],
+      signals: '52W Breakout, Weekly Breakout',
+      entry_date: d.toISOString().slice(0,10),
+      entry_price: entry,
+      current_price: cur,
+      pnl_pct: pnl,
+      status: st,
+      days_held: days,
+    });
+  }
+
+  const judged = trades.filter(t=>['WIN','LOSS','NEUTRAL'].includes(t.status));
+  const wins   = judged.filter(t=>t.status==='WIN');
+  const pnls   = judged.map(t=>t.pnl_pct);
+  const avg    = pnls.reduce((a,b)=>a+b,0)/pnls.length;
+  const avgW   = wins.map(t=>t.pnl_pct).reduce((a,b)=>a+b,0)/wins.length||0;
+  const avgL   = judged.filter(t=>t.status==='LOSS').map(t=>t.pnl_pct).reduce((a,b)=>a+b,0)/judged.filter(t=>t.status==='LOSS').length||0;
+  const wr     = wins.length/judged.length*100;
+
+  // Monthly
+  const mmap={};
+  judged.forEach(t=>{const m=t.entry_date.slice(0,7); if(!mmap[m])mmap[m]={a:0,w:0,p:[]};mmap[m].a++;if(t.status==='WIN')mmap[m].w++;mmap[m].p.push(t.pnl_pct);});
+  const monthly=Object.entries(mmap).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>({month:k,alerts:v.a,wins:v.w,win_rate:Math.round(v.w/v.a*100*10)/10,avg_return:Math.round(v.p.reduce((a,b)=>a+b,0)/v.p.length*100)/100}));
+
+  // Equity curve
+  let cum=0; const ec=judged.sort((a,b)=>a.entry_date.localeCompare(b.entry_date)).map((t,i)=>{cum+=t.pnl_pct;return{date:t.entry_date,symbol:t.symbol,cumulative_return:Math.round(cum/(i+1)*100)/100,trade_return:t.pnl_pct};});
+
+  // By scanner
+  const bySc={};
+  scanners.forEach(s=>{const st=judged.filter(t=>t.scanner===s);const sw=st.filter(t=>t.status==='WIN');const ps=st.map(t=>t.pnl_pct);bySc[s]={total:trades.filter(t=>t.scanner===s).length,judged:st.length,win_rate:st.length?Math.round(sw.length/st.length*1000)/10:0,avg_return:ps.length?Math.round(ps.reduce((a,b)=>a+b,0)/ps.length*100)/100:0};});
+
+  // By cat
+  const byCat={};
+  cats.forEach(c=>{const ct=judged.filter(t=>t.category===c);const cw=ct.filter(t=>t.status==='WIN');const pc=ct.map(t=>t.pnl_pct);byCat[c]={total:trades.filter(t=>t.category===c).length,judged:ct.length,win_rate:ct.length?Math.round(cw.length/ct.length*1000)/10:0,avg_return:pc.length?Math.round(pc.reduce((a,b)=>a+b,0)/pc.length*100)/100:0};});
+
+  return {
+    generated_at: new Date().toISOString(),
+    summary:{total_alerts:trades.length,judged:judged.length,winners:wins.length,losers:judged.filter(t=>t.status==='LOSS').length,open_positions:trades.filter(t=>t.status==='OPEN').length,win_rate:Math.round(wr*10)/10,avg_return_pct:Math.round(avg*100)/100,avg_win_pct:Math.round(avgW*100)/100,avg_loss_pct:Math.round(avgL*100)/100,best_trade_pct:Math.max(...pnls).toFixed(2)*1,worst_trade_pct:Math.min(...pnls).toFixed(2)*1,expectancy:Math.round((wr/100*avgW+(1-wr/100)*avgL)*100)/100},
+    by_scanner: bySc,
+    by_category: byCat,
+    trades: trades.sort((a,b)=>b.entry_date.localeCompare(a.entry_date)),
+    equity_curve: ec,
+    monthly,
+  };
+}
+
+// ── RENDER ───────────────────────────────────────────────────────────────────────────
+function renderKPIs(s) {
+  const defs = [
+    { label:'Total Alerts',  value: s.total_alerts,               sub:'all time',            accent: C.accent2 },
+    { label:'Win Rate',      value: s.win_rate+'%',               sub:`${s.winners}W / ${s.losers}L`, accent: s.win_rate>=55?C.accent:s.win_rate>=45?C.accent3:C.warn, color: s.win_rate>=55?C.accent:s.win_rate>=45?C.accent3:C.warn },
+    { label:'Avg Return',    value: pct(s.avg_return_pct),        sub:'per trade (judged)',  accent: s.avg_return_pct>=0?C.accent:C.warn, color: s.avg_return_pct>=0?C.accent:C.warn },
+    { label:'Avg Win',       value: pct(s.avg_win_pct),           sub:'winners only',        accent: C.accent },
+    { label:'Avg Loss',      value: pct(s.avg_loss_pct),          sub:'losers only',         accent: C.warn, color: C.warn },
+    { label:'Expectancy',    value: pct(s.expectancy),            sub:'E = WR×avgW + (1-WR)×avgL', accent: s.expectancy>=0?C.accent:C.warn, color: s.expectancy>=0?C.accent:C.warn },
+    { label:'Best Trade',    value: pct(s.best_trade_pct),        sub:'',                    accent: C.accent, color: C.accent },
+    { label:'Worst Trade',   value: pct(s.worst_trade_pct),       sub:'',                    accent: C.warn, color: C.warn },
+    { label:'Open Positions',value: s.open_positions,             sub:'awaiting close',      accent: C.accent2, color: C.accent2 },
+  ];
+  document.getElementById('kpis').innerHTML = defs.map(d => `
+    <div class="kpi" style="--kpi-accent:${d.accent||C.accent};--kpi-color:${d.color||C.text}">
+      <div class="kpi-label">${d.label}</div>
+      <div class="kpi-value">${d.value}</div>
+      ${d.sub?`<div class="kpi-sub">${d.sub}</div>`:''}
+    </div>
+  `).join('');
+}
+
+function renderEquity(data) {
+  if (!data.length) return;
+  const ctx = document.getElementById('equityChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.map(d=>d.date),
+      datasets: [{
+        label: 'Avg Return %',
+        data:  data.map(d=>d.cumulative_return),
+        borderColor: C.accent,
+        backgroundColor: 'rgba(0,229,160,0.08)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => pct(ctx.parsed.y) } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6 }, grid: { color: 'rgba(42,50,72,.4)' } },
+        y: { ticks: { callback: v => pct(v) }, grid: { color: 'rgba(42,50,72,.4)' } },
+      }
+    }
+  });
+}
+
+function renderMonthly(data) {
+  if (!data.length) return;
+  const ctx = document.getElementById('monthlyChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d=>d.month),
+      datasets: [
+        { label:'Win Rate %', data: data.map(d=>d.win_rate), backgroundColor: data.map(d=>d.win_rate>=60?C.accent:d.win_rate>=50?C.accent3:C.warn), borderRadius: 4, borderSkipped: false }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `Win Rate: ${ctx.parsed.y}%  |  Alerts: ${data[ctx.dataIndex].alerts}` } } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { min: 0, max: 100, ticks: { callback: v => v+'%' }, grid: { color: 'rgba(42,50,72,.4)' } }
+      }
+    }
+  });
+}
+
+function renderScannerStats(by_scanner) {
+  const entries = Object.entries(by_scanner).sort((a,b)=>b[1].win_rate-a[1].win_rate);
+  const maxWR   = Math.max(...entries.map(([,v])=>v.win_rate), 1);
+  document.getElementById('scannerStats').innerHTML = entries.map(([name, v]) => `
+    <div class="scanner-stat">
+      <div class="scanner-name">${name}</div>
+      <div class="scanner-bar-wrap">
+        <div class="scanner-bar" style="width:${(v.win_rate/maxWR*100).toFixed(1)}%"></div>
+      </div>
+      <div class="scanner-numbers">${v.win_rate}% | ${v.judged} trades</div>
+    </div>
+  `).join('');
+}
+
+function renderCategoryChart(by_category) {
+  const entries = Object.entries(by_category).sort((a,b)=>b[1].win_rate-a[1].win_rate);
+  const ctx = document.getElementById('categoryChart').getContext('2d');
+  const palette = [C.accent, C.accent2, C.accent3, '#a78bfa', '#fb923c', '#38bdf8'];
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: entries.map(([k])=>k.replace(' Compounder','').replace(' Quality','').replace('Financial ','Fin.')),
+      datasets: [{
+        label:'Win Rate',
+        data: entries.map(([,v])=>v.win_rate),
+        backgroundColor: entries.map((_,i)=>palette[i%palette.length]+'99'),
+        borderColor: entries.map((_,i)=>palette[i%palette.length]),
+        borderWidth: 1, borderRadius: 4
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend:{display:false}, tooltip:{callbacks:{label:ctx=>`${ctx.parsed.x}% win rate`}} },
+      scales: {
+        x: { min:0, max:100, ticks:{callback:v=>v+'%'}, grid:{color:'rgba(42,50,72,.4)'} },
+        y: { grid:{display:false}, ticks:{font:{size:10}} }
+      }
+    }
+  });
+}
+
+function renderDistribution(trades) {
+  const pnls = trades.map(t=>t.pnl_pct).filter(v=>v!=null);
+  if (!pnls.length) return;
+  const min  = Math.floor(Math.min(...pnls));
+  const max  = Math.ceil(Math.max(...pnls));
+  const step = 2;
+  const buckets = [];
+  for (let lo=min; lo<max; lo+=step) {
+    const hi  = lo+step;
+    const cnt = pnls.filter(p=>p>=lo && p<hi).length;
+    buckets.push({ label:`${lo}`, count: cnt, positive: lo>=0 });
+  }
+  const ctx = document.getElementById('distChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: buckets.map(b=>b.label),
+      datasets: [{
+        data: buckets.map(b=>b.count),
+        backgroundColor: buckets.map(b=>b.positive?'rgba(0,229,160,.5)':'rgba(255,79,107,.5)'),
+        borderColor:     buckets.map(b=>b.positive?C.accent:C.warn),
+        borderWidth: 1, borderRadius: 2
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend:{display:false}, tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y} trades`}} },
+      scales: {
+        x: { ticks:{maxTicksLimit:8}, grid:{display:false} },
+        y: { beginAtZero:true, grid:{color:'rgba(42,50,72,.4)'} }
+      }
+    }
+  });
+}
+
+// ── TRADE TABLE ──────────────────────────────────────────────────────────────────────
+let ALL_TRADES = [];
+
+function populateFilters(trades) {
+  const scanners  = [...new Set(trades.map(t=>t.scanner))].sort();
+  const cats      = [...new Set(trades.map(t=>t.category))].sort();
+  const sEl = document.getElementById('filterScanner');
+  const cEl = document.getElementById('filterCategory');
+  scanners.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;sEl.appendChild(o);});
+  cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;cEl.appendChild(o);});
+}
+
+function renderTradeTable(trades) {
+  const body = document.getElementById('tradeBody');
+  if (!trades.length) {
+    body.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">No trades match this filter.</td></tr>`;
+    document.getElementById('tradeCount').textContent = '0 trades';
+    return;
+  }
+  document.getElementById('tradeCount').textContent = `${trades.length} trade${trades.length!==1?'s':''}`;
+  body.innerHTML = trades.map(t => `
+    <tr>
+      <td style="color:var(--text);font-weight:700">${t.symbol}</td>
+      <td style="color:var(--muted)">${t.entry_date}</td>
+      <td><span class="badge badge-scanner">${t.scanner}</span></td>
+      <td style="color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis">${t.category}</td>
+      <td>${t.entry_price != null ? '₹'+t.entry_price.toLocaleString('en-IN') : '—'}</td>
+      <td>${t.current_price != null ? '₹'+t.current_price.toLocaleString('en-IN') : '—'}</td>
+      <td class="${pctClass(t.pnl_pct)}" style="font-weight:700">${pct(t.pnl_pct)}</td>
+      <td style="color:var(--muted)">${t.days_held}d</td>
+      <td>${badge(t.status)}</td>
+    </tr>
+  `).join('');
+}
+
+function filterAndRender() {
+  const sc  = document.getElementById('filterScanner').value;
+  const st  = document.getElementById('filterStatus').value;
+  const cat = document.getElementById('filterCategory').value;
+  const sym = document.getElementById('filterSymbol').value.trim().toUpperCase();
+  const filtered = ALL_TRADES.filter(t =>
+    (!sc  || t.scanner===sc) &&
+    (!st  || t.status===st) &&
+    (!cat || t.category===cat) &&
+    (!sym || t.symbol.includes(sym))
+  );
+  renderTradeTable(filtered);
+}
+
+['filterScanner','filterStatus','filterCategory','filterSymbol'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', filterAndRender);
+  document.getElementById(id).addEventListener('change', filterAndRender);
+});
+
+// ── MAIN ─────────────────────────────────────────────────────────────────────────────
+(async () => {
+  const data = await loadData();
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('main').style.display    = 'block';
+
+  // Generated at
+  document.getElementById('gen-time').textContent =
+    'Generated: ' + (data.generated_at ? new Date(data.generated_at).toLocaleString('en-IN', {timeZone:'Asia/Kolkata'}) : '—') +
+    (data.trades && data.trades.some(t=>t.entry_price===null) ? '  ⚠ Some prices unavailable' : '');
+
+  if (!data.trades || !data.trades.length) {
+    document.getElementById('kpis').innerHTML = `<div class="empty"><div class="empty-icon">📭</div><div>No alert history found in the database yet.</div></div>`;
+    return;
+  }
+
+  renderKPIs(data.summary);
+  renderEquity(data.equity_curve || []);
+  renderMonthly(data.monthly || []);
+  renderScannerStats(data.by_scanner || {});
+  renderCategoryChart(data.by_category || {});
+  renderDistribution(data.trades);
+
+  ALL_TRADES = data.trades;
+  populateFilters(data.trades);
+  renderTradeTable(data.trades);
+})();
+</script>
+</body>
+</html>
