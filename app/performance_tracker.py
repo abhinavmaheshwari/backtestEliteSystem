@@ -7,7 +7,7 @@
 import os
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
@@ -80,55 +80,87 @@ def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
         return {}
 
 
-def _fetch_lowest_lows(symbol_dates: dict[str, str]) -> dict[str, float]:
+def _fetch_lowest_low_for_trade(symbol: str, alert_time_str: str) -> float | None:
     """
-    For each symbol, fetch the lowest intraday Low from alert_date to today.
+    Fetch the lowest intraday Low for *symbol* from the exact alert timestamp
+    onwards (inclusive) up to now.
 
-    This is what makes SL detection correct: a stop can be hit intraday even
-    if the close that day recovered above the stop level.  Using only the current
-    close (as before) would miss those touches entirely.
+    Why intraday (1h) and not daily bars?
+    ─────────────────────────────────────
+    Daily bars give a single Low for the whole session.  If the alert fires at
+    11:00 and the day's low was printed at 09:35 (before the alert), using the
+    daily bar would wrongly flag that as an SL breach.  By fetching 1h bars we
+    filter out candles whose open-time precedes the alert, so only price action
+    *at or after* the alert time is considered.
+
+    On subsequent days after the alert date the full day is always included —
+    the time filter only applies to the alert day itself.
 
     Parameters
     ----------
-    symbol_dates : {symbol: alert_date_str}  e.g. {"RELIANCE": "2024-05-10"}
+    symbol         : e.g. "RELIANCE" or "RELIANCE.NS"
+    alert_time_str : ISO datetime string stored in DB, e.g. "2024-05-10 11:23:45"
 
     Returns
     -------
-    {symbol: lowest_low_since_entry}
+    Lowest Low seen at or after the alert time, or None if data unavailable.
     """
-    if not symbol_dates:
-        return {}
+    try:
+        # ── Parse alert timestamp ────────────────────────────────────────────────
+        alert_dt_naive = datetime.fromisoformat(alert_time_str)
+        alert_dt_ist   = alert_dt_naive.replace(tzinfo=IST)   # DB stores IST
+        alert_date     = alert_dt_ist.date()
 
-    lowest_lows: dict[str, float] = {}
+        ticker_sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
 
-    for sym, alert_date_str in symbol_dates.items():
-        ticker = sym if sym.endswith(".NS") else f"{sym}.NS"
-        try:
-            alert_dt = date.fromisoformat(alert_date_str)
-            # yfinance start is inclusive, end is exclusive — add 1 day to include today
-            start = alert_dt.isoformat()
-            end   = (date.today()).isoformat()
+        # ── Fetch 1h bars from alert_date to today (inclusive) ──────────────────
+        start_str = alert_date.isoformat()
+        end_str   = (date.today() + timedelta(days=1)).isoformat()  # end is exclusive
 
-            hist = yf.download(
-                ticker,
-                start=start,
-                end=end,
-                interval="1d",
-                auto_adjust=True,
-                progress=False,
-            )
-            if hist.empty:
-                continue
+        hist = yf.download(
+            ticker_sym,
+            start=start_str,
+            end=end_str,
+            interval="1h",
+            auto_adjust=True,
+            progress=False,
+        )
 
-            low_series = hist["Low"].dropna()
-            if low_series.empty:
-                continue
+        if hist.empty:
+            return None
 
-            lowest_lows[sym] = float(low_series.min())
-        except Exception:
-            logger.debug(f"⚠️ Could not fetch low history for {sym}")
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist.columns = hist.columns.get_level_values(0)
 
-    return lowest_lows
+        if "Low" not in hist.columns:
+            return None
+
+        # ── Localise index to IST for correct time comparison ───────────────────
+        idx = hist.index
+        if idx.tzinfo is None:
+            idx = idx.tz_localize("Asia/Kolkata")
+        else:
+            idx = idx.tz_convert("Asia/Kolkata")
+        hist.index = idx
+
+        # ── Filter: only candles whose open-time >= alert timestamp ─────────────
+        # Candles before the alert (even on the same day) are excluded so that
+        # an early-morning dip cannot falsely trigger the SL.
+        hist_after = hist[hist.index >= alert_dt_ist]
+
+        if hist_after.empty:
+            return None
+
+        low_series = hist_after["Low"].dropna()
+        if low_series.empty:
+            return None
+
+        return float(low_series.min())
+
+    except Exception:
+        logger.debug(f"⚠️ Could not fetch intraday low for {symbol} (alert={alert_time_str})")
+        return None
+
 
 
 def _days_held(alert_date_str: str) -> int:
@@ -201,17 +233,22 @@ def build_performance_data():
 
         days = _days_held(alert_date)
 
+        # alert_time is the full "YYYY-MM-DD HH:MM:SS" string from the DB.
+        # We need it to know *when* on the alert day SL monitoring should start.
+        alert_time = row.get("alert_time") or ""
+
         trades.append({
             "symbol":        symbol,
             "scanner":       scanner,
             "category":      category,
             "signals":       signals,
             "entry_date":    alert_date,
+            "alert_time":    alert_time,        # full IST timestamp of the alert
             "entry_price":   entry_price,       # None until we enrich below
             "stop_loss":     row.get("stop_loss"),
             "current_price": None,              # filled after price fetch
             "pnl_pct":       None,
-            "stopped_out":   False,             # True if current price breached stop
+            "stopped_out":   False,             # True if day-low breached SL post-alert
             "days_held":     days,
             "status":        "OPEN",
             "score":         row.get("score"),
@@ -219,61 +256,69 @@ def build_performance_data():
             "volume_ratio":  row.get("volume_ratio"),
         })
 
-    # ── 3. Fetch current prices and lowest lows for all symbols ─────────────────────
+    # ── 3. Fetch current prices for all symbols ──────────────────────────────────────
     unique_symbols = list({t["symbol"] for t in trades})
     logger.info(f"📈 Fetching prices for {len(unique_symbols)} symbols...")
     current_prices = _fetch_current_prices(unique_symbols)
 
-    # Build {symbol: earliest_alert_date} so we fetch lows from alert day onwards.
-    # Using the earliest date per symbol gives us the full price history needed to
-    # detect any SL touch across all open trades for that symbol.
-    symbol_entry_dates: dict[str, str] = {}
-    for t in trades:
-        sym = t["symbol"]
-        ed  = t["entry_date"]
-        if ed and (sym not in symbol_entry_dates or ed < symbol_entry_dates[sym]):
-            symbol_entry_dates[sym] = ed
-
-    logger.info(f"📉 Fetching low history for SL-touch detection...")
-    lowest_lows = _fetch_lowest_lows(symbol_entry_dates)
-
     # ── 4. Enrich trades with prices + P&L ──────────────────────────────────────────
+    # SL-touch detection uses 1h intraday bars filtered to >= alert_time so that
+    # any low printed BEFORE the alert fires on the same day is never counted.
+    # Each trade fetches its own lowest-low independently (different alert times
+    # for the same symbol must not be collapsed into a single date lookup).
+
+    logger.info(f"📉 Fetching post-alert intraday lows for SL-touch detection...")
+
     for t in trades:
-        sym   = t["symbol"]
-        cur_p = current_prices.get(sym)
-        ep    = t["entry_price"]
-        sl    = t["stop_loss"]
+        sym        = t["symbol"]
+        cur_p      = current_prices.get(sym)
+        ep         = t["entry_price"]
+        sl         = t["stop_loss"]
+        alert_time = t.get("alert_time", "")
 
         t["current_price"] = round(cur_p, 2) if cur_p else None
 
-        # ── Stop-loss breach detection ───────────────────────────────────────────────
-        # KEY FIX: Use the lowest intraday Low since entry, not just today's close.
-        # A stop can be touched intraday even if the stock closes above it.
-        # Before this fix, such trades were silently left OPEN with a misleading P&L.
-        #
-        # Logic:
-        #   lowest_low <= sl  →  stop was hit at some point since entry → STOPPED OUT
-        #                         P&L locked at stop price (sl - ep), not current price.
-        #   otherwise         →  mark-to-market against current close.
-        if ep and sl:
-            lowest_low = lowest_lows.get(sym)
-            sl_hit = (lowest_low is not None and lowest_low <= sl)
+        # ── Stop-loss breach detection ───────────────────────────────────────────
+        # Rule: fetch the lowest intraday Low from the alert timestamp onwards.
+        #   • Candles whose open-time < alert_time are EXCLUDED — the market may
+        #     have printed a low before you even received the alert, which should
+        #     not count as an SL breach.
+        #   • If the post-alert lowest low <= sl → trade is STOPPED OUT.
+        #     P&L is locked at the stop price (worst-case fill = sl).
+        #   • Otherwise → mark-to-market against the current close.
+        if ep and sl and alert_time:
+            lowest_low = _fetch_lowest_low_for_trade(sym, alert_time)
+            sl_hit     = (lowest_low is not None and lowest_low <= sl)
 
             if sl_hit:
-                # Stop was touched intraday at some point since entry
                 t["stopped_out"] = True
                 t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
                 logger.debug(
-                    f"🛑 {sym} SL touched | entry={ep} stop={sl} "
-                    f"lowest_low={lowest_low} pnl={t['pnl_pct']}%"
+                    f"🛑 {sym} SL hit post-alert | alert={alert_time} "
+                    f"entry={ep} stop={sl} lowest_low={lowest_low} "
+                    f"pnl={t['pnl_pct']}%"
                 )
             elif cur_p:
-                # Stop never touched — mark-to-market against current close
                 t["stopped_out"] = False
                 t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
             else:
                 t["stopped_out"] = False
                 t["pnl_pct"]     = None
+
+        elif ep and sl and not alert_time:
+            # alert_time missing (legacy row) — fall back to full-day low from entry date
+            lowest_low = _fetch_lowest_low_for_trade(sym, f"{t['entry_date']} 09:15:00")
+            sl_hit     = (lowest_low is not None and lowest_low <= sl)
+            if sl_hit:
+                t["stopped_out"] = True
+                t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
+            elif cur_p:
+                t["stopped_out"] = False
+                t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
+            else:
+                t["stopped_out"] = False
+                t["pnl_pct"]     = None
+
         elif ep and cur_p:
             # No stop stored (legacy alert) — plain mark-to-market
             t["stopped_out"] = False
