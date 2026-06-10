@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 WINDOWS = {
-    "intraday": (dt_time(9, 32), dt_time(15, 30)),
-    "live":     (dt_time(10, 17), dt_time(15, 30)),
-    "eod":      (dt_time(18, 30), dt_time(20, 0)),
-    "reversal": (dt_time(18, 45), dt_time(20, 0)),
+    "intraday":    (dt_time(9, 32),  dt_time(15, 30)),
+    "live":        (dt_time(10, 17), dt_time(15, 30)),
+    "eod":         (dt_time(18, 30), dt_time(20, 0)),
+    "reversal":    (dt_time(18, 45), dt_time(20, 0)),
+    "performance": (dt_time(20, 15), dt_time(23, 59)),  # runs once after EOD + reversal settle
 }
 
 def wait_for_window(name: str):
@@ -102,15 +103,38 @@ def run_reversal_scanner():
     import reversal_scanner
     reversal_scanner.start()
 
+def run_performance_tracker():
+    """
+    Waits until 20:15 IST (after EOD + reversal have both settled),
+    then regenerates performance_data.json once per trading day.
+    Skips weekends automatically via wait_for_window.
+    Sleeps 24 hours before looping so it only runs once per day.
+    """
+    while True:
+        wait_for_window("performance")
+        try:
+            from performance_tracker import generate_performance_data
+            logger.info("📊 PERFORMANCE TRACKER | Starting daily P&L refresh...")
+            generate_performance_data()
+            logger.info("✅ PERFORMANCE TRACKER | Done — dashboard data refreshed")
+        except Exception:
+            logger.exception("❌ PERFORMANCE TRACKER | Failed")
+        # Sleep 24 hours before next run (avoids re-triggering in the same window)
+        logger.info("⏳ PERFORMANCE TRACKER | Next run in 24 hours")
+        time.sleep(86_400)
+
 # =====================================================================================
 # SELF-HEALING WATCHDOG
 # =====================================================================================
 
 THREAD_REGISTRY = {
-    "IntradayScanner":  run_intraday_scanner,
-    "LiveScanner":      run_live_scanner,
-    "EODScanner":       run_eod_scanner,
-    "ReversalScanner":  run_reversal_scanner,
+    "IntradayScanner":    run_intraday_scanner,
+    "LiveScanner":        run_live_scanner,
+    "EODScanner":         run_eod_scanner,
+    "ReversalScanner":    run_reversal_scanner,
+    "PerformanceTracker": run_performance_tracker,
+    # DashboardServer is NOT in the registry — it's a permanent blocking thread
+    # managed separately and never restarted by the watchdog.
 }
 
 def start_thread(name, target):
@@ -125,15 +149,31 @@ if __name__ == "__main__":
     if _missing_env:
         logger.error(f"❌ FATAL: Missing env vars: {_missing_env}")
 
-    # Initial Startup
+    # ── Start Dashboard Server (permanent — runs for the lifetime of the process) ──
+    try:
+        from dashboard_server import start_dashboard_server
+        _dash_thread = threading.Thread(
+            target=start_dashboard_server,
+            name="DashboardServer",
+            daemon=True,
+        )
+        _dash_thread.start()
+        logger.info(f"🌐 Dashboard server started on PORT={os.getenv('PORT', 8080)}")
+    except ImportError:
+        logger.warning("⚠️ dashboard_server.py not found — web dashboard disabled")
+    except Exception:
+        logger.exception("❌ Dashboard server failed to start")
+
+    # ── Start All Scanner + Tracker Threads ─────────────────────────────────────────
     for name, target in THREAD_REGISTRY.items():
         start_thread(name, target)
 
     logger.info("=" * 70)
-    logger.info("🛡️ SELF-HEALING WATCHDOG ACTIVE | All Scanners Initialized")
+    logger.info("🛡️  SELF-HEALING WATCHDOG ACTIVE | All Scanners Initialized")
+    logger.info("🌐  Dashboard: https://your-app.railway.app/")
     logger.info("=" * 70)
 
-    # Watchdog Loop
+    # ── Watchdog Loop ────────────────────────────────────────────────────────────────
     _logged_ready = False
     while True:
         if not _logged_ready and _watchlist_ready.is_set():
@@ -143,12 +183,12 @@ if __name__ == "__main__":
         for name, thread in list(active_threads.items()):
             if not thread.is_alive():
                 if getattr(thread, "completed_cleanly", False):
-                    # ✅ FIX: Thread exited normally (e.g. EOD ran once and returned).
-                    # Remove from tracking — do NOT restart. No crash occurred.
+                    # ✅ Thread exited normally (e.g. EOD ran once and returned).
+                    # Remove from tracking — do NOT restart.
                     logger.info(f"✅ THREAD COMPLETED CLEANLY: {name} — removing from watchdog tracking.")
                     del active_threads[name]
                 else:
-                    # ❌ Thread crashed with an unhandled exception — restart it.
+                    # ❌ Thread crashed — restart it.
                     logger.critical(f"💀 THREAD CRASH DETECTED: {name} has died. Auto-restarting in 10 seconds...")
                     time.sleep(10)
                     start_thread(name, THREAD_REGISTRY[name])
