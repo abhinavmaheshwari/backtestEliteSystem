@@ -1,12 +1,28 @@
 # =====================================================================================
 # app/performance_tracker.py
 # Builds performance_data.json from the Postgres alerts table + live yfinance prices.
-# Called every 5 minutes from main.py (same thread as before).
+# Called every 5 minutes from main.py.
+#
+# SL / TARGET DETECTION LOGIC
+# ────────────────────────────
+# Both SL and Target are detected using intraday (1h) bars filtered to >= alert_time.
+# This means:
+#   • Any low printed BEFORE the alert on the same day is IGNORED for SL.
+#   • Any high printed BEFORE the alert on the same day is IGNORED for Target.
+#
+# Priority:
+#   1. SL hit first  → status = LOSS  (locked at stop_loss price)
+#   2. Target hit first → status = WIN  (locked at target_price)
+#   3. Neither hit   → mark-to-market vs current close
+#
+# To determine which hit first, we compare the timestamps of the first SL-breach
+# candle and the first Target-breach candle.
 # =====================================================================================
 
 import os
 import json
 import logging
+import pandas as pd
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,7 +41,7 @@ except ImportError:
 
 PERF_JSON_PATH = os.path.join(DATA_DIR, "performance_data.json")
 
-# How many calendar days after alert_date before we "close" a trade for judging
+# How many calendar days after alert_date before we judge a trade with no SL/Target hit
 HOLD_DAYS = 5
 
 
@@ -34,10 +50,6 @@ HOLD_DAYS = 5
 # =====================================================================================
 
 def _parse_dedup_key(breakout_type: str) -> tuple[str, str, str]:
-    """
-    breakout_type format:  "{category}|{signals}|{date}|{scanner}"
-    Returns (category, signals, scanner).  Safe for old rows without the format.
-    """
     parts = breakout_type.split("|")
     if len(parts) >= 4:
         return parts[0].strip(), parts[1].strip(), parts[3].strip()
@@ -80,42 +92,22 @@ def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
         return {}
 
 
-def _fetch_lowest_low_for_trade(symbol: str, alert_time_str: str) -> float | None:
+def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> pd.DataFrame | None:
     """
-    Fetch the lowest intraday Low for *symbol* from the exact alert timestamp
-    onwards (inclusive) up to now.
+    Fetch 1h bars for *symbol* from the alert date to today.
+    Returns a DataFrame with timezone-aware IST index, or None on failure.
 
-    Why intraday (1h) and not daily bars?
-    ─────────────────────────────────────
-    Daily bars give a single Low for the whole session.  If the alert fires at
-    11:00 and the day's low was printed at 09:35 (before the alert), using the
-    daily bar would wrongly flag that as an SL breach.  By fetching 1h bars we
-    filter out candles whose open-time precedes the alert, so only price action
-    *at or after* the alert time is considered.
-
-    On subsequent days after the alert date the full day is always included —
-    the time filter only applies to the alert day itself.
-
-    Parameters
-    ----------
-    symbol         : e.g. "RELIANCE" or "RELIANCE.NS"
-    alert_time_str : ISO datetime string stored in DB, e.g. "2024-05-10 11:23:45"
-
-    Returns
-    -------
-    Lowest Low seen at or after the alert time, or None if data unavailable.
+    All candles whose open-time < alert_time are DROPPED — this is the core rule
+    that prevents pre-alert price action from triggering SL or Target.
     """
     try:
-        # ── Parse alert timestamp ────────────────────────────────────────────────
         alert_dt_naive = datetime.fromisoformat(alert_time_str)
-        alert_dt_ist   = alert_dt_naive.replace(tzinfo=IST)   # DB stores IST
+        alert_dt_ist   = alert_dt_naive.replace(tzinfo=IST)
         alert_date     = alert_dt_ist.date()
 
         ticker_sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
-
-        # ── Fetch 1h bars from alert_date to today (inclusive) ──────────────────
-        start_str = alert_date.isoformat()
-        end_str   = (date.today() + timedelta(days=1)).isoformat()  # end is exclusive
+        start_str  = alert_date.isoformat()
+        end_str    = (date.today() + timedelta(days=1)).isoformat()
 
         hist = yf.download(
             ticker_sym,
@@ -132,10 +124,10 @@ def _fetch_lowest_low_for_trade(symbol: str, alert_time_str: str) -> float | Non
         if isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
 
-        if "Low" not in hist.columns:
+        if not {"High", "Low", "Close"}.issubset(hist.columns):
             return None
 
-        # ── Localise index to IST for correct time comparison ───────────────────
+        # Localise index to IST
         idx = hist.index
         if idx.tzinfo is None:
             idx = idx.tz_localize("Asia/Kolkata")
@@ -143,39 +135,62 @@ def _fetch_lowest_low_for_trade(symbol: str, alert_time_str: str) -> float | Non
             idx = idx.tz_convert("Asia/Kolkata")
         hist.index = idx
 
-        # ── Filter: only candles whose open-time >= alert timestamp ─────────────
-        # Candles before the alert (even on the same day) are excluded so that
-        # an early-morning dip cannot falsely trigger the SL.
-        hist_after = hist[hist.index >= alert_dt_ist]
+        # Drop all candles that opened before the alert timestamp
+        hist = hist[hist.index >= alert_dt_ist].copy()
 
-        if hist_after.empty:
-            return None
-
-        low_series = hist_after["Low"].dropna()
-        if low_series.empty:
-            return None
-
-        return float(low_series.min())
+        return hist if not hist.empty else None
 
     except Exception:
-        logger.debug(f"⚠️ Could not fetch intraday low for {symbol} (alert={alert_time_str})")
+        logger.debug(f"⚠️ Could not fetch bars for {symbol} (alert={alert_time_str})")
         return None
 
+
+def _check_sl_and_target(
+    hist: pd.DataFrame,
+    stop_loss: float,
+    target_price: float,
+) -> tuple[str, float | None]:
+    """
+    Walk through post-alert 1h bars in chronological order.
+    Returns (outcome, exit_price) where outcome is one of:
+        "SL_HIT"     — stop_loss breached first
+        "TARGET_HIT" — target_price breached first
+        "OPEN"       — neither hit yet
+    exit_price is the SL or target level (not the candle close) when hit,
+    so P&L is always locked at the exact level.
+    """
+    for ts, row in hist.iterrows():
+        low  = float(row["Low"])
+        high = float(row["High"])
+
+        # Check SL first (conservative — protect capital before counting gains)
+        if low <= stop_loss:
+            return "SL_HIT", stop_loss
+
+        # Then check target
+        if high >= target_price:
+            return "TARGET_HIT", target_price
+
+    return "OPEN", None
 
 
 def _days_held(alert_date_str: str) -> int:
     try:
-        alert_dt = date.fromisoformat(alert_date_str)
-        return (date.today() - alert_dt).days
+        return (date.today() - date.fromisoformat(alert_date_str)).days
     except Exception:
         return 0
 
 
-def _trade_status(pnl_pct: float | None, days: int, stopped_out: bool = False) -> str:
-    # SL hit → immediate LOSS regardless of HOLD_DAYS or pnl threshold.
-    # The trade is closed the moment the stop is touched; no waiting period applies.
+def _trade_status(
+    pnl_pct: float | None,
+    days: int,
+    stopped_out: bool,
+    target_hit: bool,
+) -> str:
     if stopped_out:
         return "LOSS"
+    if target_hit:
+        return "WIN"
     if days < HOLD_DAYS:
         return "OPEN"
     if pnl_pct is None:
@@ -196,7 +211,6 @@ def build_performance_data():
     logger.info("📊 PERFORMANCE TRACKER | Building performance data...")
     logger.info("=" * 70)
 
-    # ── 1. Load all alerts from Postgres ────────────────────────────────────────────
     try:
         raw_alerts = get_all_alerts()
     except Exception:
@@ -211,31 +225,22 @@ def build_performance_data():
 
     logger.info(f"📋 {len(raw_alerts)} total alerts in database")
 
-    # ── 2. Build trade objects ───────────────────────────────────────────────────────
+    # ── 1. Build trade objects ───────────────────────────────────────────────────────
     trades = []
     for row in raw_alerts:
-        symbol       = row["symbol"]
-        alert_date   = row.get("alert_date") or (row["alert_time"][:10] if row.get("alert_time") else "")
-        entry_price  = row.get("entry_price")
+        symbol      = row["symbol"]
+        alert_time  = row.get("alert_time") or ""
+        alert_date  = row.get("alert_date") or (alert_time[:10] if alert_time else "")
+        entry_price = row.get("entry_price")
 
-        # Parse category / signals / scanner from breakout_type if not stored separately
         cat_stored     = row.get("category")
         scanner_stored = row.get("scanner")
         sig_stored     = row.get("signals")
 
         category, signals, scanner = _parse_dedup_key(row["breakout_type"])
-        if cat_stored:
-            category = cat_stored
-        if scanner_stored:
-            scanner = scanner_stored
-        if sig_stored:
-            signals = sig_stored
-
-        days = _days_held(alert_date)
-
-        # alert_time is the full "YYYY-MM-DD HH:MM:SS" string from the DB.
-        # We need it to know *when* on the alert day SL monitoring should start.
-        alert_time = row.get("alert_time") or ""
+        if cat_stored:     category = cat_stored
+        if scanner_stored: scanner  = scanner_stored
+        if sig_stored:     signals  = sig_stored
 
         trades.append({
             "symbol":        symbol,
@@ -243,93 +248,96 @@ def build_performance_data():
             "category":      category,
             "signals":       signals,
             "entry_date":    alert_date,
-            "alert_time":    alert_time,        # full IST timestamp of the alert
-            "entry_price":   entry_price,       # None until we enrich below
+            "alert_time":    alert_time,
+            "entry_price":   entry_price,
             "stop_loss":     row.get("stop_loss"),
-            "current_price": None,              # filled after price fetch
+            "target_price":  row.get("target_price"),
+            "current_price": None,
+            "exit_price":    None,       # locked price when SL or Target hit
             "pnl_pct":       None,
-            "stopped_out":   False,             # True if day-low breached SL post-alert
-            "days_held":     days,
+            "stopped_out":   False,
+            "target_hit":    False,
+            "days_held":     _days_held(alert_date),
             "status":        "OPEN",
             "score":         row.get("score"),
             "rsi":           row.get("rsi"),
             "volume_ratio":  row.get("volume_ratio"),
         })
 
-    # ── 3. Fetch current prices for all symbols ──────────────────────────────────────
+    # ── 2. Fetch current prices ──────────────────────────────────────────────────────
     unique_symbols = list({t["symbol"] for t in trades})
-    logger.info(f"📈 Fetching prices for {len(unique_symbols)} symbols...")
+    logger.info(f"📈 Fetching current prices for {len(unique_symbols)} symbols...")
     current_prices = _fetch_current_prices(unique_symbols)
 
-    # ── 4. Enrich trades with prices + P&L ──────────────────────────────────────────
-    # SL-touch detection uses 1h intraday bars filtered to >= alert_time so that
-    # any low printed BEFORE the alert fires on the same day is never counted.
-    # Each trade fetches its own lowest-low independently (different alert times
-    # for the same symbol must not be collapsed into a single date lookup).
-
-    logger.info(f"📉 Fetching post-alert intraday lows for SL-touch detection...")
+    # ── 3. Per-trade SL + Target detection via post-alert intraday bars ─────────────
+    logger.info("📉 Checking SL / Target levels via post-alert intraday bars...")
 
     for t in trades:
         sym        = t["symbol"]
-        cur_p      = current_prices.get(sym)
         ep         = t["entry_price"]
         sl         = t["stop_loss"]
-        alert_time = t.get("alert_time", "")
+        tp         = t["target_price"]
+        alert_time = t["alert_time"]
+        cur_p      = current_prices.get(sym)
 
         t["current_price"] = round(cur_p, 2) if cur_p else None
 
-        # ── Stop-loss breach detection ───────────────────────────────────────────
-        # Rule: fetch the lowest intraday Low from the alert timestamp onwards.
-        #   • Candles whose open-time < alert_time are EXCLUDED — the market may
-        #     have printed a low before you even received the alert, which should
-        #     not count as an SL breach.
-        #   • If the post-alert lowest low <= sl → trade is STOPPED OUT.
-        #     P&L is locked at the stop price (worst-case fill = sl).
-        #   • Otherwise → mark-to-market against the current close.
-        if ep and sl and alert_time:
-            lowest_low = _fetch_lowest_low_for_trade(sym, alert_time)
-            sl_hit     = (lowest_low is not None and lowest_low <= sl)
+        if not ep:
+            # No entry price — can't do anything useful
+            t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2) if cur_p else None
+            t["status"]  = _trade_status(t["pnl_pct"], t["days_held"], False, False)
+            continue
 
-            if sl_hit:
-                t["stopped_out"] = True
-                t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
-                logger.debug(
-                    f"🛑 {sym} SL hit post-alert | alert={alert_time} "
-                    f"entry={ep} stop={sl} lowest_low={lowest_low} "
-                    f"pnl={t['pnl_pct']}%"
-                )
-            elif cur_p:
-                t["stopped_out"] = False
-                t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
+        if sl and tp and alert_time:
+            # ── Full SL + Target detection ───────────────────────────────────────
+            hist = _fetch_post_alert_bars(sym, alert_time)
+
+            if hist is not None:
+                outcome, exit_p = _check_sl_and_target(hist, sl, tp)
+
+                if outcome == "SL_HIT":
+                    t["stopped_out"] = True
+                    t["exit_price"]  = exit_p
+                    t["pnl_pct"]     = round((exit_p - ep) / ep * 100, 2)
+                    logger.debug(f"🛑 {sym} SL HIT | entry={ep} sl={sl} pnl={t['pnl_pct']}%")
+
+                elif outcome == "TARGET_HIT":
+                    t["target_hit"] = True
+                    t["exit_price"] = exit_p
+                    t["pnl_pct"]    = round((exit_p - ep) / ep * 100, 2)
+                    logger.debug(f"🎯 {sym} TARGET HIT | entry={ep} target={tp} pnl={t['pnl_pct']}%")
+
+                else:
+                    # Still open — mark-to-market
+                    t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2) if cur_p else None
+
             else:
-                t["stopped_out"] = False
-                t["pnl_pct"]     = None
+                # No bar data — fall back to current price
+                t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2) if cur_p else None
 
-        elif ep and sl and not alert_time:
-            # alert_time missing (legacy row) — fall back to full-day low from entry date
-            lowest_low = _fetch_lowest_low_for_trade(sym, f"{t['entry_date']} 09:15:00")
-            sl_hit     = (lowest_low is not None and lowest_low <= sl)
-            if sl_hit:
-                t["stopped_out"] = True
-                t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
+        elif sl and alert_time:
+            # SL only (no target stored — legacy or partial row)
+            hist = _fetch_post_alert_bars(sym, alert_time)
+            if hist is not None and not hist.empty:
+                lowest_low = float(hist["Low"].min())
+                if lowest_low <= sl:
+                    t["stopped_out"] = True
+                    t["exit_price"]  = sl
+                    t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
+                elif cur_p:
+                    t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
             elif cur_p:
-                t["stopped_out"] = False
-                t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
-            else:
-                t["stopped_out"] = False
-                t["pnl_pct"]     = None
+                t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
 
-        elif ep and cur_p:
-            # No stop stored (legacy alert) — plain mark-to-market
-            t["stopped_out"] = False
-            t["pnl_pct"]     = round((cur_p - ep) / ep * 100, 2)
-        else:
-            t["stopped_out"] = False
-            t["pnl_pct"]     = None
+        elif cur_p:
+            # Legacy alert — no SL/Target at all
+            t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
 
-        t["status"] = _trade_status(t["pnl_pct"], t["days_held"], t["stopped_out"])
+        t["status"] = _trade_status(
+            t["pnl_pct"], t["days_held"], t["stopped_out"], t["target_hit"]
+        )
 
-    # ── 5. Compute summary stats ─────────────────────────────────────────────────────
+    # ── 4. Summary stats ────────────────────────────────────────────────────────────
     judged  = [t for t in trades if t["status"] in ("WIN", "LOSS", "NEUTRAL")]
     winners = [t for t in judged if t["status"] == "WIN"]
     losers  = [t for t in judged if t["status"] == "LOSS"]
@@ -348,22 +356,28 @@ def build_performance_data():
     worst     = round(min(pnls), 2)                       if pnls     else 0
     expectancy = round((wr / 100) * avg_win + (1 - wr / 100) * avg_loss, 2)
 
+    # SL vs Target breakdown
+    sl_closed     = [t for t in judged if t["stopped_out"]]
+    target_closed = [t for t in judged if t["target_hit"]]
+
     summary = {
-        "total_alerts":    len(trades),
-        "judged":          n_judged,
-        "winners":         len(winners),
-        "losers":          len(losers),
-        "open_positions":  len(open_p),
-        "win_rate":        wr,
-        "avg_return_pct":  avg_ret,
-        "avg_win_pct":     avg_win,
-        "avg_loss_pct":    avg_loss,
-        "best_trade_pct":  best,
-        "worst_trade_pct": worst,
-        "expectancy":      expectancy,
+        "total_alerts":      len(trades),
+        "judged":            n_judged,
+        "winners":           len(winners),
+        "losers":            len(losers),
+        "open_positions":    len(open_p),
+        "sl_triggered":      len(sl_closed),
+        "target_hit":        len(target_closed),
+        "win_rate":          wr,
+        "avg_return_pct":    avg_ret,
+        "avg_win_pct":       avg_win,
+        "avg_loss_pct":      avg_loss,
+        "best_trade_pct":    best,
+        "worst_trade_pct":   worst,
+        "expectancy":        expectancy,
     }
 
-    # ── 6. Equity curve ─────────────────────────────────────────────────────────────
+    # ── 5. Equity curve ─────────────────────────────────────────────────────────────
     sorted_judged = sorted(judged, key=lambda t: t["entry_date"])
     cum = 0.0
     equity_curve = []
@@ -375,9 +389,10 @@ def build_performance_data():
                 "symbol":            t["symbol"],
                 "trade_return":      t["pnl_pct"],
                 "cumulative_return": round(cum / (i + 1), 2),
+                "close_reason":      "SL" if t["stopped_out"] else ("TARGET" if t["target_hit"] else "TIME"),
             })
 
-    # ── 7. Monthly breakdown ─────────────────────────────────────────────────────────
+    # ── 6. Monthly breakdown ────────────────────────────────────────────────────────
     mmap: dict[str, dict] = {}
     for t in judged:
         m = t["entry_date"][:7]
@@ -389,21 +404,21 @@ def build_performance_data():
         if t["pnl_pct"] is not None:
             mmap[m]["pnls"].append(t["pnl_pct"])
 
-    monthly = []
-    for m in sorted(mmap):
-        v = mmap[m]
-        avg_m = round(sum(v["pnls"]) / len(v["pnls"]), 2) if v["pnls"] else 0
-        monthly.append({
-            "month":      m,
-            "alerts":     v["alerts"],
-            "wins":       v["wins"],
-            "win_rate":   round(v["wins"] / v["alerts"] * 100, 1) if v["alerts"] else 0,
-            "avg_return": avg_m,
-        })
+    monthly = [
+        {
+            "month":    m,
+            "alerts":   v["alerts"],
+            "wins":     v["wins"],
+            "win_rate": round(v["wins"] / v["alerts"] * 100, 1) if v["alerts"] else 0,
+            "avg_return": round(sum(v["pnls"]) / len(v["pnls"]), 2) if v["pnls"] else 0,
+        }
+        for m in sorted(mmap)
+        for v in [mmap[m]]
+    ]
 
-    # ── 8. By scanner ────────────────────────────────────────────────────────────────
+    # ── 7. By scanner ────────────────────────────────────────────────────────────────
     all_scanners = {t["scanner"] for t in trades}
-    by_scanner: dict[str, dict] = {}
+    by_scanner = {}
     for sc in all_scanners:
         sc_judged = [t for t in judged  if t["scanner"] == sc]
         sc_wins   = [t for t in sc_judged if t["status"] == "WIN"]
@@ -415,9 +430,9 @@ def build_performance_data():
             "avg_return": round(sum(sc_pnls) / len(sc_pnls), 2) if sc_pnls else 0,
         }
 
-    # ── 9. By category ───────────────────────────────────────────────────────────────
+    # ── 8. By category ───────────────────────────────────────────────────────────────
     all_cats = {t["category"] for t in trades}
-    by_category: dict[str, dict] = {}
+    by_category = {}
     for cat in all_cats:
         cat_judged = [t for t in judged  if t["category"] == cat]
         cat_wins   = [t for t in cat_judged if t["status"] == "WIN"]
@@ -429,7 +444,7 @@ def build_performance_data():
             "avg_return": round(sum(cat_pnls) / len(cat_pnls), 2) if cat_pnls else 0,
         }
 
-    # ── 10. Write JSON ───────────────────────────────────────────────────────────────
+    # ── 9. Write JSON ────────────────────────────────────────────────────────────────
     payload = {
         "generated_at": datetime.now(IST).isoformat(),
         "summary":      summary,
@@ -445,8 +460,9 @@ def build_performance_data():
         json.dump(payload, f, default=str)
 
     logger.info(
-        f"✅ PERFORMANCE TRACKER | Dashboard refreshed | "
-        f"{len(trades)} alerts | {len(winners)}W / {len(losers)}L / {len(open_p)} open"
+        f"✅ PERFORMANCE TRACKER | {len(trades)} alerts | "
+        f"{len(winners)}W / {len(losers)}L / {len(open_p)} OPEN | "
+        f"SL triggers={len(sl_closed)} | Target hits={len(target_closed)}"
     )
 
 
@@ -460,9 +476,10 @@ def _write_empty():
         "trades":       [],
         "summary": {
             "total_alerts": 0, "judged": 0, "winners": 0, "losers": 0,
-            "open_positions": 0, "win_rate": 0, "avg_return_pct": 0,
-            "avg_win_pct": 0, "avg_loss_pct": 0, "best_trade_pct": 0,
-            "worst_trade_pct": 0, "expectancy": 0,
+            "open_positions": 0, "sl_triggered": 0, "target_hit": 0,
+            "win_rate": 0, "avg_return_pct": 0, "avg_win_pct": 0,
+            "avg_loss_pct": 0, "best_trade_pct": 0, "worst_trade_pct": 0,
+            "expectancy": 0,
         },
         "equity_curve": [],
         "monthly":      [],
