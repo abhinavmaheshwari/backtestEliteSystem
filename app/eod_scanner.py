@@ -409,5 +409,8 @@ def start():
         if fired:
             logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
+        return total_alerts
+
     except Exception:
         logger.exception("❌ CRITICAL EOD SCAN ERROR")
+        raise  # re-raise so caller can send Telegram crash alert
