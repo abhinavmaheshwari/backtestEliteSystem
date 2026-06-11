@@ -18,6 +18,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from delivery_data import fetch_delivery_data
 from price_cache import fetch_watchlist_data
+from sl_target_helper import compute_sl_and_target
 
 from sector_rotation import get_sector_scores
 
@@ -333,9 +334,11 @@ def start():
                 today_str  = ist_now.strftime("%Y-%m-%d")
                 dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
-                # ── Compute stop BEFORE saving so it gets persisted to DB ────────
-                current_atr    = atr_val_eod if atr_val_eod is not None else (candle_range * 1.5)
-                suggested_stop = round(candle_close - (1.5 * current_atr), 2)
+                # ── SL + Target (timeframe-aware, 2:1 RR) ────────────────────────
+                current_atr_raw = atr_val_eod
+                suggested_stop, target_price = compute_sl_and_target(
+                    candle_close, current_atr_raw, candle_range, "EOD"
+                )
 
                 saved = save_alert_if_new(
                     symbol,
@@ -349,6 +352,7 @@ def start():
                     rsi=round(rsi_val, 1),
                     volume_ratio=round(volume_ratio, 2),
                     stop_loss=suggested_stop,
+                    target_price=target_price,
                 )
                 if not saved:
                     rejection_counts["duplicate"] += 1
@@ -375,6 +379,7 @@ def start():
                     "above_sma50":      above_sma50,
                     "golden_cross":     golden_cross,
                     "atr_stop":         suggested_stop,
+                    "target_price":     target_price,
                     "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                     "peg":              row.get("PEG Ratio"),
                     "yoy_rev":          row.get("YOY Revenue %"),
