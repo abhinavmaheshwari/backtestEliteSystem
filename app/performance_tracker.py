@@ -282,10 +282,11 @@ def build_performance_data():
 
         t["current_price"] = round(cur_p, 2) if cur_p else None
 
-        if not ep:
-            # No entry price — can't do anything useful
-            t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2) if cur_p else None
-            t["status"]  = _trade_status(t["pnl_pct"], t["days_held"], False, False)
+        # FIX: use `is None` (not falsy check) so ep=0.0 doesn't misfire.
+        # When ep is None we cannot compute any P&L — mark status and move on.
+        if ep is None:
+            t["pnl_pct"] = None
+            t["status"]  = _trade_status(None, t["days_held"], False, False)
             continue
 
         if sl and tp and alert_time:
