@@ -28,12 +28,15 @@ import os
 import logging
 import threading
 from contextlib import contextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
+IST = ZoneInfo("Asia/Kolkata")
 
 # ── Connection pool ───────────────────────────────────────────────────────────────────
 _pool: pool.ThreadedConnectionPool | None = None
@@ -68,13 +71,6 @@ def get_connection():
 
 
 # ── One-time init guard ───────────────────────────────────────────────────────────────
-# This is the core fix.  Multiple scanner threads all call init_db() at startup.
-# Without this guard they race to CREATE TABLE and Postgres throws a duplicate-key
-# error on its internal type registry.  With the guard:
-#   - Thread A acquires the lock, runs CREATE TABLE, sets flag, releases lock.
-#   - Threads B, C, D ... acquire the lock, see flag=True, return immediately.
-# On every subsequent scan cycle the flag is already True so init_db() is a no-op.
-
 _DB_INITIALIZED = False
 _INIT_LOCK = threading.Lock()
 
@@ -82,17 +78,13 @@ _INIT_LOCK = threading.Lock()
 def init_db():
     global _DB_INITIALIZED
 
-    # Fast path — already initialized, don't even acquire the lock.
     if _DB_INITIALIZED:
         return
 
     with _INIT_LOCK:
-        # Re-check inside the lock (another thread may have finished while
-        # we were waiting to acquire it).
         if _DB_INITIALIZED:
             return
 
-        # ── Only ONE thread ever reaches this point ───────────────────────
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -113,17 +105,22 @@ def init_db():
                         UNIQUE (symbol, breakout_type, alert_date)
                     )
                 """)
-                # ── MIGRATION: add stop_loss to tables created before this change ────
-                # ALTER TABLE ... ADD COLUMN IF NOT EXISTS is safe to run every time
-                # because Postgres no-ops it when the column already exists.
-                cur.execute("""
-                    ALTER TABLE alerts
-                    ADD COLUMN IF NOT EXISTS stop_loss REAL
-                """)
+                # ── MIGRATIONS: safe to run every deploy ─────────────────────────────
+                for col_sql in [
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS stop_loss    REAL",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS target_price REAL",
+                    # Performance tracker write-back columns
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS status       TEXT    DEFAULT 'OPEN'",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS exit_price   REAL",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS pnl_pct      REAL",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS closed_at    TEXT",
+                ]:
+                    cur.execute(col_sql)
+
                 conn.commit()
 
         _DB_INITIALIZED = True
-        logger.info("✅ Database ready (Postgres) — stop_loss column ensured")
+        logger.info("✅ Database ready (Postgres) — all columns ensured")
         logger.info("ℹ️  Data Retention Active: preserving all alerts for historical analysis.")
 
 
@@ -137,6 +134,7 @@ def save_alert_if_new(
     category: str = None,
     entry_price: float = None,
     stop_loss: float = None,
+    target_price: float = None,
     signals: str = None,
     score: int = None,
     rsi: float = None,
@@ -152,11 +150,13 @@ def save_alert_if_new(
                 cur.execute("""
                     INSERT INTO alerts
                         (symbol, breakout_type, alert_time, scanner, category,
-                         entry_price, stop_loss, signals, score, rsi, volume_ratio)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         entry_price, stop_loss, target_price, signals, score,
+                         rsi, volume_ratio, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
                     ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
                 """, (symbol, breakout_type, alert_time, scanner, category,
-                      entry_price, stop_loss, signals, score, rsi, volume_ratio))
+                      entry_price, stop_loss, target_price, signals, score,
+                      rsi, volume_ratio))
                 conn.commit()
                 return cur.rowcount > 0
             except Exception:
@@ -165,15 +165,48 @@ def save_alert_if_new(
                 return False
 
 
+def update_alert_outcome(
+    alert_id: int,
+    status: str,          # "WIN" | "LOSS"
+    exit_price: float,
+    pnl_pct: float,
+) -> None:
+    """
+    Lock in the final outcome of a trade once SL or Target is hit.
+    Called by performance_tracker — writes back so future runs skip bar downloads
+    for already-closed positions.
+    """
+    closed_at = datetime.now(IST).isoformat()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    UPDATE alerts
+                    SET status     = %s,
+                        exit_price = %s,
+                        pnl_pct    = %s,
+                        closed_at  = %s
+                    WHERE id = %s
+                      AND status = 'OPEN'   -- never overwrite an already-closed row
+                """, (status, exit_price, pnl_pct, closed_at, alert_id))
+                conn.commit()
+                if cur.rowcount:
+                    logger.info(f"🔒 Alert {alert_id} locked as {status} | exit={exit_price} pnl={pnl_pct}%")
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ update_alert_outcome failed for alert_id={alert_id}")
+
+
 def get_all_alerts() -> list[dict]:
-    """Return every alert, newest first."""
+    """Return every alert, newest first — including outcome columns."""
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT
                     id, symbol, breakout_type, alert_time, alert_date,
-                    scanner, category, entry_price, stop_loss, signals, score,
-                    rsi, volume_ratio
+                    scanner, category, entry_price, stop_loss, target_price,
+                    signals, score, rsi, volume_ratio,
+                    status, exit_price, pnl_pct, closed_at
                 FROM alerts
                 ORDER BY alert_time DESC
             """)
