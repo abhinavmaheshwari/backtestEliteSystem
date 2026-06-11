@@ -54,6 +54,7 @@ def _mark_sent_today():
                     "INSERT INTO daily_send_log (send_date) VALUES (%s) ON CONFLICT DO NOTHING",
                     (datetime.now().strftime("%Y-%m-%d"),)
                 )
+                conn.commit()   # FIX: was missing — insert was never persisted
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"⚠️ Could not write send guard to DB: {e}")
@@ -288,7 +289,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     # ── DIAMOND HOLD (LONG TERM) LOGIC ──
     diamond_hold = False
     if rev_5y is not None and eps_5y is not None and peg is not None:
-        fcf_ok = (fcf_margin is None) or (fcf_margin > 0) # Must not be burning cash structurally
+        fcf_ok = (fcf_margin is None) or (fcf_margin > 0)
         if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5 and fcf_ok:
             diamond_hold = True
 
@@ -296,7 +297,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
         return skip(f"No category — YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
-    if diamond_hold:      cats.append("Diamond Hold") # Appended first as highest priority
+    if diamond_hold:      cats.append("Diamond Hold")
     if high_growth:       cats.append("High Growth")
     if elite_compounder:  cats.append("Elite Compounder")
     if mature_quality:    cats.append("Mature Quality")
@@ -454,8 +455,6 @@ def _score_fin(yoy_rev, yoy_profit, qoq_rev, qoq_profit, roe, roa, yoy_margin, f
 # =====================================================================================
 
 def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None, peg=None) -> dict:
-    
-    # Generate the plain English explanation for the selected categories
     desc_list = [CAT_DESCRIPTIONS.get(c, "") for c in cats]
     cat_desc = " | ".join(filter(None, desc_list))
 
@@ -545,7 +544,6 @@ def main():
 
     logger.info(f"✅ FINAL WATCHLIST SAVED: {len(final_df)} stocks")
 
-    # Keep a small visual print out for manual console runs
     print("\n── Top 10 ──────────────────────────────────────\n")
     print(final_df.head(10).to_string(index=False))
 
@@ -560,7 +558,6 @@ def main():
         from email_engine import send_html_email
         logger.info("📧 Attempting to email fundamental watchlist...")
         
-        # Include the new "Category Explanation" and "PEG Ratio" in the email table!
         email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'Fundamental Score']]
         table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
         
@@ -574,8 +571,6 @@ def main():
                 .styled-table {{ border-collapse: collapse; margin: 15px 0; font-size: 0.85em; width: 100%; }}
                 .styled-table thead tr {{ background-color: #34495e; color: #ffffff; text-align: left; }}
                 .styled-table th, .styled-table td {{ padding: 12px 10px; border-bottom: 1px solid #dddddd; }}
-                
-                /* Give the Explanation column slightly lighter text so it doesn't overwhelm the table */
                 .styled-table td:nth-child(3) {{ color: #555; font-style: italic; max-width: 250px; }}
             </style>
         </head>
@@ -597,10 +592,10 @@ def main():
         
         subject = f"🌟 Daily Fundamental Watchlist - {datetime.now().strftime('%Y-%m-%d')}"
         
-        # ── 1. ATTEMPT EMAIL (Exactly Once) ──────────────────────────────────────
+        # ── 1. ATTEMPT EMAIL ──────────────────────────────────────────────────────
         email_success = send_html_email(subject, html_content, attachment_path=OUTPUT_CSV)
         
-        # ── 2. TELEGRAM FALLBACK (If Email Fails) ────────────────────────────────
+        # ── 2. TELEGRAM FALLBACK ──────────────────────────────────────────────────
         if not email_success:
             logger.warning("⚠️ Email delivery failed or timed out. Activating Telegram Fallback...")
             
