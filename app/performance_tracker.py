@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
-from database import get_all_alerts
+from database import get_all_alerts, update_alert_outcome
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -251,6 +251,7 @@ def build_performance_data():
         if sig_stored:     signals  = sig_stored
 
         trades.append({
+            "id":            row["id"],          # needed for write-back
             "symbol":        symbol,
             "scanner":       scanner,
             "category":      category,
@@ -261,15 +262,16 @@ def build_performance_data():
             "stop_loss":     row.get("stop_loss"),
             "target_price":  row.get("target_price"),
             "current_price": None,
-            "exit_price":    None,       # locked price when SL or Target hit
-            "pnl_pct":       None,
-            "stopped_out":   False,
-            "target_hit":    False,
+            "exit_price":    row.get("exit_price"),   # pre-filled if already closed
+            "pnl_pct":       row.get("pnl_pct"),      # pre-filled if already closed
+            "stopped_out":   row.get("status") == "LOSS",
+            "target_hit":    row.get("status") == "WIN",
             "days_held":     _days_held(alert_date),
-            "status":        "OPEN",
+            "status":        row.get("status") or "OPEN",
             "score":         row.get("score"),
             "rsi":           row.get("rsi"),
             "volume_ratio":  row.get("volume_ratio"),
+            "_db_closed":    row.get("status") in ("WIN", "LOSS"),  # internal flag
         })
 
     # ── 2. Fetch current prices ──────────────────────────────────────────────────────
@@ -290,6 +292,13 @@ def build_performance_data():
 
         t["current_price"] = round(cur_p, 2) if cur_p else None
 
+        # ── Already closed in DB — no bar download needed ────────────────────────
+        if t["_db_closed"]:
+            # pnl_pct and exit_price already populated from DB above
+            # Just refresh current_price for display; status stays locked
+            logger.debug(f"⏭️  {sym} already closed ({t['status']}) — skipping bar fetch")
+            continue
+
         # FIX: use `is None` (not falsy check) so ep=0.0 doesn't misfire.
         # When ep is None we cannot compute any P&L — mark status and move on.
         if ep is None:
@@ -309,12 +318,14 @@ def build_performance_data():
                     t["exit_price"]  = exit_p
                     t["pnl_pct"]     = round((exit_p - ep) / ep * 100, 2)
                     logger.debug(f"🛑 {sym} SL HIT | entry={ep} sl={sl} pnl={t['pnl_pct']}%")
+                    update_alert_outcome(t["id"], "LOSS", exit_p, t["pnl_pct"])
 
                 elif outcome == "TARGET_HIT":
                     t["target_hit"] = True
                     t["exit_price"] = exit_p
                     t["pnl_pct"]    = round((exit_p - ep) / ep * 100, 2)
                     logger.debug(f"🎯 {sym} TARGET HIT | entry={ep} target={tp} pnl={t['pnl_pct']}%")
+                    update_alert_outcome(t["id"], "WIN", exit_p, t["pnl_pct"])
 
                 else:
                     # Still open — mark-to-market
@@ -333,6 +344,7 @@ def build_performance_data():
                     t["stopped_out"] = True
                     t["exit_price"]  = sl
                     t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
+                    update_alert_outcome(t["id"], "LOSS", sl, t["pnl_pct"])
                 elif cur_p:
                     t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
             elif cur_p:
@@ -452,6 +464,11 @@ def build_performance_data():
             "win_rate":   round(len(cat_wins) / len(cat_judged) * 100, 1) if cat_judged else 0,
             "avg_return": round(sum(cat_pnls) / len(cat_pnls), 2) if cat_pnls else 0,
         }
+
+    # Strip internal tracking flag before serialising
+    for t in trades:
+        t.pop("_db_closed", None)
+        t.pop("id", None)
 
     # ── 9. Write JSON ────────────────────────────────────────────────────────────────
     payload = {
