@@ -5,7 +5,6 @@
 
 import pandas as pd
 import logging
-import time as _time
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
@@ -34,8 +33,7 @@ RSI_CURL_MIN           = 40
 MIN_VOLUME_RATIO       = 1.5
 # ─────────────────────────────────────────────────────────────────────────────────────
 
-# Re-check every hour; dedup key prevents duplicate alerts on the same day
-_SCAN_INTERVAL_SECONDS = 3600
+# Re-check dedup prevents duplicate alerts if process restarts same day
 
 
 def _run_scan():
@@ -182,28 +180,14 @@ def _run_scan():
                 send_telegram_message(msg, scan_type="REVERSAL")
 
     logger.info(f"✅ REVERSAL SCAN DONE | Found {total_alerts} bottoming stocks.")
+    return total_alerts
 
 
-def start():
+def start() -> int:
     """
-    Scheduling loop — keeps the thread alive indefinitely.
-    Skips weekends; otherwise runs a scan every _SCAN_INTERVAL_SECONDS.
-    Dedup keys prevent duplicate Telegram alerts on the same calendar day.
+    Single-shot scan. Called once by main.py at the 18:30 window.
+    Returns the number of alerts generated (0 = no setups found).
+    Raises on failure so main.py can send a Telegram crash alert.
     """
     init_db()
-
-    while True:
-        ist_now = datetime.now(IST)
-
-        if ist_now.weekday() >= 5:
-            logger.info("🔄 REVERSAL | Weekend detected — sleeping 1 hour")
-            _time.sleep(3600)
-            continue
-
-        try:
-            _run_scan()
-        except Exception:
-            logger.exception("❌ CRITICAL REVERSAL SCAN ERROR")
-
-        logger.info(f"⏳ REVERSAL | Next scan in {_SCAN_INTERVAL_SECONDS // 60} minutes...")
-        _time.sleep(_SCAN_INTERVAL_SECONDS)
+    return _run_scan()
