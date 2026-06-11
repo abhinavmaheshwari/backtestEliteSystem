@@ -218,23 +218,33 @@ def get_all_alerts() -> list[dict]:
             return [dict(row) for row in cur.fetchall()]
 
 
-def cleanup_old_alerts(days: int = 7) -> None:
+def cleanup_old_alerts(days: int = None) -> None:
     """
-    Delete alerts older than `days` days.
-    Called once at scanner startup — safe to call from multiple scanners
-    because each DELETE is idempotent and the DB handles concurrent deletes fine.
+    Delete alerts older than the retention window.
+
+    IMPORTANT: The `days` parameter is IGNORED — it exists only for
+    backward compatibility with scanner callers that pass DEDUP_DAYS.
+    DEDUP_DAYS is a deduplication window (typically 1-3 days), NOT a
+    retention window. Passing it here was silently deleting performance
+    history needed for win/loss tracking.
+
+    Actual retention is controlled by ALERT_RETENTION_DAYS env var (default 90).
+    To change retention, set ALERT_RETENTION_DAYS in Railway environment variables.
     """
+    retention_days = int(os.getenv("ALERT_RETENTION_DAYS", 90))
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
                 cur.execute("""
                     DELETE FROM alerts
                     WHERE alert_date < (CURRENT_DATE - INTERVAL '%s days')::TEXT
-                """, (days,))
+                """, (retention_days,))
                 deleted = cur.rowcount
                 conn.commit()
                 if deleted:
-                    logger.info(f"🗑️  Cleaned up {deleted} alerts older than {days} days")
+                    logger.info(f"🗑️  Cleaned up {deleted} alerts older than {retention_days} days")
+                else:
+                    logger.debug(f"🗑️  No alerts older than {retention_days} days to clean up")
             except Exception:
                 conn.rollback()
                 logger.exception("❌ cleanup_old_alerts failed")
