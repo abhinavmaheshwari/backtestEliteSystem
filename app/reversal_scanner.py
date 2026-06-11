@@ -14,6 +14,7 @@ from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from price_cache import fetch_watchlist_data
 from config import WATCHLIST_PATH, DEDUP_DAYS
+from sl_target_helper import compute_sl_and_target
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +32,13 @@ MAX_DROP_FROM_52W_HIGH = 60.0
 RSI_OVERSOLD_THRESHOLD = 35
 RSI_CURL_MIN           = 40
 MIN_VOLUME_RATIO       = 1.5
+
+# ── QUALITY FILTERS (high-quality stocks only) ───────────────────────────────────────
+MIN_STOCK_PRICE        = 100.0    # no penny stocks
+MIN_AVG_DAILY_VOLUME   = 300_000  # ~₹3Cr+ liquidity at ₹100 price
+MIN_ROE                = 12.0     # return on equity threshold (%)
+MIN_YOY_REVENUE_GROWTH = 8.0      # min revenue growth % (skip shrinking businesses)
+MAX_DROP_BELOW_SMA200  = 25.0     # don't catch falling knives too far below SMA200
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 # Re-check dedup prevents duplicate alerts if process restarts same day
@@ -88,6 +96,39 @@ def _run_scan():
         if drop_pct < MIN_DROP_FROM_52W_HIGH or drop_pct > MAX_DROP_FROM_52W_HIGH:
             continue
 
+        # ── QUALITY FILTER 1: minimum price ─────────────────────────────────────
+        if close_price < MIN_STOCK_PRICE:
+            continue
+
+        # ── QUALITY FILTER 2: minimum liquidity ─────────────────────────────────
+        avg_vol = float(ticker["Volume"].iloc[-21:-1].mean())
+        if avg_vol < MIN_AVG_DAILY_VOLUME:
+            continue
+
+        # ── QUALITY FILTER 3: not a falling knife — must be within x% of SMA200 ─
+        if "SMA200" in ticker.columns and not pd.isna(latest.get("SMA200")):
+            sma200 = float(latest["SMA200"])
+            if sma200 > 0:
+                pct_below_sma200 = (sma200 - close_price) / sma200 * 100
+                if pct_below_sma200 > MAX_DROP_BELOW_SMA200:
+                    continue
+
+        # ── QUALITY FILTER 4: fundamentals (from watchlist columns) ─────────────
+        roe     = row.get("ROE %")
+        yoy_rev = row.get("YOY Revenue %")
+        if roe is not None and not pd.isna(roe):
+            try:
+                if float(roe) < MIN_ROE:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        if yoy_rev is not None and not pd.isna(yoy_rev):
+            try:
+                if float(yoy_rev) < MIN_YOY_REVENUE_GROWTH:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         current_rsi = float(latest["RSI"])
         past_10_rsi = ticker["RSI"].iloc[-11:-1].min()
 
@@ -123,9 +164,11 @@ def _run_scan():
         dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
 
         candle_range   = float(latest["High"]) - float(latest["Low"])
-        atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else (candle_range * 1.5)
-        # ── Compute stop BEFORE saving so it gets persisted to DB ────────────────
-        suggested_stop = round(close_price - (1.5 * atr_val), 2)
+        atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
+        # ── SL + Target (daily ATR × 2.0, 2:1 RR) ───────────────────────────────
+        suggested_stop, target_price = compute_sl_and_target(
+            close_price, atr_val, candle_range, "REVERSAL"
+        )
 
         signal_str = ", ".join(reversal_signals)
 
@@ -141,6 +184,7 @@ def _run_scan():
             rsi=round(current_rsi, 1),
             volume_ratio=round(vol_ratio, 2),
             stop_loss=suggested_stop,
+            target_price=target_price,
         )
         if not saved:
             continue
@@ -160,6 +204,7 @@ def _run_scan():
             "score":            85,
             "above_ema20":      True,
             "atr_stop":         suggested_stop,
+            "target_price":     target_price,
             "peg":              row.get("PEG Ratio"),
             "yoy_rev":          row.get("YOY Revenue %"),
             "yoy_profit":       row.get("YOY Profit %"),
