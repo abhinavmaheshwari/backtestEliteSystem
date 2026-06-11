@@ -144,6 +144,21 @@
   .pnl-bar-fill  { height:100%; border-radius:2px; }
   .pnl-text      { font-family:var(--font-mono); font-size:12px; font-weight:700; min-width:54px; }
 
+  /* EXPAND DETAIL ROW */
+  tbody tr.main-row { cursor:pointer; }
+  tbody tr.main-row td:first-child { color:var(--muted2); font-size:10px; width:20px; text-align:center; }
+  tbody tr.main-row.open td:first-child { color:var(--accent); }
+  tbody tr.main-row.open { background:var(--accent-bg) !important; }
+  tbody tr.detail-row td { padding:0; background:var(--accent-bg); border-bottom:2px solid rgba(22,163,74,.2); }
+  .detail-panel { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:0; overflow:hidden; transition:max-height .2s ease; }
+  .detail-panel.open   { max-height:160px; }
+  .detail-panel.closed { max-height:0; }
+  .detail-item { padding:10px 14px; border-right:1px solid rgba(22,163,74,.15); }
+  .detail-item:last-child { border-right:none; }
+  .detail-label { font-size:9px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin-bottom:3px; }
+  .detail-val   { font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--text); }
+  .detail-signals { padding:8px 14px; grid-column:1/-1; border-top:1px solid rgba(22,163,74,.12); font-family:var(--font-mono); font-size:11px; color:var(--amber); }
+
   /* FILTER BAR */
   .filter-bar { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; align-items:center; }
   .filter-bar select, .filter-bar input {
@@ -224,6 +239,7 @@
         <table>
           <thead>
             <tr>
+              <th style="width:20px"></th>
               <th data-col="symbol">Symbol</th>
               <th data-col="entry_date">Date</th>
               <th data-col="scanner">Scanner</th>
@@ -360,34 +376,68 @@ function closeDrill() {
   activeKpi = null;
 }
 
+let expandedIds = new Set();
+
+function toggleDetail(id) {
+  const mainRow   = document.getElementById('mr-' + id);
+  const panel     = document.getElementById('dp-' + id);
+  if (!panel) return;
+  if (expandedIds.has(id)) {
+    expandedIds.delete(id);
+    panel.classList.replace('open','closed');
+    mainRow && mainRow.classList.remove('open');
+  } else {
+    expandedIds.add(id);
+    panel.classList.replace('closed','open');
+    mainRow && mainRow.classList.add('open');
+  }
+}
+
+function buildTradeRows(trades, maxAbs, prefix) {
+  return trades.map((t, i) => {
+    const id = prefix + i;
+    const barW = t.pnl_pct!=null ? Math.min(100,Math.abs(t.pnl_pct)/maxAbs*100).toFixed(1) : 0;
+    const barColor = t.pnl_pct==null ? C.muted : t.pnl_pct>=0 ? C.accent : C.warn;
+    const isOpen = expandedIds.has(id);
+    return `
+    <tr class="main-row${isOpen?' open':''}" id="mr-${id}" onclick="toggleDetail('${id}')">
+      <td>${isOpen?'▼':'▶'}</td>
+      <td style="font-weight:700;color:var(--text)">${t.symbol}</td>
+      <td style="color:var(--muted)">${t.entry_date}</td>
+      <td><span class="badge badge-scanner">${t.scanner}</span></td>
+      <td style="color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis">${t.category}</td>
+      <td>${fmt(t.entry_price)}</td>
+      <td>${fmt(t.current_price)}</td>
+      <td><div class="pnl-wrap"><div class="pnl-bar-track"><div class="pnl-bar-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="pnl-text ${pctClass(t.pnl_pct)}">${pct(t.pnl_pct)}</span></div></td>
+      <td style="color:var(--muted)">${t.days_held}d</td>
+      <td>${badgeHtml(t.status)}</td>
+    </tr>
+    <tr class="detail-row">
+      <td colspan="10">
+        <div class="detail-panel ${isOpen?'open':'closed'}" id="dp-${id}">
+          <div class="detail-item"><div class="detail-label">Stop loss</div><div class="detail-val neg">${fmt(t.stop_loss)}</div></div>
+          <div class="detail-item"><div class="detail-label">Target</div><div class="detail-val pos">${fmt(t.target_price)}</div></div>
+          <div class="detail-item"><div class="detail-label">Exit price</div><div class="detail-val">${fmt(t.exit_price)}</div></div>
+          <div class="detail-item"><div class="detail-label">RSI</div><div class="detail-val" style="color:var(--accent2)">${t.rsi??'—'}</div></div>
+          <div class="detail-item"><div class="detail-label">Score</div><div class="detail-val" style="color:var(--amber)">${t.score??'—'}</div></div>
+          <div class="detail-item"><div class="detail-label">Vol ratio</div><div class="detail-val">${t.volume_ratio??'—'}</div></div>
+          ${t.signals?`<div class="detail-signals">Signals: ${t.signals}</div>`:''}
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
 function renderMiniTable(trades) {
   if (!trades.length) return `<div style="padding:24px;text-align:center;color:var(--muted)">No trades in this group.</div>`;
   const maxAbs = Math.max(...trades.map(t=>Math.abs(t.pnl_pct||0)),1);
   return `<table>
     <thead><tr>
+      <th style="width:20px"></th>
       <th>Symbol</th><th>Date</th><th>Scanner</th><th>Category</th>
       <th>Entry ₹</th><th>Current ₹</th><th>P&L %</th><th>Days</th><th>Status</th>
     </tr></thead>
-    <tbody>${trades.map(t=>{
-      const barW = t.pnl_pct!=null ? Math.min(100,Math.abs(t.pnl_pct)/maxAbs*100).toFixed(1) : 0;
-      const barColor = t.pnl_pct==null?C.muted:t.pnl_pct>=0?C.accent:C.warn;
-      return `<tr>
-        <td style="font-weight:700;color:var(--text)">${t.symbol}</td>
-        <td style="color:var(--muted)">${t.entry_date}</td>
-        <td><span class="badge badge-scanner">${t.scanner}</span></td>
-        <td style="color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis">${t.category}</td>
-        <td>${fmt(t.entry_price)}</td>
-        <td>${fmt(t.current_price)}</td>
-        <td>
-          <div class="pnl-wrap">
-            <div class="pnl-bar-track"><div class="pnl-bar-fill" style="width:${barW}%;background:${barColor}"></div></div>
-            <span class="pnl-text ${pctClass(t.pnl_pct)}">${pct(t.pnl_pct)}</span>
-          </div>
-        </td>
-        <td style="color:var(--muted)">${t.days_held}d</td>
-        <td>${badgeHtml(t.status)}</td>
-      </tr>`;
-    }).join('')}</tbody>
+    <tbody>${buildTradeRows(trades, maxAbs, 'drill-')}</tbody>
   </table>`;
 }
 
@@ -409,22 +459,8 @@ function renderTradeTable() {
   const maxAbs = Math.max(...ALL_TRADES.map(t=>Math.abs(t.pnl_pct||0)),1);
   document.getElementById('tradeCount').textContent = `${filtered.length} trade${filtered.length!==1?'s':''}`;
   const body = document.getElementById('tradeBody');
-  if (!filtered.length) { body.innerHTML=`<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--muted)">No trades match this filter.</td></tr>`; return; }
-  body.innerHTML = filtered.map(t=>{
-    const barW = t.pnl_pct!=null ? Math.min(100,Math.abs(t.pnl_pct)/maxAbs*100).toFixed(1) : 0;
-    const barColor = t.pnl_pct==null?C.muted:t.pnl_pct>=0?C.accent:C.warn;
-    return `<tr>
-      <td style="font-weight:700;color:var(--text)">${t.symbol}</td>
-      <td style="color:var(--muted)">${t.entry_date}</td>
-      <td><span class="badge badge-scanner">${t.scanner}</span></td>
-      <td style="color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis">${t.category}</td>
-      <td>${fmt(t.entry_price)}</td>
-      <td>${fmt(t.current_price)}</td>
-      <td><div class="pnl-wrap"><div class="pnl-bar-track"><div class="pnl-bar-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="pnl-text ${pctClass(t.pnl_pct)}">${pct(t.pnl_pct)}</span></div></td>
-      <td style="color:var(--muted)">${t.days_held}d</td>
-      <td>${badgeHtml(t.status)}</td>
-    </tr>`;
-  }).join('');
+  if (!filtered.length) { body.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--muted)">No trades match this filter.</td></tr>`; return; }
+  body.innerHTML = buildTradeRows(filtered, maxAbs, 'main-');
   document.querySelectorAll('thead th[data-col]').forEach(th=>{
     th.classList.remove('sort-asc','sort-desc');
     if(th.dataset.col===sortCol) th.classList.add(sortDir===1?'sort-asc':'sort-desc');
