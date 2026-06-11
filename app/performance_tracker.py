@@ -105,6 +105,14 @@ def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> pd.DataFrame | N
         alert_dt_ist   = alert_dt_naive.replace(tzinfo=IST)
         alert_date     = alert_dt_ist.date()
 
+        # Guard: if alert is from today and market hasn't opened yet (before 09:15 IST),
+        # no 1h bars exist — return None immediately to avoid yfinance "delisted" noise.
+        now_ist = datetime.now(IST)
+        market_open_ist = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+        if alert_date == now_ist.date() and now_ist < market_open_ist:
+            logger.debug(f"⏳ {symbol} | Alert is from today but market not open yet — skipping bar fetch")
+            return None
+
         ticker_sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
         start_str  = alert_date.isoformat()
         end_str    = (date.today() + timedelta(days=1)).isoformat()
