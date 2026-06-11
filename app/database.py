@@ -198,7 +198,12 @@ def update_alert_outcome(
 
 
 def get_all_alerts() -> list[dict]:
-    """Return every alert, newest first — including outcome columns."""
+    """Return every alert, newest first — including outcome columns.
+
+    Calls init_db() first to ensure all migration columns exist regardless
+    of whether a scanner has started yet (performance tracker runs independently).
+    """
+    init_db()   # no-op if already initialised; ensures columns exist before SELECT
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
