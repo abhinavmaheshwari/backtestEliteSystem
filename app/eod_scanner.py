@@ -450,7 +450,7 @@ def start():
         except Exception:
             logger.exception("❌ Failed to update scanner health for EOD")
 
-        return total_alerts1
+        return total_alerts
 
     except Exception:
         logger.exception("❌ CRITICAL EOD SCAN ERROR")

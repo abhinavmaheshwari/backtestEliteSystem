@@ -135,7 +135,7 @@ def init_db():
                     DELETE FROM scanner_health
                     WHERE scanner_name LIKE '%%Scanner'
                        OR scanner_name LIKE '%%Tracker'
-                       OR scanner_name NOT IN ('INTRADAY', '1H', 'EOD', 'REVERSAL')
+                       OR scanner_name NOT IN ('DAILY_BUILDER', 'INTRADAY', '1H', 'EOD', 'REVERSAL')
                 """)
 
                 # ── System state table for dashboard metrics / state caching ───────

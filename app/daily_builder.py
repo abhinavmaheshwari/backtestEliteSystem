@@ -505,6 +505,34 @@ def classify_stock(row: pd.Series) -> dict | None:
 # =====================================================================================
 
 def main():
+    from database import upsert_scanner_health
+    try:
+        upsert_scanner_health("DAILY_BUILDER", "OK", error_msg=None)
+    except Exception:
+        logger.warning("⚠️ Could not mark Daily Builder as OK")
+
+    try:
+        _main_impl()
+        
+        try:
+            from zoneinfo import ZoneInfo
+            upsert_scanner_health(
+                "DAILY_BUILDER", "OK",
+                last_success=datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S"),
+                error_msg=None
+            )
+        except Exception:
+            logger.warning("⚠️ Could not update Daily Builder success heartbeat")
+    except Exception as exc:
+        logger.exception("❌ CRITICAL ERROR in daily builder")
+        try:
+            upsert_scanner_health("DAILY_BUILDER", "DOWN", error_msg=str(exc)[:500])
+        except Exception:
+            pass
+        raise
+
+
+def _main_impl():
     with _exclusion_lock:
         EXCLUSION_LOG.clear()  
         

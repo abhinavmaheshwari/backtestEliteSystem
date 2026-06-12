@@ -2,7 +2,6 @@
 # app/reversal_scanner.py (SCHEDULER READY)
 # DEEP DISCOUNT & MEAN REVERSION SCANNER (With Valuation Metrics)
 # =====================================================================================
-aa
 import pandas as pd
 import logging
 from zoneinfo import ZoneInfo

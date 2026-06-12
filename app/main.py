@@ -33,7 +33,6 @@ THREAD_TO_SCANNER = {
     "LiveScanner":        "1H",
     "EODScanner":         "EOD",
     "ReversalScanner":    "REVERSAL",
-    "PerformanceTracker": "PERFORMANCE_TRACKER",
 }
 
 # Lazy import — dashboard_server may not be ready yet at module load

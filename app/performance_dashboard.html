@@ -567,10 +567,11 @@ function closeDrill() {
 
 // ── SCANNER STATUS
 const SCANNER_META = {
-  'INTRADAY': {label:'Intraday (15m)', desc:'Early momentum · 9:32–15:30'},
-  '1H':       {label:'Live (1H)',       desc:'Trend confirmation · 10:17–15:30'},
-  'EOD':      {label:'EOD',             desc:'Daily breakout · runs at 18:30'},
-  'REVERSAL': {label:'Reversal',        desc:'Mean reversion · runs at 18:30'},
+  'DAILY_BUILDER': {label:'Daily Builder',    desc:'Watchlist builder · runs at 09:00'},
+  'INTRADAY':      {label:'Intraday (15m)', desc:'Early momentum · 9:32–15:30'},
+  '1H':            {label:'Live (1H)',       desc:'Trend confirmation · 10:17–15:30'},
+  'EOD':           {label:'EOD',             desc:'Daily breakout · runs at 18:30'},
+  'REVERSAL':      {label:'Reversal',        desc:'Mean reversion · runs at 18:30'},
 };
 
 function renderScannerGrid(scanner_stats) {
