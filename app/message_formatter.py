@@ -22,16 +22,21 @@ def score_bar(score):
 # =====================================================================================
 
 _CAT_ICON = {
-    "Diamond Hold":             "💎",
-    "Elite Compounder":         "💎",
-    "Financial Compounder":     "💎",
-    "High Growth":              "📈",
-    "Financial High Growth":    "📈",
-    "Steady Compounder":        "📊",
-    "Mature Quality":           "🏛",
-    "Financial Mature Quality": "🏛",
-    "Turnaround":               "🔄",
-    "Financial Turnaround":     "🔄",
+    "Dividend Aristocrat":       "💸",
+    "Debt-Free Cash Generator":  "💰",
+    "Long Term Compounder":      "💎",
+    "Wealth Compounder":         "🏆",
+    "Top Bank/NBFC":             "🏦",
+    "Capital Efficient":         "⚙️",
+    "Efficient Lender":          "🏦",
+    "Undervalued Growth":        "⚖️",
+    "High Momentum":             "🚀",
+    "Fast Growing Financial":    "📈",
+    "Consistent Performer":      "📊",
+    "Blue Chip Stable":          "🏛",
+    "Blue Chip Financial":       "🏛",
+    "Recovery Play":             "🔄",
+    "Financial Recovery":        "🔄",
 }
 
 def category_icons(category):

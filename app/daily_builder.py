@@ -89,29 +89,36 @@ FINANCIAL_SECTORS = {
 # CATEGORY DICTIONARY (PLAIN ENGLISH EXPLANATIONS)
 # =====================================================================================
 CAT_DESCRIPTIONS = {
-    "High Growth":              "Explosive short-term sales & profit momentum.",
-    "Elite Compounder":         "High ROE, strong margins, and low debt.",
-    "Mature Quality":           "Large cap stability with consistent returns.",
-    "Turnaround":               "Recovering from previous losses with expanding margins.",
-    "Steady Compounder":        "Consistent, moderate growth with stable ROE.",
-    "Financial High Growth":    "Explosive recent Net Interest Income & profit momentum.",
-    "Financial Compounder":     "High ROE & ROA with strong consistent loan book growth.",
-    "Financial Mature Quality": "Large cap financial institution with highly stable returns.",
-    "Financial Turnaround":     "Recovering financial with improving asset quality.",
-    "Diamond Hold":             "💎 LONG TERM: 5Y+ Consistent Growth, Fair Valuation (PEG < 1.5), and Cash Flow Positive."
+    # Non-Financial (PATH A)
+    "High Momentum":            "Explosive recent sales & profit growth with expanding margins.",
+    "Wealth Compounder":        "High ROE, strong margins, low debt — proven wealth creator.",
+    "Blue Chip Stable":         "Large cap (₹5000Cr+) with consistent returns and low risk.",
+    "Recovery Play":            "Recovering from downturn with expanding margins and improving ROE.",
+    "Consistent Performer":     "Steady 10%+ growth with stable ROE and healthy margins.",
+    "Long Term Compounder":     "💎 5Y+ consistent revenue & earnings growth, fair valuation (PEG ≤ 1.5), cash flow positive.",
+    "Debt-Free Cash Generator": "Zero debt, large cap, and generating high cash flow with strong ROE.",
+    "Undervalued Growth":       "Growing fast (>15% YoY) but trading at a deep discount (PEG < 1.0).",
+    "Capital Efficient":        "Asset-light business model with exceptional ROE (≥25%).",
+    "Dividend Aristocrat":      "High dividend yield (≥3.0%) with strong ROE and stability.",
+    # Financial (PATH B)
+    "Fast Growing Financial":   "Explosive recent NII & profit momentum in banking/NBFC.",
+    "Top Bank/NBFC":            "High ROE & ROA with strong consistent loan book growth.",
+    "Blue Chip Financial":      "Large cap bank/NBFC with highly stable returns.",
+    "Financial Recovery":       "Recovering financial with improving asset quality and profitability.",
+    "Efficient Lender":         "Top-tier banking quality with exceptional ROA (≥2.0%).",
 }
 
 # =====================================================================================
 # BASE FILTERS 
 # =====================================================================================
 
-MIN_PRICE         = 50
-MIN_MARKET_CAP    = 5_000_000_000    
-MIN_TRADED_VALUE  = 100_000_000      
-MIN_ROE           = 10               
+MIN_PRICE         = 100              # no penny stocks — ₹100 minimum for institutional interest
+MIN_MARKET_CAP    = 10_000_000_000   # ₹1,000 Cr — exclude micro-caps
+MIN_TRADED_VALUE  = 150_000_000      # ₹15 Cr/day — reliable fills on breakout entries
+MIN_ROE           = 12               # 12% ROE = above cost of equity, genuine moat
 
 # PATH A only
-MIN_OPM_NONFIN    = 8                
+MIN_OPM_NONFIN    = 10               # 10% OPM — excludes commodity-level margins
 
 # PATH B only
 MIN_ROA_FIN       = 0.8              
@@ -173,7 +180,8 @@ def fetch_universe() -> pd.DataFrame:
         "price_earnings_ttm", 
         "total_revenue_5y_growth",
         "earnings_per_share_basic_5y_growth",
-        "free_cash_flow_margin_ttm"
+        "free_cash_flow_margin_ttm",
+        "dividend_yield_recent"
     ]
 
     q = (
@@ -244,6 +252,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     rev_5y      = fv("total_revenue_5y_growth")
     eps_5y      = fv("earnings_per_share_basic_5y_growth")
     fcf_margin  = fv("free_cash_flow_margin_ttm")
+    div_yield   = fv("dividend_yield_recent")
 
     missing = [
         name for name, val in [
@@ -280,15 +289,26 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     qoq_margin_expanding = (qoq_profit > 0 and qoq_profit >= qoq_sales)
     # FIX: When D/E data is missing, don't assume debt-free.
     # Missing D/E → low_debt = False (uncertain, can't confirm low debt).
-    # Categories that require low_debt (Elite Compounder, Mature Quality) won't
+    # Categories that require low_debt (Wealth Compounder, Blue Chip Stable) won't
     # falsely include stocks with unknown debt levels.
-    low_debt = (not debt_missing) and (debt_equity <= 1.5)
+    low_debt = (not debt_missing) and (debt_equity <= 1.0)
 
     high_growth = (yoy_sales > HIGH_GROWTH_YOY and yoy_profit > HIGH_GROWTH_YOY and yoy_margin_expanding)
-    elite_compounder = (yoy_sales > COMPOUNDER_YOY and yoy_profit > COMPOUNDER_YOY and roe >= 15 and opm >= 10 and low_debt)
+    elite_compounder = (yoy_sales > COMPOUNDER_YOY and yoy_profit > COMPOUNDER_YOY and roe >= 15 and opm >= 12 and low_debt)
     mature_quality = (roe >= 15 and low_debt and market_cap >= 50_000_000_000 and (opm >= 15 or is_mega_cap))
-    turnaround = (yoy_profit >= TURNAROUND_PROFIT and yoy_margin_expanding and opm >= 10 and yoy_sales >= -20.0 and roe >= 10)
-    steady_compounder = (yoy_sales >= STEADY_YOY and yoy_profit >= STEADY_YOY and roe >= 12 and opm >= 10)
+    turnaround = (yoy_profit >= TURNAROUND_PROFIT and yoy_margin_expanding and opm >= 12 and yoy_sales >= -10.0 and roe >= 12)
+    steady_compounder = (yoy_sales >= STEADY_YOY and yoy_profit >= STEADY_YOY and roe >= 14 and opm >= 10)
+
+    # NEW: Safest wealth creators
+    debt_free_cash = (debt_equity <= 0.1 and roe >= 20 and market_cap >= 100_000_000_000 and (fcf_margin is None or fcf_margin > 0))
+    # NEW: Undervalued growth
+    undervalued_growth = (yoy_sales > 15.0 and yoy_profit > 15.0 and peg is not None and 0 < peg < 1.0)
+    # NEW: Capital efficient
+    capital_efficient = (roe >= 25.0 and opm >= 15.0 and low_debt)
+    
+    # NEW: Dividend Aristocrat
+    div_val = div_yield if div_yield is not None else 0.0
+    dividend_aristocrat = (div_val >= 3.0 and roe >= 15.0 and low_debt and market_cap >= 50_000_000_000)
 
     # ── DIAMOND HOLD (LONG TERM) LOGIC ──
     diamond_hold = False
@@ -297,16 +317,20 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
         if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5 and fcf_ok:
             diamond_hold = True
 
-    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold]):
+    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold, debt_free_cash, undervalued_growth, capital_efficient, dividend_aristocrat]):
         return skip(f"No category — YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
-    if diamond_hold:      cats.append("Diamond Hold")
-    if high_growth:       cats.append("High Growth")
-    if elite_compounder:  cats.append("Elite Compounder")
-    if mature_quality:    cats.append("Mature Quality")
-    if turnaround:        cats.append("Turnaround")
-    if steady_compounder: cats.append("Steady Compounder")
+    if diamond_hold:       cats.append("Long Term Compounder")
+    if dividend_aristocrat:cats.append("Dividend Aristocrat")
+    if debt_free_cash:     cats.append("Debt-Free Cash Generator")
+    if undervalued_growth: cats.append("Undervalued Growth")
+    if capital_efficient:  cats.append("Capital Efficient")
+    if high_growth:        cats.append("High Momentum")
+    if elite_compounder:   cats.append("Wealth Compounder")
+    if mature_quality:     cats.append("Blue Chip Stable")
+    if turnaround:         cats.append("Recovery Play")
+    if steady_compounder:  cats.append("Consistent Performer")
 
     score = _score_nonfin(yoy_sales, yoy_profit, qoq_sales, qoq_profit, roe, opm, debt_equity, yoy_margin_expanding, qoq_margin_expanding, mature_quality, elite_compounder, turnaround)
 
@@ -342,6 +366,7 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     pe          = fv("price_earnings_ttm")
     rev_5y      = fv("total_revenue_5y_growth")
     eps_5y      = fv("earnings_per_share_basic_5y_growth")
+    div_yield   = fv("dividend_yield_recent")
 
     missing = [
         name for name, val in [
@@ -377,20 +402,29 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     fin_mature_quality = (roe >= 15 and roa >= 1.0 and market_cap >= 50_000_000_000)
     fin_turnaround = (yoy_profit >= FIN_TURNAROUND_PROFIT and yoy_margin_expanding and yoy_rev >= -10.0 and roe >= 10 and roa >= 0.8)
 
+    # NEW: Efficient lender
+    efficient_lender = (roa >= 2.0 and roe >= 15.0 and market_cap >= 50_000_000_000)
+
+    # NEW: Dividend Aristocrat
+    div_val = div_yield if div_yield is not None else 0.0
+    dividend_aristocrat = (div_val >= 3.0 and roe >= 15.0 and market_cap >= 50_000_000_000)
+
     diamond_hold = False
     if rev_5y is not None and eps_5y is not None and peg is not None:
         if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5:
             diamond_hold = True
 
-    if not any([fin_high_growth, fin_compounder, fin_mature_quality, fin_turnaround, diamond_hold]):
+    if not any([fin_high_growth, fin_compounder, fin_mature_quality, fin_turnaround, diamond_hold, efficient_lender, dividend_aristocrat]):
         return skip(f"No financial category — YoY NII={yoy_rev:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
-    if diamond_hold:       cats.append("Diamond Hold")
-    if fin_high_growth:    cats.append("Financial High Growth")
-    if fin_compounder:     cats.append("Financial Compounder")
-    if fin_mature_quality: cats.append("Financial Mature Quality")
-    if fin_turnaround:     cats.append("Financial Turnaround")
+    if diamond_hold:       cats.append("Long Term Compounder")
+    if dividend_aristocrat:cats.append("Dividend Aristocrat")
+    if efficient_lender:   cats.append("Efficient Lender")
+    if fin_high_growth:    cats.append("Fast Growing Financial")
+    if fin_compounder:     cats.append("Top Bank/NBFC")
+    if fin_mature_quality: cats.append("Blue Chip Financial")
+    if fin_turnaround:     cats.append("Financial Recovery")
 
     score = _score_fin(yoy_rev, yoy_profit, qoq_rev, qoq_profit, roe, roa, yoy_margin_expanding, fin_mature_quality, fin_compounder)
 

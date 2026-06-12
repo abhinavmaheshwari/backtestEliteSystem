@@ -59,12 +59,14 @@ MIN_REVERSAL_SCORE = 72   # minimum to generate an alert (out of 100)
 # =====================================================================================
 
 _REV_CATEGORY_SCORES = {
-    "Elite Compounder": 10, "Financial Compounder": 10,
-    "Diamond Hold": 8,
-    "High Growth": 8, "Financial High Growth": 8,
-    "Steady Compounder": 6,
-    "Mature Quality": 5, "Financial Mature Quality": 5,
-    "Turnaround": 3, "Financial Turnaround": 3,
+    "Debt-Free Cash Generator": 10, "Wealth Compounder": 10, "Top Bank/NBFC": 10,
+    "Long Term Compounder": 10,
+    "Dividend Aristocrat": 9,
+    "Capital Efficient": 9, "Efficient Lender": 9,
+    "Undervalued Growth": 8, "High Momentum": 8, "Fast Growing Financial": 8,
+    "Consistent Performer": 6,
+    "Blue Chip Stable": 5, "Blue Chip Financial": 5,
+    "Recovery Play": 3, "Financial Recovery": 3,
 }
 
 def _score_reversal(

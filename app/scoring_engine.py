@@ -112,18 +112,23 @@ logger = logging.getLogger(__name__)
 
 SCORE_CATEGORY = {
     # ── Non-financial (PATH A) ────────────────────────────────────────────────────
-    "Elite Compounder":     30,
-    "Diamond Hold":         22,   # FIX: was missing; 5Y+ compounder quality ≈ High Growth tier
-    "High Growth":          22,
-    "Steady Compounder":    18,
-    "Mature Quality":       14,
-    "Turnaround":            8,
+    "Debt-Free Cash Generator": 30,   # Zero debt, strong ROE, huge stability
+    "Wealth Compounder":     30,   # High ROE, strong margins, low debt — top tier
+    "Long Term Compounder":  28,   # 5Y+ proven growth + fair valuation — highest conviction
+    "Dividend Aristocrat":   27,   # High yield + quality
+    "Capital Efficient":     26,   # Asset light, exceptional ROE
+    "Undervalued Growth":    24,   # Fast growth at a deep discount
+    "High Momentum":         22,   # Explosive recent growth — strong but needs confirmation
+    "Consistent Performer":  18,   # Steady 10%+ growth — reliable but not explosive
+    "Blue Chip Stable":      14,   # Large cap stability — safe but limited upside
+    "Recovery Play":          8,   # Turnaround — speculative, lowest weight
 
     # ── Financial (PATH B) — set equal to non-financial analogues ─────────────────
-    "Financial Compounder":     30,
-    "Financial High Growth":    22,
-    "Financial Mature Quality": 14,
-    "Financial Turnaround":      8,
+    "Top Bank/NBFC":             30,
+    "Efficient Lender":          26,
+    "Fast Growing Financial":    22,
+    "Blue Chip Financial":       14,
+    "Financial Recovery":         8,
 }
 
 # =====================================================================================
@@ -682,7 +687,7 @@ def calculate_score(
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
     # FIX: Use exact category matching with split, not substring `in` operator.
-    # Multi-category stocks like "Elite Compounder + High Growth" get the best score.
+    # Multi-category stocks like "Wealth Compounder + High Momentum" get the best score.
     cats = [c.strip() for c in category.split("+")]
     category_pts = max((SCORE_CATEGORY.get(c, 0) for c in cats), default=0)
 
