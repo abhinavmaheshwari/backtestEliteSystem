@@ -440,7 +440,17 @@ def start():
         if fired:
             logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
-        return total_alerts
+        try:
+            from database import upsert_scanner_health
+            upsert_scanner_health(
+                scanner_name="EOD",
+                status="OK",
+                last_success=datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            )
+        except Exception:
+            logger.exception("❌ Failed to update scanner health for EOD")
+
+        return total_alerts1
 
     except Exception:
         logger.exception("❌ CRITICAL EOD SCAN ERROR")

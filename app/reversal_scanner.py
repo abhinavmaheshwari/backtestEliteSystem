@@ -2,7 +2,7 @@
 # app/reversal_scanner.py (SCHEDULER READY)
 # DEEP DISCOUNT & MEAN REVERSION SCANNER (With Valuation Metrics)
 # =====================================================================================
-
+aa
 import pandas as pd
 import logging
 from zoneinfo import ZoneInfo
@@ -371,6 +371,15 @@ def _run_scan():
                 send_telegram_message(msg, scan_type="REVERSAL")
 
     logger.info(f"✅ REVERSAL SCAN DONE | Found {total_alerts} bottoming stocks.")
+    try:
+        from database import upsert_scanner_health
+        upsert_scanner_health(
+            scanner_name="REVERSAL",
+            status="OK",
+            last_success=ist_now.strftime("%Y-%m-%d %H:%M:%S")
+        )
+    except Exception:
+        logger.exception("❌ Failed to update scanner health for REVERSAL")
     return total_alerts
 
 

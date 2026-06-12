@@ -30,6 +30,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Optional
 
 import psycopg2
 from psycopg2 import pool
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 # ── Connection pool ───────────────────────────────────────────────────────────────────
-_pool: pool.ThreadedConnectionPool | None = None
+_pool: Optional[pool.ThreadedConnectionPool] = None
 _pool_lock = threading.Lock()
 
 def _get_pool() -> pool.ThreadedConnectionPool:
@@ -127,6 +128,14 @@ def init_db():
                         error_msg     TEXT,
                         updated_at    TEXT    NOT NULL
                     )
+                """)
+
+                # Clean up legacy mismatch names ending with 'Scanner' or 'Tracker'
+                cur.execute("""
+                    DELETE FROM scanner_health
+                    WHERE scanner_name LIKE '%%Scanner'
+                       OR scanner_name LIKE '%%Tracker'
+                       OR scanner_name NOT IN ('INTRADAY', '1H', 'EOD', 'REVERSAL')
                 """)
 
                 # ── System state table for dashboard metrics / state caching ───────
@@ -363,7 +372,7 @@ def save_system_state(key: str, value_str: str) -> None:
                 logger.exception(f"❌ save_system_state failed for key={key}")
 
 
-def get_system_state(key: str) -> str | None:
+def get_system_state(key: str) -> Optional[str]:
     """Retrieve system state value for a specific key."""
     init_db()
     with get_connection() as conn:

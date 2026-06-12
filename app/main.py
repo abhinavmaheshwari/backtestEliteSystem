@@ -27,18 +27,31 @@ logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 
+# Map watchdog thread names to dashboard database keys
+THREAD_TO_SCANNER = {
+    "IntradayScanner":    "INTRADAY",
+    "LiveScanner":        "1H",
+    "EODScanner":         "EOD",
+    "ReversalScanner":    "REVERSAL",
+    "PerformanceTracker": "PERFORMANCE_TRACKER",
+}
+
 # Lazy import — dashboard_server may not be ready yet at module load
 def _notify_down(name: str, err: str):
     try:
+        scanner_name = THREAD_TO_SCANNER.get(name, name)
         from dashboard_server import notify_scanner_down
-        notify_scanner_down(name, err)
+        notify_scanner_down(scanner_name, err)
+        _telegram_notify(f"🔴 Scanner {scanner_name} is DOWN!\nError: {err}")
     except Exception:
         pass
 
 def _clear_down(name: str):
     try:
+        scanner_name = THREAD_TO_SCANNER.get(name, name)
         from dashboard_server import clear_scanner_down
-        clear_scanner_down(name)
+        clear_scanner_down(scanner_name)
+        _telegram_notify(f"🟢 Scanner {scanner_name} is active / recovered.")
     except Exception:
         pass
 
@@ -182,6 +195,7 @@ def run_eod_scanner():
         )
         logger.critical(f"💀 EOD scanner crashed: {exc}")
         _telegram_notify(msg)
+        raise exc
     # Thread exits — watchdog will NOT restart (completed_cleanly handled in _run wrapper)
 
 
@@ -210,6 +224,7 @@ def run_reversal_scanner():
         )
         logger.critical(f"💀 REVERSAL scanner crashed: {exc}")
         _telegram_notify(msg)
+        raise exc
 
 
 # =====================================================================================

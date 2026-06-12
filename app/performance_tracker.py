@@ -22,6 +22,7 @@
 import os
 import json
 import logging
+from typing import Optional, Tuple
 import pandas as pd
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -92,7 +93,7 @@ def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
         return {}
 
 
-def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> pd.DataFrame | None:
+def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.DataFrame]:
     """
     Fetch 1h bars for *symbol* from the alert date to today.
     Returns a DataFrame with timezone-aware IST index, or None on failure.
@@ -157,7 +158,7 @@ def _check_sl_and_target(
     hist: pd.DataFrame,
     stop_loss: float,
     target_price: float,
-) -> tuple[str, float | None]:
+) -> Tuple[str, Optional[float]]:
     """
     Walk through post-alert 1h bars in chronological order.
     Returns (outcome, exit_price) where outcome is one of:
@@ -190,7 +191,7 @@ def _days_held(alert_date_str: str) -> int:
 
 
 def _trade_status(
-    pnl_pct: float | None,
+    pnl_pct: Optional[float],
     days: int,
     stopped_out: bool,
     target_hit: bool,
@@ -480,13 +481,13 @@ def build_performance_data():
     today_str = date.today().isoformat()
     for sc in all_scanners:
         sc_today = [t for t in trades if t["scanner"] == sc and t["entry_date"] == today_str]
-        sc_all_times = [t["alert_time"] for t in trades if t["scanner"] == sc and t.get("alert_time")]
-        last_success = max(sc_all_times) if sc_all_times else None
         try:
+            # We pass last_success=None so that the DB preserves the actual heartbeat
+            # timestamps updated directly by the scanner loops.
             upsert_scanner_health(
                 scanner_name  = sc,
                 status        = "OK",
-                last_success  = last_success,
+                last_success  = None,
                 today_alerts  = len(sc_today),
                 error_msg     = None,
             )

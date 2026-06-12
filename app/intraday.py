@@ -488,6 +488,16 @@ def start():
             logger.info("=" * 80)
             logger.info(f"✅ INTRADAY SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")
 
+            try:
+                from database import upsert_scanner_health
+                upsert_scanner_health(
+                    scanner_name="INTRADAY",
+                    status="OK",
+                    last_success=datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                )
+            except Exception:
+                logger.exception("❌ Failed to update scanner health for INTRADAY")
+
             fired = {k: v for k, v in rejection_counts.items() if v > 0}
             if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))

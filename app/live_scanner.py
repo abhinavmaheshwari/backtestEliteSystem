@@ -479,6 +479,17 @@ def start():
                 logger.info("📭 No 1H alerts this cycle")
             logger.info("=" * 80)
             logger.info(f"✅ 1H SCAN COMPLETE | {elapsed:.2f}s | Alerts={total_alerts}/{len(watchlist)}")
+            
+            try:
+                from database import upsert_scanner_health
+                upsert_scanner_health(
+                    scanner_name="1H",
+                    status="OK",
+                    last_success=datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                )
+            except Exception:
+                logger.exception("❌ Failed to update scanner health for 1H")
+
             if rejection_summary:
                 logger.info(f"   Rejections: {rejection_summary}")
 
