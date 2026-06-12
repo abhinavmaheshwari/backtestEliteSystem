@@ -556,11 +556,10 @@ def calculate_score(
             return 0
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
-    category_pts = 0
-    for label, pts in SCORE_CATEGORY.items():
-        if label in category:
-            category_pts = pts
-            break
+    # FIX: Use exact category matching with split, not substring `in` operator.
+    # Multi-category stocks like "Elite Compounder + High Growth" get the best score.
+    cats = [c.strip() for c in category.split("+")]
+    category_pts = max((SCORE_CATEGORY.get(c, 0) for c in cats), default=0)
 
     score += category_pts
     logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")

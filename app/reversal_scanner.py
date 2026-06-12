@@ -41,7 +41,99 @@ MIN_YOY_REVENUE_GROWTH = 8.0      # min revenue growth % (skip shrinking busines
 MAX_DROP_BELOW_SMA200  = 25.0     # don't catch falling knives too far below SMA200
 # ─────────────────────────────────────────────────────────────────────────────────────
 
-# Re-check dedup prevents duplicate alerts if process restarts same day
+# ── REVERSAL SCORE THRESHOLDS ────────────────────────────────────────────────────────
+MIN_REVERSAL_SCORE = 72   # minimum to generate an alert (out of 100)
+
+# =====================================================================================
+# REVERSAL-SPECIFIC SCORING
+#
+# Unlike breakout scanners that use scoring_engine.py, reversals have different
+# quality dimensions. This scores based on:
+#   Volume conviction  — 25 pts max  (higher surge = more institutional interest)
+#   SMA200 proximity   — 20 pts max  (closer to SMA200 = less falling-knife risk)
+#   MACD momentum      — 15 pts max  (stronger MACD flip = stronger reversal)
+#   RSI curl quality   — 15 pts max  (faster RSI recovery from oversold)
+#   Drop sweet spot    — 10 pts max  (25-45% drop is ideal; too shallow/deep penalized)
+#   Category quality   — 10 pts max  (fundamental tier from daily builder)
+#   R:R quality        —  5 pts max  (reward > 2.5:1 risk-reward setups)
+# =====================================================================================
+
+_REV_CATEGORY_SCORES = {
+    "Elite Compounder": 10, "Financial Compounder": 10,
+    "Diamond Hold": 8,
+    "High Growth": 8, "Financial High Growth": 8,
+    "Steady Compounder": 6,
+    "Mature Quality": 5, "Financial Mature Quality": 5,
+    "Turnaround": 3, "Financial Turnaround": 3,
+}
+
+def _score_reversal(
+    vol_ratio: float,
+    drop_pct: float,
+    current_rsi: float,
+    past_10_rsi_min: float,
+    macd_hist: float | None,
+    pct_below_sma200: float | None,
+    category: str,
+    rr_ratio: float | None,
+) -> int:
+    """Score a reversal setup from 0-100 based on quality dimensions."""
+    score = 0
+
+    # ── Volume conviction (25 pts) ──
+    if vol_ratio >= 5.0:   score += 25
+    elif vol_ratio >= 3.5: score += 20
+    elif vol_ratio >= 2.5: score += 15
+    elif vol_ratio >= 2.0: score += 10
+    elif vol_ratio >= 1.5: score += 5
+
+    # ── SMA200 proximity (20 pts) — closer = safer entry ──
+    if pct_below_sma200 is not None:
+        if pct_below_sma200 <= 3.0:    score += 20  # very close to SMA200
+        elif pct_below_sma200 <= 8.0:  score += 15
+        elif pct_below_sma200 <= 15.0: score += 10
+        elif pct_below_sma200 <= 20.0: score += 5
+        # > 20% below SMA200: no bonus (falling knife territory)
+    else:
+        score += 10  # no SMA200 data — give benefit of doubt
+
+    # ── MACD momentum (15 pts) ──
+    if macd_hist is not None:
+        try:
+            mh = float(macd_hist)
+            if mh > 0.5:   score += 15   # strong bullish histogram
+            elif mh > 0.2: score += 10
+            elif mh > 0:   score += 5    # just turned positive
+        except (TypeError, ValueError):
+            pass
+
+    # ── RSI curl quality (15 pts) — bigger recovery = stronger signal ──
+    rsi_recovery = current_rsi - past_10_rsi_min
+    if rsi_recovery >= 20:   score += 15   # explosive recovery from deep oversold
+    elif rsi_recovery >= 12: score += 12
+    elif rsi_recovery >= 8:  score += 8
+    elif rsi_recovery >= 5:  score += 5
+
+    # ── Drop sweet spot (10 pts) — 25-45% is ideal for reversals ──
+    if 25.0 <= drop_pct <= 45.0:    score += 10   # sweet spot
+    elif 20.0 <= drop_pct < 25.0:   score += 7    # slightly shallow
+    elif 45.0 < drop_pct <= 55.0:   score += 5    # deep but recoverable
+    elif 18.0 <= drop_pct < 20.0:   score += 3    # very shallow
+    # > 55% or < 18%: no bonus
+
+    # ── Category quality (10 pts) ──
+    for cat_label, cat_pts in _REV_CATEGORY_SCORES.items():
+        if cat_label in category:
+            score += cat_pts
+            break
+
+    # ── R:R quality (5 pts) ──
+    if rr_ratio is not None:
+        if rr_ratio >= 3.5:   score += 5
+        elif rr_ratio >= 2.5: score += 3
+        elif rr_ratio >= 2.0: score += 1
+
+    return min(score, 100)
 
 
 def _run_scan():
@@ -197,6 +289,29 @@ def _run_scan():
 
         signal_str = ", ".join(reversal_signals)
 
+        # ── DYNAMIC REVERSAL SCORING ──────────────────────────────────────────
+        pct_below_200 = None
+        if "SMA200" in ticker.columns and not pd.isna(latest.get("SMA200")):
+            _sma200 = float(latest["SMA200"])
+            if _sma200 > 0:
+                pct_below_200 = (_sma200 - close_price) / _sma200 * 100
+
+        reversal_score = _score_reversal(
+            vol_ratio=vol_ratio,
+            drop_pct=drop_pct,
+            current_rsi=current_rsi,
+            past_10_rsi_min=float(past_10_rsi),
+            macd_hist=latest.get("MACD_HIST"),
+            pct_below_sma200=pct_below_200,
+            category=category,
+            rr_ratio=sl_result.get("rr_ratio"),
+        )
+
+        if reversal_score < MIN_REVERSAL_SCORE:
+            logger.debug(f"  ⊘ {symbol} reversal score {reversal_score} < {MIN_REVERSAL_SCORE} — skipping")
+            continue
+        # ─────────────────────────────────────────────────────────────────────
+
         saved = save_alert_if_new(
             symbol,
             dedup_key,
@@ -205,7 +320,7 @@ def _run_scan():
             category=category,
             entry_price=round(close_price, 2),
             signals=signal_str,
-            score=85,
+            score=reversal_score,
             rsi=round(current_rsi, 1),
             volume_ratio=round(vol_ratio, 2),
             stop_loss=suggested_stop,
@@ -226,7 +341,7 @@ def _run_scan():
             "volume_ratio":     round(vol_ratio, 2),
             "body_ratio":       round(abs(close_price - float(latest["Open"])) / candle_range * 100)
                                 if candle_range > 0 else 0,
-            "score":            85,
+            "score":            reversal_score,
             "above_ema20":      True,
             "atr_stop":         suggested_stop,
             "target_price":     target_price,

@@ -278,7 +278,11 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
 
     yoy_margin_expanding = (yoy_profit >= yoy_sales)
     qoq_margin_expanding = (qoq_profit > 0 and qoq_profit >= qoq_sales)
-    low_debt             = (debt_equity <= 1.5 or debt_equity == 0.0)
+    # FIX: When D/E data is missing, don't assume debt-free.
+    # Missing D/E → low_debt = False (uncertain, can't confirm low debt).
+    # Categories that require low_debt (Elite Compounder, Mature Quality) won't
+    # falsely include stocks with unknown debt levels.
+    low_debt = (not debt_missing) and (debt_equity <= 1.5)
 
     high_growth = (yoy_sales > HIGH_GROWTH_YOY and yoy_profit > HIGH_GROWTH_YOY and yoy_margin_expanding)
     elite_compounder = (yoy_sales > COMPOUNDER_YOY and yoy_profit > COMPOUNDER_YOY and roe >= 15 and opm >= 10 and low_debt)

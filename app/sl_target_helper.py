@@ -473,60 +473,79 @@ def _compute_reversal(
     risk      = max(entry - stop_loss, entry * 0.008)  # min 0.8% risk for reversal
 
     # ── REVERSAL TARGETS: mean reversion levels, NOT overhead resistance ──────
+    #
+    # CRITICAL FIX: The reversal scanner entry condition requires close > EMA20.
+    # Therefore EMA20 is ALWAYS below entry — it can never be T1.
+    #
+    # Correct cascade for reversal targets:
+    #   T1: BB_MID (if above entry — Bollinger mean reversion)
+    #       → SMA50 (next mean-reversion level above, if available)
+    #       → R1 (nearest resistance if all means are below entry)
+    #       → min 2:1 RR fallback
+    #   T2: SMA50 (if not used as T1) or R1 or 3.5×RR
+    #   T3: R2 on strong MACD + ADX momentum
+    #
     t_method = ""
 
-    # T1: EMA20 or BB_MID (mean reversion target)
-    ema20_v = _safe(ema20)
     bbmid_v = _safe(bb_mid)
+    sma50_v = _safe(sma50)
+    r1_v    = _safe(r1)
+    r2_v    = _safe(r2)
 
     t1_raw = None
-    if ema20_v and ema20_v > entry:
-        t1_raw   = ema20_v
-        t_method = f"T1: EMA20 ₹{round(t1_raw, 2)} (mean reversion)"
-    elif bbmid_v and bbmid_v > entry:
+
+    # Priority 1: BB_MID above entry (Bollinger mean reversion)
+    if bbmid_v and bbmid_v > entry:
         t1_raw   = bbmid_v
-        t_method = f"T1: BB Mid ₹{round(t1_raw, 2)} (mean reversion)"
+        t_method = f"T1: BB Mid ₹{round(t1_raw, 2)} (Bollinger mean reversion)"
+    # Priority 2: SMA50 above entry (longer-term mean reversion)
+    elif sma50_v and sma50_v > entry:
+        t1_raw   = sma50_v
+        t_method = f"T1: SMA50 ₹{round(t1_raw, 2)} (50-day mean reversion)"
+    # Priority 3: R1 above entry (nearest resistance)
+    elif r1_v and r1_v > entry:
+        t1_raw   = r1_v
+        t_method = f"T1: R1 ₹{round(t1_raw, 2)} (above all means — use resistance)"
+    # Fallback: minimum 2:1 RR
     else:
-        # Mean (EMA20/BB_MID) is below entry — stock has already recovered above mean
-        # Use R1 as primary target or minimum 2:1 RR
-        r1_v = _safe(r1)
-        if r1_v and r1_v > entry:
-            t1_raw   = r1_v
-            t_method = f"T1: R1 ₹{round(t1_raw, 2)} (price above mean — use resistance)"
-        else:
-            t1_raw   = entry + min_rr * risk
-            t_method = f"T1: min {min_rr}×RR (mean already crossed)"
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: min {min_rr}×RR (all mean/resistance levels below entry)"
 
     # Enforce minimum 2:1 RR
     if (t1_raw - entry) < min_rr * risk:
         t1_raw   = entry + min_rr * risk
-        t_method = f"T1: bumped to {min_rr}×RR (mean too close to entry)"
+        t_method = f"T1: bumped to {min_rr}×RR (target too close to entry)"
 
     target_1 = round(t1_raw, 2)
     rr_ratio  = round((target_1 - entry) / risk, 2) if risk > 0 else 0.0
 
-    # T2: SMA50 (next mean reversion level)
+    # T2: next level above T1 (SMA50 if not already T1, else R1, else 3.5×RR)
     target_2  = None
-    sma50_v   = _safe(sma50)
     if sma50_v and sma50_v > target_1:
         target_2  = round(sma50_v, 2)
         t_method += f" | T2: SMA50 ₹{target_2} (further recovery)"
+    elif r1_v and r1_v > target_1:
+        target_2  = round(r1_v, 2)
+        t_method += f" | T2: R1 ₹{target_2} (resistance)"
     else:
-        # SMA50 not available or below T1 — use 3.5×RR
         t2_cand   = round(entry + 3.5 * risk, 2)
         if t2_cand > target_1:
             target_2  = t2_cand
             t_method += f" | T2: 3.5×RR ₹{target_2}"
 
-    # T3: R1 pivot only on strong momentum (MACD bull + volume surge)
+    # T3: R2 only on strong momentum (MACD bull + ADX > 20)
     target_3  = None
     above_t2  = target_2 if target_2 else target_1
     macd_bull = macd_hist is not None and _safe(abs(float(macd_hist))) is not None and float(macd_hist) > 0
     adx_v     = _safe(adx)
-    r1_v      = _safe(r1)
-    if macd_bull and r1_v and r1_v > above_t2 and (adx_v is None or adx_v > 20):
-        target_3  = round(r1_v, 2)
-        t_method += f" | T3: R1 ₹{target_3} (full recovery — MACD momentum)"
+    if macd_bull and r2_v and r2_v > above_t2 and (adx_v is None or adx_v > 20):
+        target_3  = round(r2_v, 2)
+        t_method += f" | T3: R2 ₹{target_3} (full recovery — MACD momentum)"
+    elif macd_bull and (adx_v is None or adx_v > 20):
+        t3_cand = round(entry + 5.0 * risk, 2)
+        if t3_cand > above_t2:
+            target_3  = t3_cand
+            t_method += f" | T3: 5×RR ₹{target_3} (MACD momentum)"
 
     zone = _rsi_zone(rsi)
 

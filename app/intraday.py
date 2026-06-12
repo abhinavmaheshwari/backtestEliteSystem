@@ -198,7 +198,8 @@ def start():
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
-                    ticker = apply_indicators(ticker, timeframe=TIMEFRAME)
+                    ticker = apply_indicators(ticker, timeframe=TIMEFRAME,
+                                              daily_ohlc=daily_context_data.get(symbol))
 
                     if ticker is None or ticker.empty:
                         rejection_counts["indicator_fail"] += 1
@@ -289,8 +290,10 @@ def start():
                             rejection_counts["rsi_not_rising"] += 1
                             continue
 
+                    # ADX floor is timeframe-aware: 15m bars naturally show much lower
+                    # ADX than daily bars. 18 = directional movement on 15m timeframe.
                     if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
-                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                        if float(latest["ADX"]) < 18:
                             rejection_counts["weak_adx"] += 1
                             continue
 
@@ -304,13 +307,10 @@ def start():
                             rejection_counts["below_sma50"] += 1
                             continue
 
-                    if (
-                        "SMA50" in ticker.columns and "SMA200" in ticker.columns and
-                        not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))
-                    ):
-                        if float(latest["SMA50"]) < float(latest["SMA200"]):
-                            rejection_counts["no_golden_cross"] += 1
-                            continue
+                    # NOTE: SMA200 on 15m bars is always NaN (need 200 bars, only
+                    # have ~105 from 10 days). Golden cross is checked on the daily
+                    # chart via daily_context_data in the MTA block below instead.
+                    # The SMA50 check above IS valid on 15m (50 bars = ~2 trading days).
 
                     if (
                         "MACD" in ticker.columns and "MACD_SIGNAL" in ticker.columns and
@@ -461,6 +461,7 @@ def start():
                         "t_method":         sl_result.get("t_method"),
                         "rr_ratio":         sl_result.get("rr_ratio"),
                         "trail_note":       sl_result.get("trail_note"),
+                        "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                         "peg":              row.get("PEG Ratio"),
                         "yoy_rev":          row.get("YOY Revenue %"),
                         "yoy_profit":       row.get("YOY Profit %"),

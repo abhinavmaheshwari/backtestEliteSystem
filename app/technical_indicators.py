@@ -48,9 +48,19 @@ def _find_swing_highs(high: pd.Series, n: int = 3) -> pd.Series:
     return result.ffill()
 
 
-def apply_indicators(df: pd.DataFrame, timeframe: str = "1d") -> pd.DataFrame:
+def apply_indicators(df: pd.DataFrame, timeframe: str = "1d", daily_ohlc: pd.DataFrame = None) -> pd.DataFrame:
     """
     Applies all technical indicators and returns the enriched DataFrame.
+
+    Parameters
+    ----------
+    df         : OHLCV DataFrame
+    timeframe  : "1d", "1h", or "15m"
+    daily_ohlc : Optional daily OHLCV DataFrame. When provided for intraday
+                 timeframes (1h/15m), pivot points (PP, S1-S3, R1-R3) are
+                 calculated from the previous day's OHLC instead of the
+                 previous intraday bar. This produces meaningful support/
+                 resistance levels for SL/Target placement.
 
     Columns produced:
     -- Trend -----------------------------------------------------------
@@ -66,7 +76,7 @@ def apply_indicators(df: pd.DataFrame, timeframe: str = "1d") -> pd.DataFrame:
     SWING_HIGH   — last confirmed pivot swing high (true resistance)
     SWING_LOW_RAW   — rolling window min (fallback if swing not found)
     SWING_HIGH_RAW  — rolling window max (fallback if swing not found)
-    PP           — Classic Pivot Point (previous bar)
+    PP           — Classic Pivot Point (previous day for intraday, previous bar for EOD)
     S1, S2, S3   — Pivot Supports
     R1, R2, R3   — Pivot Resistances
     -- Breakout highs (pre-calculated, timeframe-aware) ----------------
@@ -121,18 +131,37 @@ def apply_indicators(df: pd.DataFrame, timeframe: str = "1d") -> pd.DataFrame:
     df["SWING_HIGH_RAW"] = high.rolling(window=swing_window, min_periods=swing_window // 2).max()
 
     # ── SUPPORT / RESISTANCE — Classic Pivot Points ───────────────────────────
-    # Using 3-bar lookback pivot for intraday, previous daily bar for EOD
-    prev_high  = high.shift(1)
-    prev_low   = low.shift(1)
-    prev_close = close.shift(1)
+    # For intraday timeframes: use DAILY OHLC (previous day) when available.
+    # This produces meaningful S/R levels that traders actually use (CPR/pivots).
+    # For daily bars: use the previous day's bar (shift(1)) as is standard.
+    if timeframe in ("1h", "15m") and daily_ohlc is not None and len(daily_ohlc) >= 2:
+        # Use the last completed daily bar as the pivot source
+        last_daily = daily_ohlc.iloc[-1]
+        d_high  = float(last_daily["High"])
+        d_low   = float(last_daily["Low"])
+        d_close = float(last_daily["Close"])
 
-    df["PP"] = ((prev_high + prev_low + prev_close) / 3).round(2)
-    df["R1"] = (2 * df["PP"] - prev_low).round(2)
-    df["R2"] = (df["PP"] + (prev_high - prev_low)).round(2)
-    df["R3"] = (prev_high + 2 * (df["PP"] - prev_low)).round(2)
-    df["S1"] = (2 * df["PP"] - prev_high).round(2)
-    df["S2"] = (df["PP"] - (prev_high - prev_low)).round(2)
-    df["S3"] = (prev_low - 2 * (prev_high - df["PP"])).round(2)
+        pp = round((d_high + d_low + d_close) / 3, 2)
+        df["PP"] = pp
+        df["R1"] = round(2 * pp - d_low, 2)
+        df["R2"] = round(pp + (d_high - d_low), 2)
+        df["R3"] = round(d_high + 2 * (pp - d_low), 2)
+        df["S1"] = round(2 * pp - d_high, 2)
+        df["S2"] = round(pp - (d_high - d_low), 2)
+        df["S3"] = round(d_low - 2 * (d_high - pp), 2)
+    else:
+        # Standard: previous bar's OHLC (correct for daily timeframe)
+        prev_high  = high.shift(1)
+        prev_low   = low.shift(1)
+        prev_close = close.shift(1)
+
+        df["PP"] = ((prev_high + prev_low + prev_close) / 3).round(2)
+        df["R1"] = (2 * df["PP"] - prev_low).round(2)
+        df["R2"] = (df["PP"] + (prev_high - prev_low)).round(2)
+        df["R3"] = (prev_high + 2 * (df["PP"] - prev_low)).round(2)
+        df["S1"] = (2 * df["PP"] - prev_high).round(2)
+        df["S2"] = (df["PP"] - (prev_high - prev_low)).round(2)
+        df["S3"] = (prev_low - 2 * (prev_high - df["PP"])).round(2)
 
     # ── PRE-CALCULATED ROLLING WINDOW HIGHS ───────────────────────────────────
     n = len(df)

@@ -196,7 +196,8 @@ def start():
                         rejection_counts["insufficient_bars"] += 1
                         continue
 
-                    ticker = apply_indicators(ticker, timeframe="1h")
+                    ticker = apply_indicators(ticker, timeframe="1h",
+                                              daily_ohlc=daily_context_data.get(symbol))
 
                     if ticker is None or ticker.empty:
                         rejection_counts["indicator_fail"] += 1
@@ -294,8 +295,10 @@ def start():
                         if float(latest["SMA50"]) < float(latest["SMA200"]):
                             rejection_counts["no_golden_cross"] += 1
                             continue
+                    # ADX floor is timeframe-aware: 1H bars naturally show lower ADX
+                    # than daily bars. 20 = established trend on hourly timeframe.
                     if "ADX" in ticker.columns and not pd.isna(latest.get("ADX")):
-                        if float(latest["ADX"]) < ADX_MIN_THRESHOLD:
+                        if float(latest["ADX"]) < 20:
                             rejection_counts["weak_adx"] += 1
                             continue
                     if (
@@ -446,6 +449,7 @@ def start():
                         "t_method":         sl_result.get("t_method"),
                         "rr_ratio":         sl_result.get("rr_ratio"),
                         "trail_note":       sl_result.get("trail_note"),
+                        "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                         "peg":              row.get("PEG Ratio"),
                         "yoy_rev":          row.get("YOY Revenue %"),
                         "yoy_profit":       row.get("YOY Profit %"),
