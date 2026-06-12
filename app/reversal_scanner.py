@@ -12,8 +12,9 @@ from telegram_engine import send_telegram_message
 from message_formatter import build_message
 from database import init_db, save_alert_if_new, cleanup_old_alerts
 from price_cache import fetch_watchlist_data
-from config import WATCHLIST_PATH, DEDUP_DAYS
+from config import WATCHLIST_PATH, DEDUP_DAYS, CLIMAX_VOLUME_LOOKBACK, MIN_CANDLE_RANGE_PCT
 from sl_target_helper import compute_sl_and_target
+from delivery_data import fetch_previous_day_delivery
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,6 +76,8 @@ def _score_reversal(
     pct_below_sma200: float | None,
     category: str,
     rr_ratio: float | None,
+    obv_trend: int | None = None,
+    delivery_pct: float | None = None,
 ) -> int:
     """Score a reversal setup from 0-100 based on quality dimensions."""
     score = 0
@@ -132,6 +135,16 @@ def _score_reversal(
         elif rr_ratio >= 2.5: score += 3
         elif rr_ratio >= 2.0: score += 1
 
+    # ── OBV confirmation bonus (5 pts) — volume confirming reversal ──
+    if obv_trend is not None and obv_trend == 1:
+        score += 5  # OBV rising = accumulation (institutional buying into reversal)
+
+    # ── Delivery conviction bonus (5 pts) — institutional accumulation ──
+    if delivery_pct is not None:
+        if delivery_pct >= 50.0:   score += 5   # strong institutional accumulation
+        elif delivery_pct >= 35.0: score += 3   # moderate positional buying
+        elif delivery_pct >= 25.0: score += 1   # mild conviction
+
     return min(score, 100)
 
 
@@ -143,6 +156,8 @@ def _run_scan():
     logger.info("=" * 80)
     logger.info(f"🔄 MEAN REVERSION SCAN | {ist_now.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 80)
+
+    prev_delivery_map = fetch_previous_day_delivery()
 
     watchlist = pd.read_parquet(WATCHLIST_PATH)
     # Pulling 1y data to ensure we catch the 52W High correctly
@@ -255,7 +270,37 @@ def _run_scan():
         dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
 
         candle_range   = float(latest["High"]) - float(latest["Low"])
+        candle_high    = float(latest["High"])
+        candle_low     = float(latest["Low"])
         atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
+
+        # ── v5: CLIMAX TOP DISQUALIFIER ───────────────────────────────────────
+        # Operators push beaten-down stocks to a fake bounce high with massive
+        # volume, then dump. Same climax top pattern as breakout scanners.
+        lookback_ct = min(CLIMAX_VOLUME_LOOKBACK, len(ticker) - 1)
+        if lookback_ct >= 5:
+            latest_vol_ct = float(latest["Volume"])
+            max_vol_ct    = float(ticker["Volume"].iloc[-lookback_ct - 1:-1].max())
+            candle_rng_ct = candle_high - candle_low
+            if candle_rng_ct > 0 and latest_vol_ct > max_vol_ct:
+                upper_wick_pct = (candle_high - close_price) / candle_rng_ct
+                close_pos_ct   = (close_price - candle_low) / candle_rng_ct
+                if upper_wick_pct > 0.25 and close_pos_ct < 0.40:
+                    logger.debug(
+                        f"  ⊘ {symbol} climax top on reversal candle — skipping"
+                    )
+                    continue
+
+        # ── v5: THIN SPREAD TRAP ─────────────────────────────────────────────
+        # Reversal candle with tiny range = no conviction, possible manipulation.
+        if close_price > 0 and candle_range > 0:
+            range_pct = candle_range / close_price
+            if range_pct < MIN_CANDLE_RANGE_PCT:
+                logger.debug(
+                    f"  ⊘ {symbol} thin spread reversal ({range_pct:.3%}) — skipping"
+                )
+                continue
+
         # ── Dynamic S/R and Indicator-based SL + Target (REVERSAL mode) ───────
         # Reversal scanner: targets are mean-reversion levels (EMA20, SMA50),
         # NOT overhead resistance. SL is widest buffer (anti-trap for volatile stocks).
@@ -279,6 +324,8 @@ def _run_scan():
             r2=latest.get("R2"),
             swing_low_raw=latest.get("SWING_LOW_RAW"),
             swing_high_raw=latest.get("SWING_HIGH_RAW"),
+            candle_low=candle_low,
+            vwap=latest.get("VWAP"),
             # Mean-reversion specific targets
             ema20=latest.get("EMA20"),
             sma50=latest.get("SMA50"),
@@ -295,6 +342,16 @@ def _run_scan():
             if _sma200 > 0:
                 pct_below_200 = (_sma200 - close_price) / _sma200 * 100
 
+        # Read OBV trend for scoring bonus
+        obv_trend_val = None
+        if "OBV_TREND" in ticker.columns:
+            try:
+                obv_trend_val = int(latest.get("OBV_TREND", 0) or 0)
+            except (TypeError, ValueError):
+                obv_trend_val = 0
+
+        delivery_pct = prev_delivery_map.get(symbol, None)
+
         reversal_score = _score_reversal(
             vol_ratio=vol_ratio,
             drop_pct=drop_pct,
@@ -304,6 +361,8 @@ def _run_scan():
             pct_below_sma200=pct_below_200,
             category=category,
             rr_ratio=sl_result.get("rr_ratio"),
+            obv_trend=obv_trend_val,
+            delivery_pct=delivery_pct,
         )
 
         if reversal_score < MIN_REVERSAL_SCORE:
@@ -322,7 +381,7 @@ def _run_scan():
                 "above_sma50":      above_sma50,
                 "golden_cross":     golden_cross,
                 "body_ratio":       round(body_ratio, 2),
-                "delivery_pct":     None,
+                "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                 "rsi":              round(current_rsi, 1),
                 "volume_ratio":     round(vol_ratio, 2)
             },

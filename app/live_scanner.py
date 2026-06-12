@@ -30,7 +30,8 @@ from config import (
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
     DEDUP_DAYS,
-    ADX_MIN_THRESHOLD, 
+    ADX_MIN_THRESHOLD,
+    MAX_PRE_BREAKOUT_RED_CANDLES,
 )
 
 logging.basicConfig(
@@ -131,7 +132,8 @@ def start():
                 "penny_stock", "rsi_range", "rsi_not_rising", "below_ema20", 
                 "below_sma50", "no_golden_cross", "weak_adx", "macd_bearish", 
                 "far_from_52w_high", "gap_candle", "extended_breakout", "below_daily_ema20", "low_score", 
-                "duplicate", "stale_data"
+                "duplicate", "stale_data",
+                "prior_red_candles", "obv_divergence"
             ]}
 
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
@@ -347,6 +349,23 @@ def start():
 
                     delivery_pct = prev_delivery_map.get(symbol, None)
 
+                    # ── v5: PREVIOUS CANDLE CONTEXT FILTER ─────────────────────────
+                    if len(ticker) >= 3:
+                        red_count = 0
+                        for _ri in range(-3, -1):
+                            if float(ticker["Close"].iloc[_ri]) < float(ticker["Open"].iloc[_ri]):
+                                red_count += 1
+                        if red_count >= MAX_PRE_BREAKOUT_RED_CANDLES:
+                            rejection_counts["prior_red_candles"] += 1
+                            continue
+
+                    # ── v5: OBV DIVERGENCE FILTER ───────────────────────────────
+                    if "OBV_TREND" in ticker.columns:
+                        obv_trend = int(latest.get("OBV_TREND", 0) or 0)
+                        if obv_trend == -1:
+                            rejection_counts["obv_divergence"] += 1
+                            continue
+
                     score = calculate_score(
                         category=category,
                         breakout_count=len(signals),
@@ -400,6 +419,7 @@ def start():
                         swing_low_raw=latest.get("SWING_LOW_RAW"),
                         swing_high_raw=latest.get("SWING_HIGH_RAW"),
                         candle_low=candle_low,
+                        vwap=latest.get("VWAP"),
                     )
                     suggested_stop = sl_result["stop_loss"]
                     target_price   = sl_result["target_1"]

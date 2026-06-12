@@ -104,3 +104,50 @@ TELEGRAM_CHUNK_SIZE = 10
 TELEGRAM_RETRIES = 3
 TELEGRAM_TIMEOUT = 10
 LOG_LEVEL = "INFO"
+
+# =====================================================================================
+# ANTI-FAKE-BREAKOUT PARAMETERS
+# =====================================================================================
+
+# Minimum % above prior high for a valid breakout (timeframe-aware)
+MIN_BREAKOUT_MARGIN = {
+    "15m": 0.003,   # 0.3% above prior high
+    "1h":  0.005,   # 0.5%
+    "1d":  0.007,   # 0.7%
+}
+
+# Breakout candle volume must be at least this multiple of 20-bar avg
+MIN_BREAKOUT_VOLUME_RATIO = 1.5
+
+# Reject if N prior candles are ALL bearish (no momentum build-up)
+MAX_PRE_BREAKOUT_RED_CANDLES = 2
+
+# BASE_WIDTH below this = tight consolidation = bonus-worthy setup
+BASE_TIGHTNESS_THRESHOLD = 1.5
+
+# BASE_WIDTH above this = volatile/choppy = penalize
+BASE_VOLATILITY_THRESHOLD = 3.0
+
+# =====================================================================================
+# ANTI-OPERATOR-TRAP PARAMETERS
+# =====================================================================================
+
+# Bars to look back for climax top volume pattern
+CLIMAX_VOLUME_LOOKBACK = 20
+
+# Bars to look back for lower-high pattern (failed breakout retest)
+LOWER_HIGH_LOOKBACK = 6
+
+# Minimum candle range as % of price (below this = thin spread trap)
+MIN_CANDLE_RANGE_PCT = 0.003   # 0.3%
+
+# =====================================================================================
+# SL/TARGET ATR CAPS (max target distance from entry, per timeframe)
+# =====================================================================================
+
+MAX_TARGET_ATR = {
+    "15m": 5.0,     # Intraday targets capped at 5x ATR
+    "1h":  8.0,     # 1H targets capped at 8x ATR
+    "1d":  12.0,    # EOD targets capped at 12x ATR
+}
+

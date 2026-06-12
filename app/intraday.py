@@ -29,7 +29,8 @@ from config import (
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     DEDUP_DAYS,
-    ADX_MIN_THRESHOLD,   
+    ADX_MIN_THRESHOLD,
+    MAX_PRE_BREAKOUT_RED_CANDLES,
 )
 
 logging.basicConfig(
@@ -132,7 +133,8 @@ def start():
                 "weak_close_pos", "upper_wick", "low_volume", "low_avg_volume", 
                 "penny_stock", "rsi_range", "rsi_not_rising", "weak_adx", "below_ema20", 
                 "below_sma50", "no_golden_cross", "macd_bearish", "far_from_52w_high", 
-                "gap_bar", "extended_breakout", "below_daily_ema20", "low_score", "duplicate", "stale_data"
+                "gap_bar", "extended_breakout", "below_daily_ema20", "low_score", "duplicate", "stale_data",
+                "prior_red_candles", "obv_divergence", "gap_fill_risk"
             ]}
             total_alerts = 0
 
@@ -359,6 +361,41 @@ def start():
 
                     delivery_pct = prev_delivery_map.get(symbol, None)
 
+                    # ── v5: PREVIOUS CANDLE CONTEXT FILTER ─────────────────────────
+                    # Reject if the 2 candles before breakout are BOTH bearish.
+                    # Genuine breakouts build momentum; 2 red candles = fake pop.
+                    if len(ticker) >= 3:
+                        red_count = 0
+                        for _ri in range(-3, -1):
+                            if float(ticker["Close"].iloc[_ri]) < float(ticker["Open"].iloc[_ri]):
+                                red_count += 1
+                        if red_count >= MAX_PRE_BREAKOUT_RED_CANDLES:
+                            rejection_counts["prior_red_candles"] += 1
+                            continue
+
+                    # ── v5: OBV DIVERGENCE FILTER ───────────────────────────────
+                    # Reject if OBV trend is bearish (volume not confirming price).
+                    # This is the #1 indicator of distribution masquerading as breakout.
+                    if "OBV_TREND" in ticker.columns:
+                        obv_trend = int(latest.get("OBV_TREND", 0) or 0)
+                        if obv_trend == -1:
+                            rejection_counts["obv_divergence"] += 1
+                            continue
+
+                    # ── v5: GAP-OPEN FILL RISK FILTER (INTRADAY ONLY) ───────────────
+                    # If candle opened with gap > 1.5% above prior high AND has
+                    # already filled 50%+ of the gap, it's a gap-fill trap.
+                    if len(ticker) >= 2:
+                        prev_high_gf = float(ticker["High"].iloc[-2])
+                        if prev_high_gf > 0:
+                            gap_open_pct = (candle_open - prev_high_gf) / prev_high_gf * 100
+                            if gap_open_pct > 1.5:
+                                gap_size = candle_open - prev_high_gf
+                                gap_filled = candle_open - candle_low
+                                if gap_size > 0 and gap_filled / gap_size > 0.50:
+                                    rejection_counts["gap_fill_risk"] += 1
+                                    continue
+
                     score = calculate_score(
                         category=category,
                         breakout_count=len(signals),
@@ -412,6 +449,7 @@ def start():
                         swing_low_raw=latest.get("SWING_LOW_RAW"),
                         swing_high_raw=latest.get("SWING_HIGH_RAW"),
                         candle_low=candle_low,
+                        vwap=latest.get("VWAP"),
                     )
                     suggested_stop = sl_result["stop_loss"]
                     target_price   = sl_result["target_1"]

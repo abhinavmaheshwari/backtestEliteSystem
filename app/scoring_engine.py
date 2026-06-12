@@ -95,7 +95,14 @@
 import logging
 
 # FIX 1: Import ADX_MIN_THRESHOLD from config instead of hardcoding
-from config import ADX_MIN_THRESHOLD
+from config import (
+    ADX_MIN_THRESHOLD,
+    CLIMAX_VOLUME_LOOKBACK,
+    LOWER_HIGH_LOOKBACK,
+    MIN_CANDLE_RANGE_PCT,
+    BASE_TIGHTNESS_THRESHOLD,
+    BASE_VOLATILITY_THRESHOLD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +292,76 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
                 exhaustion_count += 1
         if exhaustion_count >= 3:
             reason = f"{exhaustion_count} doji/narrow candles in last 4 bars (exhaustion before breakout)"
+            logger.warning(f"🚫 {tag}DISQ: {reason}")
+            return True, reason
+
+    # ── DISQUALIFIER 8: CLIMAX TOP PATTERN (OPERATOR DISTRIBUTION) ──────────────
+    #
+    # Classic smart-money exit: operators push price to new highs on massive volume,
+    # then sell into retail buying. The candle has:
+    #   - Highest volume in CLIMAX_VOLUME_LOOKBACK bars
+    #   - Upper wick > 25% of candle range (selling into strength)
+    #   - Close in bottom 40% of range (buyers lost control)
+    #
+    # This is THE signature of institutional distribution — never trade into it.
+    #
+    lookback = min(CLIMAX_VOLUME_LOOKBACK, len(ticker) - 1)
+    if lookback >= 5:
+        latest_vol  = float(latest["Volume"])
+        max_vol     = float(ticker["Volume"].iloc[-lookback - 1:-1].max())
+        candle_high = float(latest["High"])
+        candle_low  = float(latest["Low"])
+        candle_rng  = candle_high - candle_low
+
+        if candle_rng > 0 and latest_vol > max_vol:
+            upper_wick_pct  = (candle_high - float(latest["Close"])) / candle_rng
+            close_pos       = (float(latest["Close"]) - candle_low) / candle_rng
+            if upper_wick_pct > 0.25 and close_pos < 0.40:
+                reason = (
+                    f"Climax top: highest vol in {lookback} bars "
+                    f"({latest_vol:,.0f} > {max_vol:,.0f}), "
+                    f"upper wick {upper_wick_pct:.0%}, "
+                    f"close in bottom {close_pos:.0%} (distribution candle)"
+                )
+                logger.warning(f"🚫 {tag}DISQ: {reason}")
+                return True, reason
+
+    # ── DISQUALIFIER 9: LOWER-HIGH PATTERN (FAILED BREAKOUT RETEST) ─────────────
+    #
+    # If the stock is making lower highs, the trend is reversing:
+    #   - Current bar's high < high from 3 bars ago
+    #   - AND high from 3 bars ago < high from 6 bars ago
+    # This means the breakout has already failed — buying here is chasing a reversal.
+    #
+    lh_lookback = LOWER_HIGH_LOOKBACK
+    if len(ticker) > lh_lookback:
+        high_now  = float(latest["High"])
+        high_mid  = float(ticker["High"].iloc[-1 - lh_lookback // 2])
+        high_far  = float(ticker["High"].iloc[-1 - lh_lookback])
+        if high_now < high_mid < high_far:
+            reason = (
+                f"Lower-high pattern: highs declining "
+                f"₹{high_far:.2f} → ₹{high_mid:.2f} → ₹{high_now:.2f} "
+                f"over {lh_lookback} bars (breakout failed, trend reversing)"
+            )
+            logger.warning(f"🚫 {tag}DISQ: {reason}")
+            return True, reason
+
+    # ── DISQUALIFIER 10: THIN SPREAD TRAP ───────────────────────────────────────
+    #
+    # Candle range < 0.3% of price on a breakout candle = no real conviction.
+    # Thin-spread breakouts are common in illiquid or manipulated stocks where
+    # a small order can push price above a level without genuine demand.
+    #
+    candle_range_d10 = float(latest["High"]) - float(latest["Low"])
+    close_val = float(latest["Close"])
+    if close_val > 0 and candle_range_d10 > 0:
+        range_pct = candle_range_d10 / close_val
+        if range_pct < MIN_CANDLE_RANGE_PCT:
+            reason = (
+                f"Thin spread: candle range {range_pct:.3%} < {MIN_CANDLE_RANGE_PCT:.1%} "
+                f"of price (no conviction — possible manipulation)"
+            )
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason
 
@@ -516,6 +593,54 @@ def bonus_modifiers(
                 )
                 bonus += ext_penalty
 
+    # ── BONUS: TIGHT BASE BEFORE BREAKOUT (+4 pts) ───────────────────────────────
+    #
+    # Breakouts from tight consolidation bases are 3-5x more reliable than breakouts
+    # from volatile/choppy price action. If BASE_WIDTH < threshold, award bonus.
+    #
+    if "BASE_WIDTH" in ticker.columns:
+        base_width = latest.get("BASE_WIDTH")
+        if base_width is not None and not pd.isna(base_width):
+            bw = float(base_width)
+            if bw < BASE_TIGHTNESS_THRESHOLD:
+                logger.debug(
+                    f"  +4 {tag}Tight base (BASE_WIDTH {bw:.2f} "
+                    f"< {BASE_TIGHTNESS_THRESHOLD} — consolidation breakout)"
+                )
+                bonus += 4
+
+    # ── PENALTY: NO PRE-BREAKOUT BASE / CHOPPY APPROACH (-4 pts) ──────────────────
+    #
+    # If BASE_WIDTH > volatility threshold, the stock is breaking out of volatile/
+    # choppy action, not a clean base. These breakouts have high failure rates.
+    #
+    if "BASE_WIDTH" in ticker.columns:
+        base_width = latest.get("BASE_WIDTH")
+        if base_width is not None and not pd.isna(base_width):
+            bw = float(base_width)
+            if bw > BASE_VOLATILITY_THRESHOLD:
+                logger.warning(
+                    f"  -4 {tag}No base / choppy (BASE_WIDTH {bw:.2f} "
+                    f"> {BASE_VOLATILITY_THRESHOLD} — volatile approach)"
+                )
+                bonus -= 4
+
+    # ── PENALTY: VOLUME DRY-UP ON APPROACH (-3 pts) ──────────────────────────────
+    #
+    # If the 3 candles BEFORE the breakout candle have avg volume < 60% of 20-bar avg,
+    # nobody was interested in this level — breakout likely fails.
+    #
+    if len(ticker) >= 24:
+        avg_vol_20     = float(ticker["Volume"].iloc[-21:-1].mean())
+        approach_vol   = float(ticker["Volume"].iloc[-4:-1].mean())
+        if avg_vol_20 > 0 and approach_vol < avg_vol_20 * 0.60:
+            logger.warning(
+                f"  -3 {tag}Volume dry-up on approach "
+                f"(pre-breakout 3-bar avg {approach_vol:,.0f} "
+                f"< 60% of 20-bar avg {avg_vol_20:,.0f})"
+            )
+            bonus -= 3
+
     return bonus
 
 
@@ -565,16 +690,22 @@ def calculate_score(
     logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")
 
     # ── STEP 3: BREAKOUT SIGNALS (WEIGHTED STRENGTH) ─────────────────────────────────
-    PER_SIGNAL_CAP = 8.0
+    # v5: PER_SIGNAL_CAP raised to 12 — the new breakout weights (3.0× for 52W) mean
+    # strong breakouts easily hit the old 8.0 cap, squashing the quality differentiation.
+    PER_SIGNAL_CAP = 12.0
 
     if isinstance(breakout_signals, dict) and breakout_signals:
         signal_pts = min(
             sum(min(v, PER_SIGNAL_CAP) for v in breakout_signals.values()),
             24.0
         )
+        # After hierarchy pruning, 52W is the ONLY windowed signal — reward it heavily
         if any("52W" in s for s in breakout_signals):
-            signal_pts = min(signal_pts + 1, 24.0)
-            logger.debug(f"  +1 {tag}52W breakout signal bonus")
+            signal_pts = min(signal_pts + 4, 24.0)
+            logger.debug(f"  +4 {tag}52W breakout signal bonus")
+        elif any("Monthly" in s for s in breakout_signals):
+            signal_pts = min(signal_pts + 2, 24.0)
+            logger.debug(f"  +2 {tag}Monthly breakout signal bonus")
         logger.debug(
             f"  {tag}Signal breakdown: "
             + ", ".join(f"{k}={min(v, PER_SIGNAL_CAP):.2f}" for k, v in breakout_signals.items())
@@ -582,8 +713,11 @@ def calculate_score(
     else:
         signal_pts = min(breakout_count, 3) * 8
         if breakout_signals and any("52W" in s for s in breakout_signals):
-            signal_pts += 1
-            logger.debug(f"  +1 {tag}52W breakout signal bonus")
+            signal_pts += 4
+            logger.debug(f"  +4 {tag}52W breakout signal bonus")
+        elif breakout_signals and any("Monthly" in s for s in breakout_signals):
+            signal_pts += 2
+            logger.debug(f"  +2 {tag}Monthly breakout signal bonus")
 
     score += int(signal_pts)
     logger.debug(f"  Score after signals ({breakout_count} signals, pts={signal_pts:.1f}): {score} (+{int(signal_pts)})")

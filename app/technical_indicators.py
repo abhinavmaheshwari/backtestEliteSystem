@@ -201,4 +201,70 @@ def apply_indicators(df: pd.DataFrame, timeframe: str = "1d", daily_ohlc: pd.Dat
 
     df["HIGH_52W"] = df["High"].rolling(window=window52, min_periods=min52).max()
 
+    # ── VWAP — Volume-Weighted Average Price ────────────────────────────────
+    #
+    # VWAP is the institutional benchmark — price above VWAP = bullish, below = bearish.
+    # For intraday (15m/1H): VWAP resets daily (standard institutional usage).
+    # For EOD: cumulative VWAP over the period (each bar = 1 day).
+    # Used by sl_target_helper.py as an SL anchor (VWAP acts as dynamic support).
+    #
+    if "Volume" in df.columns:
+        typical_price = (high + low + close) / 3
+
+        if timeframe in ("15m", "1h") and hasattr(df.index, 'date'):
+            # Daily-reset VWAP for intraday: reset cumulative sums at each day boundary
+            # This is the standard institutional VWAP that traders use for fair-value
+            date_groups = df.index.date
+            cum_tp_vol  = (typical_price * df["Volume"]).groupby(date_groups).cumsum()
+            cum_vol     = df["Volume"].groupby(date_groups).cumsum()
+            df["VWAP"]  = (cum_tp_vol / cum_vol).where(cum_vol > 0)
+        else:
+            # Cumulative VWAP for EOD (each bar = 1 day, no intraday reset needed)
+            cum_tp_vol  = (typical_price * df["Volume"]).cumsum()
+            cum_vol     = df["Volume"].cumsum()
+            df["VWAP"]  = (cum_tp_vol / cum_vol).where(cum_vol > 0)
+    else:
+        df["VWAP"] = float("nan")
+
+    # ── OBV_TREND — On-Balance Volume directional bias ────────────────────────
+    #
+    # Detects volume-price divergence — the #1 fake breakout indicator.
+    # If price is making new highs but OBV is declining, it's distribution.
+    #
+    # OBV_TREND values:
+    #   1  = OBV rising (volume confirms price direction — healthy)
+    #  -1  = OBV falling (volume diverges from price — distribution/fake)
+    #   0  = OBV flat (no conviction either way)
+    #
+    if "Volume" in df.columns and len(df) >= 6:
+        # Calculate OBV
+        obv_direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        obv = (obv_direction * df["Volume"]).cumsum()
+
+        # 5-bar OBV slope via linear regression approximation (simple diff)
+        obv_slope = obv.diff(5)
+        df["OBV_TREND"] = obv_slope.apply(
+            lambda x: 1 if (pd.notna(x) and x > 0) else (-1 if (pd.notna(x) and x < 0) else 0)
+        )
+    else:
+        df["OBV_TREND"] = 0
+
+    # ── BASE_WIDTH — Pre-breakout consolidation tightness ─────────────────────
+    #
+    # Measures how tight the price range is relative to ATR over the last 10 bars.
+    # Low values (< 1.5) = tight base = high-quality breakout setup.
+    # High values (> 3.0) = volatile/choppy = likely fake breakout.
+    #
+    # Formula: max(High) - min(Low) over last 10 bars, divided by ATR
+    #
+    base_window = 10
+    if len(df) >= base_window and "ATR" in df.columns:
+        rolling_range = (
+            high.rolling(window=base_window, min_periods=base_window).max()
+            - low.rolling(window=base_window, min_periods=base_window).min()
+        )
+        df["BASE_WIDTH"] = (rolling_range / df["ATR"]).where(df["ATR"] > 0)
+    else:
+        df["BASE_WIDTH"] = float("nan")
+
     return df
