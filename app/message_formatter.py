@@ -156,16 +156,12 @@ def format_alert(a, scanner="1H"):
     if day_low is not None:    price_lines.append(f"Day Low:  ₹{day_low}")
     if "atr_stop" in a:
         price_lines.append(f"Stop Loss: ₹{a['atr_stop']}")
-        if a.get("sl_method"):
-            price_lines.append(f"  ↳ {a['sl_method']}")
     if "target_price" in a:
         price_lines.append(f"Target 1:  ₹{a['target_price']}  (primary)")
         if a.get("target_2"):
             price_lines.append(f"Target 2:  ₹{a['target_2']}")
         if a.get("target_3"):
             price_lines.append(f"Target 3:  ₹{a['target_3']}  (extended)")
-        if a.get("t_method"):
-            price_lines.append(f"  ↳ {a['t_method']}")
     if a.get("rr_ratio"):
         price_lines.append(f"R:R Ratio: {a['rr_ratio']}:1")
 

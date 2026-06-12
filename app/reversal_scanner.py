@@ -311,6 +311,39 @@ def _run_scan():
             continue
         # ─────────────────────────────────────────────────────────────────────
 
+        above_ema20  = bool(close_price >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
+        above_sma50  = bool(close_price >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+        golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
+        body_ratio   = round(abs(close_price - float(latest["Open"])) / candle_range * 100) if candle_range > 0 else 0
+
+        context = {
+            "technicals": {
+                "above_ema20":      above_ema20,
+                "above_sma50":      above_sma50,
+                "golden_cross":     golden_cross,
+                "body_ratio":       round(body_ratio, 2),
+                "delivery_pct":     None,
+                "rsi":              round(current_rsi, 1),
+                "volume_ratio":     round(vol_ratio, 2)
+            },
+            "session": {
+                "open":             round(float(latest["Open"]), 2),
+                "day_high":         round(float(latest["High"]), 2),
+                "day_low":          round(float(latest["Low"]), 2)
+            },
+            "fundamentals": {
+                "peg":              row.get("PEG Ratio"),
+                "yoy_rev":          row.get("YOY Revenue %"),
+                "yoy_profit":       row.get("YOY Profit %"),
+                "roe":              row.get("ROE %")
+            },
+            "execution": {
+                "sl_method":        sl_result.get("sl_method"),
+                "t_method":         sl_result.get("t_method"),
+                "trail_note":       sl_result.get("trail_note")
+            }
+        }
+
         saved = save_alert_if_new(
             symbol,
             dedup_key,
@@ -324,6 +357,7 @@ def _run_scan():
             volume_ratio=round(vol_ratio, 2),
             stop_loss=suggested_stop,
             target_price=target_price,
+            context=context,
         )
         if not saved:
             continue

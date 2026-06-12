@@ -25,6 +25,7 @@
 # =====================================================================================
 
 import os
+import json
 import logging
 import threading
 from contextlib import contextmanager
@@ -115,6 +116,8 @@ def init_db():
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS exit_price   REAL",
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS pnl_pct      REAL",
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS closed_at    TEXT",
+                    # Diagnostic parameters context JSONB
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS context      JSONB",
                 ]:
                     cur.execute(col_sql)
 
@@ -130,13 +133,6 @@ def init_db():
                     )
                 """)
 
-                # Clean up legacy mismatch names ending with 'Scanner' or 'Tracker'
-                cur.execute("""
-                    DELETE FROM scanner_health
-                    WHERE scanner_name LIKE '%%Scanner'
-                       OR scanner_name LIKE '%%Tracker'
-                       OR scanner_name NOT IN ('DAILY_BUILDER', 'INTRADAY', '1H', 'EOD', 'REVERSAL')
-                """)
 
                 # ── System state table for dashboard metrics / state caching ───────
                 cur.execute("""
@@ -144,6 +140,47 @@ def init_db():
                         key   TEXT PRIMARY KEY,
                         value TEXT NOT NULL
                     )
+                """)
+
+                # ── Trade analytics view mapping JSONB context to columns ───────────
+                cur.execute("""
+                    CREATE OR REPLACE VIEW v_trade_analytics AS
+                    SELECT 
+                        id,
+                        symbol,
+                        alert_time,
+                        alert_date,
+                        scanner,
+                        category,
+                        entry_price,
+                        stop_loss,
+                        target_price,
+                        status,
+                        exit_price,
+                        pnl_pct,
+                        closed_at,
+                        -- Technical indicators
+                        (context->'technicals'->>'above_ema20')::boolean AS above_ema20,
+                        (context->'technicals'->>'above_sma50')::boolean AS above_sma50,
+                        (context->'technicals'->>'golden_cross')::boolean AS golden_cross,
+                        (context->'technicals'->>'body_ratio')::float AS body_ratio,
+                        (context->'technicals'->>'delivery_pct')::float AS delivery_pct,
+                        (context->'technicals'->>'rsi')::float AS rsi,
+                        (context->'technicals'->>'volume_ratio')::float AS volume_ratio,
+                        -- Session prices
+                        (context->'session'->>'open')::float AS session_open,
+                        (context->'session'->>'day_high')::float AS session_day_high,
+                        (context->'session'->>'day_low')::float AS session_day_low,
+                        -- Fundamentals
+                        (context->'fundamentals'->>'peg')::float AS peg,
+                        (context->'fundamentals'->>'yoy_rev')::float AS yoy_rev,
+                        (context->'fundamentals'->>'yoy_profit')::float AS yoy_profit,
+                        (context->'fundamentals'->>'roe')::float AS roe,
+                        -- Execution strategies
+                        context->'execution'->>'sl_method' AS sl_method,
+                        context->'execution'->>'t_method' AS t_method,
+                        context->'execution'->>'trail_note' AS trail_note
+                    FROM alerts;
                 """)
 
                 conn.commit()
@@ -168,11 +205,13 @@ def save_alert_if_new(
     score: int = None,
     rsi: float = None,
     volume_ratio: float = None,
+    context: dict = None,
 ) -> bool:
     """
     Insert a new alert.  Returns True if inserted, False if it already existed
     (duplicate on symbol + breakout_type + alert_date).
     """
+    context_str = json.dumps(context) if context is not None else None
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
@@ -180,12 +219,12 @@ def save_alert_if_new(
                     INSERT INTO alerts
                         (symbol, breakout_type, alert_time, scanner, category,
                          entry_price, stop_loss, target_price, signals, score,
-                         rsi, volume_ratio, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
+                         rsi, volume_ratio, status, context)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s)
                     ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
                 """, (symbol, breakout_type, alert_time, scanner, category,
                       entry_price, stop_loss, target_price, signals, score,
-                      rsi, volume_ratio))
+                      rsi, volume_ratio, context_str))
                 conn.commit()
                 return cur.rowcount > 0
             except Exception:
@@ -309,6 +348,7 @@ def get_all_scanner_health() -> list[dict]:
                 cur.execute("""
                     SELECT scanner_name, status, last_success, today_alerts, error_msg, updated_at
                     FROM scanner_health
+                    WHERE scanner_name IN ('DAILY_BUILDER', 'INTRADAY', '1H', 'EOD', 'REVERSAL')
                     ORDER BY scanner_name
                 """)
                 return [dict(row) for row in cur.fetchall()]
@@ -350,8 +390,8 @@ def cleanup_old_alerts(days: int = None) -> None:
     The `days` parameter is accepted for backward compatibility with scanner
     call sites but has no effect.
 
-    To manually purge data if storage becomes a concern, run directly in Postgres:
-        DELETE FROM alerts WHERE alert_date < 'YYYY-MM-DD';
+    To manually purge data if storage becomes a concern, run directly in Postgres
+    using an appropriate truncate or partition drop logic.
     """
     logger.debug("🗑️  cleanup_old_alerts called — deletion disabled, all data retained.")
 

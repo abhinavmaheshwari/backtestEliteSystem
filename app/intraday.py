@@ -416,6 +416,38 @@ def start():
                     suggested_stop = sl_result["stop_loss"]
                     target_price   = sl_result["target_1"]
 
+                    above_ema20 = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
+                    above_sma50 = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None
+
+                    context = {
+                        "technicals": {
+                            "above_ema20":      above_ema20,
+                            "above_sma50":      above_sma50,
+                            "golden_cross":     golden_cross,
+                            "body_ratio":       round(body_ratio, 2),
+                            "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
+                            "rsi":              round(rsi_val, 1),
+                            "volume_ratio":     round(volume_ratio, 2)
+                        },
+                        "session": {
+                            "open":             round(float(latest["Open"]), 2),
+                            "day_high":         round(float(latest["High"]), 2),
+                            "day_low":          round(float(latest["Low"]), 2)
+                        },
+                        "fundamentals": {
+                            "peg":              row.get("PEG Ratio"),
+                            "yoy_rev":          row.get("YOY Revenue %"),
+                            "yoy_profit":       row.get("YOY Profit %"),
+                            "roe":              row.get("ROE %")
+                        },
+                        "execution": {
+                            "sl_method":        sl_result.get("sl_method"),
+                            "t_method":         sl_result.get("t_method"),
+                            "trail_note":       sl_result.get("trail_note")
+                        }
+                    }
+
                     saved = save_alert_if_new(
                         symbol,
                         dedup_key,
@@ -429,14 +461,11 @@ def start():
                         volume_ratio=round(volume_ratio, 2),
                         stop_loss=suggested_stop,
                         target_price=target_price,
+                        context=context,
                     )
                     if not saved:
                         rejection_counts["duplicate"] += 1
                         continue
-
-                    above_ema20 = bool(candle_close >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
-                    above_sma50 = bool(candle_close >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
-                    golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if "SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200")) else None
 
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,

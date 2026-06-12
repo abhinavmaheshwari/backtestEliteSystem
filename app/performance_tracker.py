@@ -42,8 +42,8 @@ except ImportError:
 
 PERF_JSON_PATH = os.path.join(DATA_DIR, "performance_data.json")
 
-# How many calendar days after alert_date before we judge a trade with no SL/Target hit
-HOLD_DAYS = 5
+# Time-based auto-exit is disabled; holdings are kept open until SL or Target is hit.
+# HOLD_DAYS = 5
 
 
 # =====================================================================================
@@ -200,15 +200,8 @@ def _trade_status(
         return "LOSS"
     if target_hit:
         return "WIN"
-    if days < HOLD_DAYS:
-        return "OPEN"
-    if pnl_pct is None:
-        return "OPEN"
-    if pnl_pct >= 2.0:
-        return "WIN"
-    if pnl_pct <= -2.0:
-        return "LOSS"
-    return "NEUTRAL"
+    # Keep positions open until SL or Target is hit (no time-based auto-exit)
+    return "OPEN"
 
 
 # =====================================================================================

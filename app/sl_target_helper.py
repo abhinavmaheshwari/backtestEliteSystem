@@ -7,7 +7,7 @@
 #
 # MODES:
 #   "EOD"      → Daily momentum breakout (swing trade, hold days–weeks)
-#   "INTRADAY" → 15m early-momentum scalp (same-day trade, exit by 3:20 PM)
+#   "INTRADAY" → 15m early-momentum scalp (hold position until SL or Target is hit)
 #   "LIVE_1H"  → Hourly swing continuation (hold 1–5 days)
 #   "REVERSAL" → Counter-trend oversold bounce (mean reversion, hold days–weeks)
 #
@@ -19,7 +19,7 @@
 #   → This makes the stop hunt unprofitable for operators (too far to sweep)
 #
 # SL BUFFER TABLE (per mode):
-#   INTRADAY  → max(0.5×ATR, 0.30% price) — tight, same-day trade
+#   INTRADAY  → max(0.5×ATR, 0.30% price) — tight momentum scalp trade
 #   LIVE_1H   → max(0.5×ATR, 0.50% price) — moderate, hourly swing
 #   EOD       → max(0.75×ATR, 0.75% price) — meaningful, daily trade
 #   REVERSAL  → max(1.0×ATR, 1.00% price) — widest, volatile beaten stocks
@@ -32,7 +32,7 @@
 #
 # TARGET PHILOSOPHY (per mode):
 #   EOD       → Nearest swing high / R1 pivot → R2 → 52W high zone
-#   INTRADAY  → Session high / BB_UPPER → Day's R1 (no T3 — exit same day)
+#   INTRADAY  → Session high / BB_UPPER → Day's R1 (no T3 — hold until SL/Target)
 #   LIVE_1H   → R1 / BB_UPPER → R2 (no T3 — 1H has limited range)
 #   REVERSAL  → EMA20 or BB_MID (mean reversion T1) → SMA50 (T2) → R1 (T3)
 # =====================================================================================
@@ -271,9 +271,9 @@ def _compute_intraday(
              (this is tighter than multi-day swing → better RR for scalps)
              Fallback to 15m swing low if candle_low is impractical
     • T1   — session high / R1 / BB_UPPER (min 1.5:1 RR)
-    • T2   — day's R1 or 2.5×RR — exit before 3:15 PM regardless
-    • T3   — NONE (same-day trade, do not hold for extended target)
-    • Trail note: "Exit by 3:15 PM even if targets not hit"
+    • T2   — day's R1 or 2.5×RR
+    • T3   — NONE (do not hold for extended target)
+    • Trail note: "Hold position until SL or Target is hit"
     """
     atr_base, sl_atr_buf, sl_pct_buf, min_rr, max_sl_atr = _MODE_CONFIG["INTRADAY"]
 
@@ -331,7 +331,7 @@ def _compute_intraday(
             target_2  = round(entry + 2.5 * risk, 2)
             t_method += f" | T2: 2.5×RR ₹{target_2}"
 
-    # NO T3 on intraday — must exit by end of day
+    # NO T3 on intraday
     return {
         "stop_loss":    stop_loss,
         "target_1":     target_1,
@@ -342,7 +342,7 @@ def _compute_intraday(
         "sl_method":    sl_method,
         "t_method":     t_method,
         "rsi_zone":     zone,
-        "trail_note":   "Exit by 3:15 PM even if targets not hit — no overnight positions",
+        "trail_note":   "Hold position until SL or Target is hit",
     }
 
 
