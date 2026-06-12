@@ -334,11 +334,28 @@ def start():
                 today_str  = ist_now.strftime("%Y-%m-%d")
                 dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
-                # ── SL + Target (timeframe-aware, 2:1 RR) ────────────────────────
+                # ── Dynamic S/R and Indicator-based SL + Target ──────────────────
                 current_atr_raw = atr_val_eod
-                suggested_stop, target_price = compute_sl_and_target(
-                    candle_close, current_atr_raw, candle_range, "EOD"
+                sl_result = compute_sl_and_target(
+                    entry_price=candle_close,
+                    atr=current_atr_raw,
+                    candle_range=candle_range,
+                    timeframe="EOD",
+                    adx=latest.get("ADX") if "ADX" in latest else None,
+                    rsi=rsi_val,
+                    macd_hist=latest.get("MACD_HIST") if "MACD_HIST" in latest else None,
+                    atr_pct=latest.get("ATR_PCT") if "ATR_PCT" in latest else None,
+                    swing_low=latest.get("SWING_LOW") if "SWING_LOW" in latest else None,
+                    swing_high=latest.get("SWING_HIGH") if "SWING_HIGH" in latest else None,
+                    bb_upper=latest.get("BB_UPPER") if "BB_UPPER" in latest else None,
+                    bb_lower=latest.get("BB_LOWER") if "BB_LOWER" in latest else None,
+                    s1=latest.get("S1") if "S1" in latest else None,
+                    s2=latest.get("S2") if "S2" in latest else None,
+                    r1=latest.get("R1") if "R1" in latest else None,
+                    r2=latest.get("R2") if "R2" in latest else None,
                 )
+                suggested_stop = sl_result["stop_loss"]
+                target_price = sl_result["target_1"]
 
                 saved = save_alert_if_new(
                     symbol,
@@ -380,6 +397,11 @@ def start():
                     "golden_cross":     golden_cross,
                     "atr_stop":         suggested_stop,
                     "target_price":     target_price,
+                    "target_2":         sl_result.get("target_2"),
+                    "target_3":         sl_result.get("target_3"),
+                    "sl_method":        sl_result.get("sl_method"),
+                    "t_method":         sl_result.get("t_method"),
+                    "rr_ratio":         sl_result.get("rr_ratio"),
                     "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                     "peg":              row.get("PEG Ratio"),
                     "yoy_rev":          row.get("YOY Revenue %"),

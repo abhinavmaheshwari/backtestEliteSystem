@@ -165,10 +165,27 @@ def _run_scan():
 
         candle_range   = float(latest["High"]) - float(latest["Low"])
         atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
-        # ── SL + Target (daily ATR × 2.0, 2:1 RR) ───────────────────────────────
-        suggested_stop, target_price = compute_sl_and_target(
-            close_price, atr_val, candle_range, "REVERSAL"
+        # ── Dynamic S/R and Indicator-based SL + Target ───────────────────────
+        sl_result = compute_sl_and_target(
+            entry_price=close_price,
+            atr=atr_val,
+            candle_range=candle_range,
+            timeframe="REVERSAL",
+            adx=latest.get("ADX") if "ADX" in latest else None,
+            rsi=current_rsi,
+            macd_hist=latest.get("MACD_HIST") if "MACD_HIST" in latest else None,
+            atr_pct=latest.get("ATR_PCT") if "ATR_PCT" in latest else None,
+            swing_low=latest.get("SWING_LOW") if "SWING_LOW" in latest else None,
+            swing_high=latest.get("SWING_HIGH") if "SWING_HIGH" in latest else None,
+            bb_upper=latest.get("BB_UPPER") if "BB_UPPER" in latest else None,
+            bb_lower=latest.get("BB_LOWER") if "BB_LOWER" in latest else None,
+            s1=latest.get("S1") if "S1" in latest else None,
+            s2=latest.get("S2") if "S2" in latest else None,
+            r1=latest.get("R1") if "R1" in latest else None,
+            r2=latest.get("R2") if "R2" in latest else None,
         )
+        suggested_stop = sl_result["stop_loss"]
+        target_price = sl_result["target_1"]
 
         signal_str = ", ".join(reversal_signals)
 
@@ -205,6 +222,11 @@ def _run_scan():
             "above_ema20":      True,
             "atr_stop":         suggested_stop,
             "target_price":     target_price,
+            "target_2":         sl_result.get("target_2"),
+            "target_3":         sl_result.get("target_3"),
+            "sl_method":        sl_result.get("sl_method"),
+            "t_method":         sl_result.get("t_method"),
+            "rr_ratio":         sl_result.get("rr_ratio"),
             "peg":              row.get("PEG Ratio"),
             "yoy_rev":          row.get("YOY Revenue %"),
             "yoy_profit":       row.get("YOY Profit %"),
