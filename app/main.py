@@ -37,6 +37,8 @@ THREAD_TO_SCANNER = {
 
 # Lazy import — dashboard_server may not be ready yet at module load
 def _notify_down(name: str, err: str):
+    if name == "PerformanceTracker":
+        return
     try:
         scanner_name = THREAD_TO_SCANNER.get(name, name)
         from dashboard_server import notify_scanner_down
@@ -46,6 +48,8 @@ def _notify_down(name: str, err: str):
         pass
 
 def _clear_down(name: str):
+    if name == "PerformanceTracker":
+        return
     try:
         scanner_name = THREAD_TO_SCANNER.get(name, name)
         from dashboard_server import clear_scanner_down
