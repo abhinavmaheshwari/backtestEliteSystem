@@ -199,13 +199,15 @@ def update_alert_outcome(
     status: str,          # "WIN" | "LOSS"
     exit_price: float,
     pnl_pct: float,
+    closed_at: Optional[str] = None,
 ) -> None:
     """
     Lock in the final outcome of a trade once SL or Target is hit.
     Called by performance_tracker — writes back so future runs skip bar downloads
     for already-closed positions.
     """
-    closed_at = datetime.now(IST).isoformat()
+    if closed_at is None:
+        closed_at = datetime.now(IST).isoformat()
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:

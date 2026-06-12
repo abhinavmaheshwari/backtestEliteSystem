@@ -314,10 +314,6 @@
       <div class="drill-body" id="drill-body"></div>
     </div>
 
-    <!-- SCANNER STATUS -->
-    <div class="section-label">Scanner Health</div>
-    <div class="scanner-grid" id="scannerGrid"></div>
-
     <!-- TRADES TABLE -->
     <div class="section-label">All Trades</div>
     <div class="card" style="margin-bottom:28px">
@@ -345,16 +341,20 @@
               <th data-col="category">Category</th>
               <th data-col="entry_price">Entry ₹</th>
               <th data-col="current_price">CMP ₹</th>
-              <th data-col="pnl_pct" class="sort-desc">P&amp;L %</th>
+              <th data-col="pnl_pct">P&amp;L %</th>
               <th data-col="score">Score</th>
               <th data-col="days_held">Days</th>
-              <th data-col="status">Status</th>
+              <th data-col="status" class="sort-asc">Status</th>
             </tr>
           </thead>
           <tbody id="tradeBody"></tbody>
         </table>
       </div>
     </div>
+
+    <!-- SCANNER STATUS -->
+    <div class="section-label">Scanner Health</div>
+    <div class="scanner-grid" id="scannerGrid" style="margin-bottom:28px"></div>
 
   </div>
 </div>
@@ -669,7 +669,7 @@ function showScannerDrill(sc) {
 
 // ── TRADE TABLE
 let expandedIds = new Set();
-let sortCol = 'pnl_pct', sortDir = -1;
+let sortCol = 'status', sortDir = 1;
 
 function buildTradeRows(trades, maxAbs, prefix) {
   return trades.map((t, i) => {
@@ -774,6 +774,16 @@ function renderTradeTable() {
   let filtered = ALL_TRADES.filter(t =>
     (!sc||t.scanner===sc)&&(!st||t.status===st)&&(!cat||t.category===cat)&&(!sym||t.symbol.includes(sym)));
   filtered = [...filtered].sort((a,b) => {
+    if (sortCol === 'status') {
+      const p = { 'OPEN': 0, 'WIN': 1, 'LOSS': 2, 'NEUTRAL': 3 };
+      const pA = p[a.status] ?? 4;
+      const pB = p[b.status] ?? 4;
+      if (pA !== pB) return sortDir * (pA - pB);
+      // Secondary sort by date (newest first)
+      const dA = a.alert_time || a.entry_date || '';
+      const dB = b.alert_time || b.entry_date || '';
+      return dB.localeCompare(dA);
+    }
     let va=a[sortCol], vb=b[sortCol];
     if(va==null)return 1; if(vb==null)return -1;
     return sortDir*(va>vb?1:va<vb?-1:0);

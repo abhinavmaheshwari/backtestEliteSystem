@@ -158,15 +158,15 @@ def _check_sl_and_target(
     hist: pd.DataFrame,
     stop_loss: float,
     target_price: float,
-) -> Tuple[str, Optional[float]]:
+) -> Tuple[str, Optional[float], Optional[str]]:
     """
     Walk through post-alert 1h bars in chronological order.
-    Returns (outcome, exit_price) where outcome is one of:
+    Returns (outcome, exit_price, hit_time) where outcome is one of:
         "SL_HIT"     — stop_loss breached first
         "TARGET_HIT" — target_price breached first
         "OPEN"       — neither hit yet
-    exit_price is the SL or target level (not the candle close) when hit,
-    so P&L is always locked at the exact level.
+    exit_price is the SL or target level (not the candle close) when hit.
+    hit_time is the formatted string of the candle timestamp when hit.
     """
     for ts, row in hist.iterrows():
         low  = float(row["Low"])
@@ -174,13 +174,13 @@ def _check_sl_and_target(
 
         # Check SL first (conservative — protect capital before counting gains)
         if low <= stop_loss:
-            return "SL_HIT", stop_loss
+            return "SL_HIT", stop_loss, ts.strftime("%Y-%m-%d %H:%M:%S")
 
         # Then check target
         if high >= target_price:
-            return "TARGET_HIT", target_price
+            return "TARGET_HIT", target_price, ts.strftime("%Y-%m-%d %H:%M:%S")
 
-    return "OPEN", None
+    return "OPEN", None, None
 
 
 def _days_held(alert_date_str: str) -> int:
@@ -318,21 +318,23 @@ def build_performance_data():
             hist = _fetch_post_alert_bars(sym, alert_time)
 
             if hist is not None:
-                outcome, exit_p = _check_sl_and_target(hist, sl, tp)
+                outcome, exit_p, hit_time = _check_sl_and_target(hist, sl, tp)
 
                 if outcome == "SL_HIT":
                     t["stopped_out"] = True
                     t["exit_price"]  = exit_p
                     t["pnl_pct"]     = round((exit_p - ep) / ep * 100, 2)
+                    t["closed_at"]   = hit_time
                     logger.debug(f"🛑 {sym} SL HIT | entry={ep} sl={sl} pnl={t['pnl_pct']}%")
-                    update_alert_outcome(t["id"], "LOSS", exit_p, t["pnl_pct"])
+                    update_alert_outcome(t["id"], "LOSS", exit_p, t["pnl_pct"], closed_at=hit_time)
 
                 elif outcome == "TARGET_HIT":
                     t["target_hit"] = True
                     t["exit_price"] = exit_p
                     t["pnl_pct"]    = round((exit_p - ep) / ep * 100, 2)
+                    t["closed_at"]   = hit_time
                     logger.debug(f"🎯 {sym} TARGET HIT | entry={ep} target={tp} pnl={t['pnl_pct']}%")
-                    update_alert_outcome(t["id"], "WIN", exit_p, t["pnl_pct"])
+                    update_alert_outcome(t["id"], "WIN", exit_p, t["pnl_pct"], closed_at=hit_time)
 
                 else:
                     # Still open — mark-to-market
@@ -351,7 +353,11 @@ def build_performance_data():
                     t["stopped_out"] = True
                     t["exit_price"]  = sl
                     t["pnl_pct"]     = round((sl - ep) / ep * 100, 2)
-                    update_alert_outcome(t["id"], "LOSS", sl, t["pnl_pct"])
+                    # Find the first candle that breached the Stop Loss
+                    hit_row = hist[hist["Low"] <= sl]
+                    hit_time = hit_row.index[0].strftime("%Y-%m-%d %H:%M:%S") if not hit_row.empty else None
+                    t["closed_at"]   = hit_time
+                    update_alert_outcome(t["id"], "LOSS", sl, t["pnl_pct"], closed_at=hit_time)
                 elif cur_p:
                     t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
             elif cur_p:
