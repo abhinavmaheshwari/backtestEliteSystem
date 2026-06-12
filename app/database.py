@@ -117,6 +117,26 @@ def init_db():
                 ]:
                     cur.execute(col_sql)
 
+                # ── Scanner health table — source of truth for dashboard ───────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS scanner_health (
+                        scanner_name  TEXT PRIMARY KEY,
+                        status        TEXT    NOT NULL DEFAULT 'IDLE',
+                        last_success  TEXT,
+                        today_alerts  INTEGER NOT NULL DEFAULT 0,
+                        error_msg     TEXT,
+                        updated_at    TEXT    NOT NULL
+                    )
+                """)
+
+                # ── System state table for dashboard metrics / state caching ───────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS system_state (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                """)
+
                 conn.commit()
 
         _DB_INITIALIZED = True
@@ -218,6 +238,99 @@ def get_all_alerts() -> list[dict]:
             return [dict(row) for row in cur.fetchall()]
 
 
+# ── Scanner Health API ────────────────────────────────────────────────────────────────
+
+def upsert_scanner_health(
+    scanner_name: str,
+    status: str,                  # "OK" | "DOWN" | "IDLE"
+    last_success: str = None,     # ISO timestamp of last successful scan
+    today_alerts: int = None,     # number of alerts fired today (None = keep existing)
+    error_msg: str = None,        # error message when status=DOWN, else None
+) -> None:
+    """
+    Insert or update a scanner's health record in the scanner_health table.
+    Called by:
+      • performance_tracker  — status=OK, last_success, today_alerts (every 5 min)
+      • watchdog / _run      — status=DOWN, error_msg
+      • recovery (_clear_down) — status=OK, clears error_msg
+    """
+    init_db()
+    now_str = datetime.now(IST).isoformat()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                if today_alerts is not None:
+                    cur.execute("""
+                        INSERT INTO scanner_health
+                            (scanner_name, status, last_success, today_alerts, error_msg, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (scanner_name) DO UPDATE
+                            SET status       = EXCLUDED.status,
+                                last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
+                                today_alerts = EXCLUDED.today_alerts,
+                                error_msg    = EXCLUDED.error_msg,
+                                updated_at   = EXCLUDED.updated_at
+                    """, (scanner_name, status, last_success, today_alerts, error_msg, now_str))
+                else:
+                    # Don't overwrite today_alerts when just updating status/error
+                    cur.execute("""
+                        INSERT INTO scanner_health
+                            (scanner_name, status, last_success, today_alerts, error_msg, updated_at)
+                        VALUES (%s, %s, %s, 0, %s, %s)
+                        ON CONFLICT (scanner_name) DO UPDATE
+                            SET status       = EXCLUDED.status,
+                                last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
+                                error_msg    = EXCLUDED.error_msg,
+                                updated_at   = EXCLUDED.updated_at
+                    """, (scanner_name, status, last_success, error_msg, now_str))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ upsert_scanner_health failed for {scanner_name}")
+
+
+def get_all_scanner_health() -> list[dict]:
+    """Return all scanner health rows from the scanner_health table."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT scanner_name, status, last_success, today_alerts, error_msg, updated_at
+                    FROM scanner_health
+                    ORDER BY scanner_name
+                """)
+                return [dict(row) for row in cur.fetchall()]
+            except Exception:
+                logger.exception("❌ get_all_scanner_health failed")
+                return []
+
+
+def get_scanner_today_trades(scanner_name: str, today_str: str) -> list[dict]:
+    """
+    Return today's alerts for a specific scanner — used by the dashboard API
+    to build hover/drill-down trade list directly from the DB.
+    """
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT
+                        symbol, category, signals, entry_price, alert_time,
+                        stop_loss, target_price, pnl_pct, status, score,
+                        exit_price, closed_at
+                    FROM alerts
+                    WHERE scanner    = %s
+                      AND alert_date = %s
+                    ORDER BY alert_time DESC
+                """, (scanner_name, today_str))
+                return [dict(row) for row in cur.fetchall()]
+            except Exception:
+                logger.exception(f"❌ get_scanner_today_trades failed for {scanner_name}")
+                return []
+
+
 def cleanup_old_alerts(days: int = None) -> None:
     """
     NO-OP — deletion permanently disabled for performance tracking integrity.
@@ -230,3 +343,35 @@ def cleanup_old_alerts(days: int = None) -> None:
         DELETE FROM alerts WHERE alert_date < 'YYYY-MM-DD';
     """
     logger.debug("🗑️  cleanup_old_alerts called — deletion disabled, all data retained.")
+
+
+def save_system_state(key: str, value_str: str) -> None:
+    """Save/update a string value (like JSON payload) for a specific key."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO system_state (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE
+                        SET value = EXCLUDED.value
+                """, (key, value_str))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ save_system_state failed for key={key}")
+
+
+def get_system_state(key: str) -> str | None:
+    """Retrieve system state value for a specific key."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT value FROM system_state WHERE key = %s", (key,))
+                row = cur.fetchone()
+                return row[0] if row else None
+            except Exception:
+                logger.exception(f"❌ get_system_state failed for key={key}")
+                return None

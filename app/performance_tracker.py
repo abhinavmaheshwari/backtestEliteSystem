@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
-from database import get_all_alerts, update_alert_outcome
+from database import get_all_alerts, update_alert_outcome, upsert_scanner_health, save_system_state
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -276,6 +276,7 @@ def build_performance_data():
             "score":         row.get("score"),
             "rsi":           _f(row.get("rsi")),
             "volume_ratio":  _f(row.get("volume_ratio")),
+            "closed_at":     row.get("closed_at"),        # ISO timestamp when SL/Target locked
             "_db_closed":    row.get("status") in ("WIN", "LOSS"),  # internal flag
         })
 
@@ -475,7 +476,24 @@ def build_performance_data():
         t.pop("_db_closed", None)
         t.pop("id", None)
 
-    # ── 9. Write JSON ────────────────────────────────────────────────────────────────
+    # ── 9. Write scanner health to Postgres (source of truth) ──────────────────
+    today_str = date.today().isoformat()
+    for sc in all_scanners:
+        sc_today = [t for t in trades if t["scanner"] == sc and t["entry_date"] == today_str]
+        sc_all_times = [t["alert_time"] for t in trades if t["scanner"] == sc and t.get("alert_time")]
+        last_success = max(sc_all_times) if sc_all_times else None
+        try:
+            upsert_scanner_health(
+                scanner_name  = sc,
+                status        = "OK",
+                last_success  = last_success,
+                today_alerts  = len(sc_today),
+                error_msg     = None,
+            )
+        except Exception:
+            logger.warning(f"⚠️ Could not update scanner_health for {sc}")
+
+    # ── 10. Write DB State ───────────────────────────────────────────────────────────
     payload = {
         "generated_at": datetime.now(IST).isoformat(),
         "summary":      summary,
@@ -486,9 +504,12 @@ def build_performance_data():
         "by_category":  by_category,
     }
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PERF_JSON_PATH, "w") as f:
-        json.dump(payload, f, default=str)
+    try:
+        payload_str = json.dumps(payload, default=str)
+        save_system_state("performance_data", payload_str)
+        logger.info("✅ PERFORMANCE TRACKER | Stored performance metrics in PostgreSQL")
+    except Exception:
+        logger.exception("❌ PERFORMANCE TRACKER | Failed to store performance metrics in DB")
 
     logger.info(
         f"✅ PERFORMANCE TRACKER | {len(trades)} alerts | "
@@ -516,11 +537,13 @@ def _write_empty():
         "monthly":      [],
         "by_scanner":   {},
         "by_category":  {},
+        "scanner_stats": {},
     }
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PERF_JSON_PATH, "w") as f:
-        json.dump(payload, f)
-    logger.info("✅ PERFORMANCE TRACKER | Dashboard refreshed (empty — no alerts yet)")
+    try:
+        save_system_state("performance_data", json.dumps(payload, default=str))
+        logger.info("✅ PERFORMANCE TRACKER | Stored empty performance metrics in PostgreSQL")
+    except Exception:
+        logger.exception("❌ PERFORMANCE TRACKER | Failed to store empty metrics in DB")
 
 
 # =====================================================================================

@@ -27,6 +27,21 @@ logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 
+# Lazy import — dashboard_server may not be ready yet at module load
+def _notify_down(name: str, err: str):
+    try:
+        from dashboard_server import notify_scanner_down
+        notify_scanner_down(name, err)
+    except Exception:
+        pass
+
+def _clear_down(name: str):
+    try:
+        from dashboard_server import clear_scanner_down
+        clear_scanner_down(name)
+    except Exception:
+        pass
+
 # ── Scan windows (start_time, end_time) ─────────────────────────────────────────────
 WINDOWS = {
     "intraday": (dt_time(9, 32),  dt_time(15, 30)),
@@ -97,11 +112,13 @@ active_threads = {}
 
 def _run(name, fn):
     try:
+        _clear_down(name)
         fn()
         threading.current_thread().completed_cleanly = True
-    except Exception:
+    except Exception as exc:
         logger.exception(f"❌ Unhandled exception in {name}")
         threading.current_thread().completed_cleanly = False
+        _notify_down(name, str(exc)[:200])
 
 def run_intraday_scanner():
     wait_for_window("intraday")
@@ -261,6 +278,7 @@ def run_watchdog():
                 else:
                     # Restartable scanner crashed — revive it
                     logger.critical(f"💀 THREAD CRASH: {name} — restarting in 10s...")
+                    _notify_down(name, "Thread crashed — restarting")
                     time.sleep(10)
                     start_thread(name, RESTARTABLE_THREADS[name])
                     logger.info(f"🔄 THREAD REVIVED: {name}")
