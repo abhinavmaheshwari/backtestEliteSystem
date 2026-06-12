@@ -157,18 +157,18 @@ def format_alert(a, scanner="1H"):
     if "atr_stop" in a:
         price_lines.append(f"Stop Loss: ₹{a['atr_stop']}")
         if a.get("sl_method"):
-            price_lines.append(f"├─ SL Method: {a['sl_method']}")
+            price_lines.append(f"  ↳ {a['sl_method']}")
     if "target_price" in a:
-        price_lines.append(f"Target 1:  ₹{a['target_price']} (Primary)")
+        price_lines.append(f"Target 1:  ₹{a['target_price']}  (primary)")
         if a.get("target_2"):
             price_lines.append(f"Target 2:  ₹{a['target_2']}")
         if a.get("target_3"):
-            price_lines.append(f"Target 3:  ₹{a['target_3']} (Extended)")
+            price_lines.append(f"Target 3:  ₹{a['target_3']}  (extended)")
         if a.get("t_method"):
-            price_lines.append(f"├─ T Method:  {a['t_method']}")
+            price_lines.append(f"  ↳ {a['t_method']}")
     if a.get("rr_ratio"):
         price_lines.append(f"R:R Ratio: {a['rr_ratio']}:1")
-        
+
     price_block = "\n".join(price_lines)
 
     if delivery_pct is not None:
@@ -179,6 +179,10 @@ def format_alert(a, scanner="1H"):
         delivery_line = f"Delivery:         {delivery_pct:.1f}%  {deliv_label}"
     else:
         delivery_line = None
+
+    # ── TRAILING SL / EXIT NOTE ─────────────────────────────────────────────
+    trail_note  = a.get("trail_note")
+    trail_block = f"\n💡 <b>Exit Plan:</b> {trail_note}" if trail_note else ""
 
     # ── ASSEMBLE FINAL MESSAGE ──
     lines = [
@@ -192,6 +196,10 @@ def format_alert(a, scanner="1H"):
         bk,
         "",
         price_block,
+    ]
+    if trail_block:
+        lines.append(trail_block)
+    lines += [
         "",
         f"RSI:              {a['rsi']}",
         f"Volume Expansion: {a['volume_ratio']}x",
@@ -199,11 +207,10 @@ def format_alert(a, scanner="1H"):
     ]
     if delivery_line:
         lines.append(delivery_line)
-        
-    # Append the new Moat Block
+
     if moat_block:
         lines.append(moat_block)
-        
+
     lines += [
         "",
         "Trend Structure:",
@@ -216,6 +223,7 @@ def format_alert(a, scanner="1H"):
         f"Bar: {bar_type}",
     ]
     return "\n".join(lines)
+
 
 # =====================================================================================
 # FULL MESSAGE

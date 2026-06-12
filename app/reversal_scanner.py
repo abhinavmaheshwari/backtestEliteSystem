@@ -165,27 +165,35 @@ def _run_scan():
 
         candle_range   = float(latest["High"]) - float(latest["Low"])
         atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
-        # ── Dynamic S/R and Indicator-based SL + Target ───────────────────────
+        # ── Dynamic S/R and Indicator-based SL + Target (REVERSAL mode) ───────
+        # Reversal scanner: targets are mean-reversion levels (EMA20, SMA50),
+        # NOT overhead resistance. SL is widest buffer (anti-trap for volatile stocks).
         sl_result = compute_sl_and_target(
             entry_price=close_price,
             atr=atr_val,
             candle_range=candle_range,
-            timeframe="REVERSAL",
-            adx=latest.get("ADX") if "ADX" in latest else None,
+            mode="REVERSAL",
+            adx=latest.get("ADX"),
             rsi=current_rsi,
-            macd_hist=latest.get("MACD_HIST") if "MACD_HIST" in latest else None,
-            atr_pct=latest.get("ATR_PCT") if "ATR_PCT" in latest else None,
-            swing_low=latest.get("SWING_LOW") if "SWING_LOW" in latest else None,
-            swing_high=latest.get("SWING_HIGH") if "SWING_HIGH" in latest else None,
-            bb_upper=latest.get("BB_UPPER") if "BB_UPPER" in latest else None,
-            bb_lower=latest.get("BB_LOWER") if "BB_LOWER" in latest else None,
-            s1=latest.get("S1") if "S1" in latest else None,
-            s2=latest.get("S2") if "S2" in latest else None,
-            r1=latest.get("R1") if "R1" in latest else None,
-            r2=latest.get("R2") if "R2" in latest else None,
+            macd_hist=latest.get("MACD_HIST"),
+            atr_pct=latest.get("ATR_PCT"),
+            swing_low=latest.get("SWING_LOW"),
+            swing_high=latest.get("SWING_HIGH"),
+            bb_upper=latest.get("BB_UPPER"),
+            bb_lower=latest.get("BB_LOWER"),
+            bb_mid=latest.get("BB_MID"),
+            s1=latest.get("S1"),
+            s2=latest.get("S2"),
+            r1=latest.get("R1"),
+            r2=latest.get("R2"),
+            swing_low_raw=latest.get("SWING_LOW_RAW"),
+            swing_high_raw=latest.get("SWING_HIGH_RAW"),
+            # Mean-reversion specific targets
+            ema20=latest.get("EMA20"),
+            sma50=latest.get("SMA50"),
         )
         suggested_stop = sl_result["stop_loss"]
-        target_price = sl_result["target_1"]
+        target_price   = sl_result["target_1"]
 
         signal_str = ", ".join(reversal_signals)
 
@@ -227,6 +235,7 @@ def _run_scan():
             "sl_method":        sl_result.get("sl_method"),
             "t_method":         sl_result.get("t_method"),
             "rr_ratio":         sl_result.get("rr_ratio"),
+            "trail_note":       sl_result.get("trail_note"),
             "peg":              row.get("PEG Ratio"),
             "yoy_rev":          row.get("YOY Revenue %"),
             "yoy_profit":       row.get("YOY Profit %"),

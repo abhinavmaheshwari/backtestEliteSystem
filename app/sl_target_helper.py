@@ -1,37 +1,40 @@
 # =====================================================================================
-# app/sl_target_helper.py  (UPGRADED v2)
+# app/sl_target_helper.py  (v4 — MODE-SPECIFIC ENGINE)
 #
-# CRITICAL PROBLEMS FIXED from v1:
+# KEY INSIGHT: Different scanners trade completely different setups.
+# One SL/Target formula for all is wrong. This module dispatches to
+# a mode-specific sub-function for each scanner type.
 #
-#   v1 PROBLEM 1 — Generic SL for every stock:
-#       stop_loss = entry - (ATR_multiplier x ATR)
-#       Same formula regardless of trend, momentum, or structure → BAD
+# MODES:
+#   "EOD"      → Daily momentum breakout (swing trade, hold days–weeks)
+#   "INTRADAY" → 15m early-momentum scalp (same-day trade, exit by 3:20 PM)
+#   "LIVE_1H"  → Hourly swing continuation (hold 1–5 days)
+#   "REVERSAL" → Counter-trend oversold bounce (mean reversion, hold days–weeks)
 #
-#   v1 PROBLEM 2 — Hardcoded 2:1 RR target for every stock:
-#       target = entry + 2 x risk
-#       RSI=80 overbought stock got same target as RSI=45 fresh breakout → BAD
+# ANTI-OPERATOR-TRAP DESIGN:
+#   Operators/algos know retail places SL exactly at swing low.
+#   They run stops with a wick, then reverse. Our fix:
+#   → SL is placed BELOW the zone, not at it, with a meaningful % buffer
+#   → Buffer is max(mode_atr_fraction × ATR, mode_pct × price)
+#   → This makes the stop hunt unprofitable for operators (too far to sweep)
 #
-#   v1 PROBLEM 3 — No support/resistance usage:
-#       SL never placed below swing low or pivot support
-#       Target never aimed at resistance / BB_UPPER / swing high → BAD
+# SL BUFFER TABLE (per mode):
+#   INTRADAY  → max(0.5×ATR, 0.30% price) — tight, same-day trade
+#   LIVE_1H   → max(0.5×ATR, 0.50% price) — moderate, hourly swing
+#   EOD       → max(0.75×ATR, 0.75% price) — meaningful, daily trade
+#   REVERSAL  → max(1.0×ATR, 1.00% price) — widest, volatile beaten stocks
 #
-# HOW v2 FIXES THEM:
+# MINIMUM R:R TABLE (per mode):
+#   INTRADAY  → 1.5:1 (scalp — quicker in/out)
+#   LIVE_1H   → 2.0:1 (hourly swing — higher bar)
+#   EOD       → 2.0:1 (daily trade — overnight risk demands it)
+#   REVERSAL  → 2.0:1 (counter-trend — higher base risk)
 #
-#   SL LOGIC (priority order):
-#     1. Below nearest SWING_LOW or Pivot Support (S1/S2) — structure-based
-#     2. ATR buffer below that level (so SL is not AT the level, but below it)
-#     3. ADX-adjusted multiplier: weak trend (ADX<20) → tighter SL
-#        strong trend (ADX>30) → slightly wider SL to avoid shakeout
-#     4. Volatility regime (ATR_PCT): high-volatility stock → accept wider SL
-#
-#   TARGET LOGIC (priority order):
-#     1. Nearest SWING_HIGH / Pivot Resistance (R1/R2) — structure-based
-#     2. BB_UPPER as natural resistance ceiling
-#     3. RSI-adjusted: overbought (RSI>70) → use conservative T1 only
-#        neutral (RSI 45-70) → T1 and T2
-#        momentum (RSI<45 fresh breakout) → full T1/T2/T3
-#     4. MACD confirmation: bullish crossover → allow higher target
-#     5. Minimum RR enforced: if structure target gives <1.5 RR, bump to 1.5
+# TARGET PHILOSOPHY (per mode):
+#   EOD       → Nearest swing high / R1 pivot → R2 → 52W high zone
+#   INTRADAY  → Session high / BB_UPPER → Day's R1 (no T3 — exit same day)
+#   LIVE_1H   → R1 / BB_UPPER → R2 (no T3 — 1H has limited range)
+#   REVERSAL  → EMA20 or BB_MID (mean reversion T1) → SMA50 (T2) → R1 (T3)
 # =====================================================================================
 
 from __future__ import annotations
@@ -39,24 +42,21 @@ from typing import Optional
 import math
 
 
-# ── ATR base multipliers per timeframe ────────────────────────────────────────
-ATR_BASE_MULTIPLIERS: dict[str, float] = {
-    "15m":      1.0,
-    "INTRADAY": 1.0,
-    "1h":       1.5,
-    "1H":       1.5,
-    "1d":       2.0,
-    "EOD":      2.0,
-    "REVERSAL": 2.0,
+# ── Per-mode configuration ────────────────────────────────────────────────────
+_MODE_CONFIG = {
+    #           atr_base  sl_atr_buf  sl_pct_buf  min_rr  max_sl_atr
+    "EOD":      (2.00,    0.75,       0.0075,     2.0,    3.0),
+    "INTRADAY": (1.00,    0.50,       0.0030,     1.5,    2.5),
+    "LIVE_1H":  (1.50,    0.50,       0.0050,     2.0,    2.5),
+    "REVERSAL": (2.00,    1.00,       0.0100,     2.0,    3.5),
 }
-
-MIN_RR_RATIO = 1.5   # never accept a setup with R:R below this
+_DEFAULT_CONFIG = (1.50, 0.50, 0.0050, 1.5, 3.0)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _safe(val) -> Optional[float]:
-    """Return float if valid, else None."""
+    """Return float if valid, finite, and > 0, else None."""
     try:
         f = float(val)
         return f if math.isfinite(f) and f > 0 else None
@@ -64,222 +64,569 @@ def _safe(val) -> Optional[float]:
         return None
 
 
-def _atr_multiplier(timeframe: str, adx: Optional[float], atr_pct: Optional[float]) -> float:
+def _pick_support(
+    entry: float,
+    swing_low: Optional[float],
+    s1: Optional[float],
+    swing_low_raw: Optional[float],
+    s2: Optional[float],
+) -> tuple[Optional[float], str]:
     """
-    Returns ATR multiplier adjusted for:
-      - timeframe (base)
-      - ADX (trend strength): strong trend → wider SL buffer
-      - ATR_PCT (volatility regime): high volatility → accept wider SL
+    Best structural support level below entry.
+    Priority: true pivot swing low > S1 > rolling window low > S2.
     """
-    base = ATR_BASE_MULTIPLIERS.get(timeframe, 1.5)
+    for level, label in [
+        (swing_low,     "pivot swing low"),
+        (s1,            "pivot S1"),
+        (swing_low_raw, "rolling swing low"),
+        (s2,            "pivot S2"),
+    ]:
+        v = _safe(level)
+        if v is not None and v < entry:
+            return v, label
+    return None, "none"
 
-    # ADX adjustment
+
+def _pick_resistance(
+    entry: float,
+    swing_high: Optional[float],
+    r1: Optional[float],
+    bb_upper: Optional[float],
+    swing_high_raw: Optional[float],
+    r2: Optional[float],
+) -> tuple[Optional[float], str]:
+    """
+    Nearest structural resistance above entry.
+    Priority: true pivot swing high > R1 > BB_UPPER > rolling high > R2.
+    """
+    for level, label in [
+        (swing_high,     "pivot swing high"),
+        (r1,             "pivot R1"),
+        (bb_upper,       "BB upper band"),
+        (swing_high_raw, "rolling swing high"),
+        (r2,             "pivot R2"),
+    ]:
+        v = _safe(level)
+        if v is not None and v > entry:
+            return v, label
+    return None, "none"
+
+
+def _adx_atr_scale(adx: Optional[float], atr_pct: Optional[float], base: float) -> float:
+    """
+    Scale ATR multiplier by trend strength (ADX) and volatility regime (ATR%).
+    Stronger trend → slightly wider SL to survive pullbacks without stopping out.
+    High volatility → wider SL (stock moves more per day).
+    """
+    m = base
     if adx is not None:
-        if adx > 35:
-            base *= 1.20    # strong trend — give more room to breathe
-        elif adx < 20:
-            base *= 0.85    # weak / choppy — tighten SL
-
-    # Volatility regime (ATR as % of price)
+        if adx > 40:   m *= 1.20
+        elif adx > 30: m *= 1.10
+        elif adx < 20: m *= 0.85  # choppy — tighter
     if atr_pct is not None:
-        if atr_pct > 3.0:
-            base *= 1.15    # high-volatility stock → widen slightly
-        elif atr_pct < 1.0:
-            base *= 0.90    # low-volatility stock → tighter is fine
-
-    return round(base, 3)
+        if atr_pct > 4.0:   m *= 1.20
+        elif atr_pct > 2.5: m *= 1.10
+        elif atr_pct < 1.0: m *= 0.90
+    return round(m, 3)
 
 
-def _nearest_support(
-        entry: float,
-        swing_low: Optional[float],
-        s1: Optional[float],
-        s2: Optional[float],
-) -> Optional[float]:
+def _sl_from_support(
+    entry: float,
+    support: float,
+    eff_atr: float,
+    sl_atr_buf: float,
+    sl_pct_buf: float,
+    max_sl_atr: float,
+    support_label: str,
+) -> tuple[float, str]:
     """
-    Returns the nearest support level BELOW entry.
-    Priority: swing_low > S1 > S2.
+    Places SL below a structural support with an anti-trap buffer.
+    Buffer = max(sl_atr_buf × ATR, sl_pct_buf × price)
+    Caps at max_sl_atr × ATR to avoid absurdly wide stops.
     """
-    candidates = [v for v in [swing_low, s1, s2] if v is not None and v < entry]
-    return max(candidates) if candidates else None
+    buf      = max(sl_atr_buf * eff_atr, sl_pct_buf * entry)
+    raw_sl   = support - buf
+    sl_method = (
+        f"Below {support_label} ₹{round(support, 2)} "
+        f"— buffer ₹{round(buf, 2)} (anti-trap zone)"
+    )
+    # Cap if structure is very far from entry
+    if (entry - raw_sl) > max_sl_atr * eff_atr:
+        raw_sl    = entry - max_sl_atr * eff_atr
+        sl_method = (
+            f"Capped at {max_sl_atr}×ATR "
+            f"({support_label} ₹{round(support, 2)} too far from entry)"
+        )
+    return raw_sl, sl_method
 
 
-def _nearest_resistance(
-        entry: float,
-        swing_high: Optional[float],
-        r1: Optional[float],
-        r2: Optional[float],
-        bb_upper: Optional[float],
-) -> Optional[float]:
-    """
-    Returns the nearest resistance level ABOVE entry.
-    Priority: swing_high > BB_UPPER > R1 > R2.
-    """
-    candidates = [v for v in [swing_high, bb_upper, r1, r2] if v is not None and v > entry]
-    return min(candidates) if candidates else None
+def _rsi_zone(rsi: Optional[float]) -> str:
+    v = _safe(rsi)
+    if v is None:       return "neutral"
+    if v > 72:          return "overbought"
+    if v > 55:          return "bullish"
+    if v > 40:          return "neutral"
+    return "oversold"
 
 
-# ── Main function ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# EOD — Daily Breakout (swing trade, hold days to weeks)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def compute_sl_and_target(
-        entry_price:  float,
-        atr:          Optional[float],
-        candle_range: float,
-        timeframe:    str,
-        # ── Technical context inputs ──
-        adx:          Optional[float] = None,
-        rsi:          Optional[float] = None,
-        macd_hist:    Optional[float] = None,
-        atr_pct:      Optional[float] = None,
-        swing_low:    Optional[float] = None,
-        swing_high:   Optional[float] = None,
-        bb_upper:     Optional[float] = None,
-        bb_lower:     Optional[float] = None,
-        s1:           Optional[float] = None,
-        s2:           Optional[float] = None,
-        r1:           Optional[float] = None,
-        r2:           Optional[float] = None,
+def _compute_eod(
+    entry: float, eff_atr: float, adx, rsi, macd_hist, atr_pct,
+    swing_low, swing_high, bb_upper, bb_lower,
+    s1, s2, r1, r2, swing_low_raw, swing_high_raw,
 ) -> dict:
     """
-    Returns a dict with:
-        stop_loss   — structure-aware, ATR-buffered
-        target_1    — nearest resistance / conservative
-        target_2    — next resistance / moderate (None if overbought)
-        target_3    — extended target (None unless strong momentum)
-        rr_ratio    — actual R:R of target_1
-        risk        — risk per share in rupees
-        sl_method   — explains how SL was set
-        t_method    — explains how targets were set
-        rsi_zone    — overbought / bullish / neutral / oversold
-
-    Usage:
-        from app.technical_indicators import apply_indicators
-        from app.sl_target_helper import compute_sl_and_target
-
-        df  = apply_indicators(df, timeframe="1d")
-        row = df.iloc[-1]
-
-        result = compute_sl_and_target(
-            entry_price  = row["Close"],
-            atr          = row["ATR"],
-            candle_range = row["High"] - row["Low"],
-            timeframe    = "1d",
-            adx          = row["ADX"],
-            rsi          = row["RSI"],
-            macd_hist    = row["MACD_HIST"],
-            atr_pct      = row["ATR_PCT"],
-            swing_low    = row["SWING_LOW"],
-            swing_high   = row["SWING_HIGH"],
-            bb_upper     = row["BB_UPPER"],
-            bb_lower     = row["BB_LOWER"],
-            s1           = row["S1"],
-            s2           = row["S2"],
-            r1           = row["R1"],
-            r2           = row["R2"],
-        )
+    EOD breakout logic:
+    • SL   — below swing/pivot support with 0.75×ATR or 0.75% price buffer
+    • T1   — nearest swing high / R1 pivot (min 2:1 RR)
+    • T2   — R2 / 52W zone (only if not overbought)
+    • T3   — 5×RR on strong MACD+ADX confluence (hold for a run)
+    • Trailing SL note: raise SL to breakeven after T1 hit
     """
+    atr_base, sl_atr_buf, sl_pct_buf, min_rr, max_sl_atr = _MODE_CONFIG["EOD"]
+    scaled_mult = _adx_atr_scale(_safe(adx), _safe(atr_pct), atr_base)
 
-    # ── 1. Resolve effective ATR ───────────────────────────────────────────────
-    eff_atr = _safe(atr) or (_safe(candle_range) * 1.5 if _safe(candle_range) else None)
-    if eff_atr is None or eff_atr <= 0:
-        eff_atr = entry_price * 0.015   # last-resort: 1.5% of price
-
-    multiplier = _atr_multiplier(timeframe, _safe(adx), _safe(atr_pct))
-    atr_risk   = multiplier * eff_atr
-
-    # ── 2. Stop-Loss placement ─────────────────────────────────────────────────
-    support = _nearest_support(entry_price, _safe(swing_low), _safe(s1), _safe(s2))
+    support, sup_label = _pick_support(entry, _safe(swing_low), _safe(s1), _safe(swing_low_raw), _safe(s2))
 
     if support is not None:
-        # Place SL below the structural support with a small ATR buffer (0.25x)
-        raw_sl    = support - (0.25 * eff_atr)
-        sl_method = f"Below swing/pivot support {round(support, 2)} with 0.25x ATR buffer"
-        # Safety cap: if structure-based SL is too wide (>3x ATR), cap it
-        if (entry_price - raw_sl) > 3.0 * eff_atr:
-            raw_sl    = entry_price - (2.5 * eff_atr)
-            sl_method = "Capped at 2.5x ATR (structure too far from entry)"
+        raw_sl, sl_method = _sl_from_support(entry, support, eff_atr, sl_atr_buf, sl_pct_buf, max_sl_atr, sup_label)
     else:
-        # No support found — fall back to ATR-only SL
-        raw_sl    = entry_price - atr_risk
-        sl_method = f"{multiplier}x ATR (no nearby support found)"
+        raw_sl    = entry - scaled_mult * eff_atr
+        sl_method = f"ATR fallback ({scaled_mult}×ATR) — no support structure below entry"
 
     stop_loss = round(raw_sl, 2)
-    risk      = entry_price - stop_loss
+    risk      = max(entry - stop_loss, entry * 0.005)
 
-    # ── 3. Target placement ────────────────────────────────────────────────────
-    resistance = _nearest_resistance(
-        entry_price, _safe(swing_high), _safe(r1), _safe(r2), _safe(bb_upper)
-    )
+    zone = _rsi_zone(rsi)
 
-    # RSI context → how aggressive to be with targets
-    rsi_val = _safe(rsi)
-    if rsi_val is not None:
-        if rsi_val > 72:
-            rsi_zone = "overbought"    # near exhaustion → conservative
-        elif rsi_val > 55:
-            rsi_zone = "bullish"       # healthy uptrend
-        elif rsi_val > 40:
-            rsi_zone = "neutral"
-        else:
-            rsi_zone = "oversold"      # fresh breakout potential → aggressive
-    else:
-        rsi_zone = "neutral"
+    resistance, res_label = _pick_resistance(entry, _safe(swing_high), _safe(r1), _safe(bb_upper), _safe(swing_high_raw), _safe(r2))
 
-    # MACD confirmation
-    macd_bullish = (
-            macd_hist is not None
-            and _safe(abs(macd_hist)) is not None
-            and float(macd_hist) > 0
-    )
-
-    # Target 1: nearest resistance or minimum 1.5:1 RR
     if resistance is not None:
         t1_raw   = resistance
-        t_method = f"T1: nearest resistance/swing high {round(t1_raw, 2)}"
+        t_method = f"T1: {res_label} ₹{round(t1_raw, 2)}"
     else:
-        t1_raw   = entry_price + (MIN_RR_RATIO * risk)
-        t_method = f"T1: no resistance found — set at min {MIN_RR_RATIO}:1 RR"
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: no resistance — min {min_rr}×RR"
 
-    # Enforce minimum RR on T1
-    if (t1_raw - entry_price) < (MIN_RR_RATIO * risk):
-        t1_raw   = entry_price + (MIN_RR_RATIO * risk)
-        t_method = f"T1: bumped to min {MIN_RR_RATIO}:1 RR (resistance too close to entry)"
+    # EOD needs minimum 2:1 — justify overnight risk
+    if (t1_raw - entry) < min_rr * risk:
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: bumped to {min_rr}×RR ({res_label} too close)"
 
     target_1 = round(t1_raw, 2)
+    rr_ratio = round((target_1 - entry) / risk, 2) if risk > 0 else 0.0
 
-    # Target 2: only if not overbought
+    # T2 — R2 or 3.5×RR (not for overbought)
     target_2 = None
-    if rsi_zone != "overbought":
-        r2_val = _safe(r2)
-        if r2_val and r2_val > target_1:
-            target_2  = round(r2_val, 2)
-            t_method += f" | T2: R2 pivot {target_2}"
+    if zone != "overbought":
+        r2_v = _safe(r2)
+        if r2_v and r2_v > target_1:
+            target_2  = round(r2_v, 2)
+            t_method += f" | T2: R2 ₹{target_2}"
         else:
-            target_2  = round(entry_price + 2.5 * risk, 2)
-            t_method += " | T2: 2.5x RR"
+            target_2  = round(entry + 3.5 * risk, 2)
+            t_method += f" | T2: 3.5×RR ₹{target_2}"
 
-    # Target 3: only on strong momentum confluence
+    # T3 — strong confluence only (MACD bullish + ADX > 25)
     target_3 = None
-    adx_val  = _safe(adx)
-    if (
-            macd_bullish
-            and rsi_zone in ("neutral", "oversold", "bullish")
-            and (adx_val is None or adx_val > 25)
-    ):
-        target_3  = round(entry_price + 4.0 * risk, 2)
-        t_method += " | T3: 4x RR (MACD bullish + ADX strong)"
-
-    # ── 4. Actual R:R of T1 ───────────────────────────────────────────────────
-    rr_ratio = round((target_1 - entry_price) / risk, 2) if risk > 0 else 0.0
+    adx_v    = _safe(adx)
+    macd_bull = macd_hist is not None and _safe(abs(float(macd_hist))) is not None and float(macd_hist) > 0
+    above_t2  = target_2 if target_2 else target_1
+    if macd_bull and zone in ("neutral", "bullish", "oversold") and (adx_v is None or adx_v > 25):
+        t3_cand = round(entry + 5.0 * risk, 2)
+        if t3_cand > above_t2:
+            target_3  = t3_cand
+            t_method += f" | T3: 5×RR ₹{target_3} (MACD+ADX)"
 
     return {
-        "stop_loss": stop_loss,
-        "target_1":  target_1,
-        "target_2":  target_2,
-        "target_3":  target_3,
-        "rr_ratio":  rr_ratio,
-        "risk":      round(risk, 2),
-        "sl_method": sl_method,
-        "t_method":  t_method,
-        "rsi_zone":  rsi_zone,
+        "stop_loss":    stop_loss,
+        "target_1":     target_1,
+        "target_2":     target_2,
+        "target_3":     target_3,
+        "rr_ratio":     rr_ratio,
+        "risk":         round(risk, 2),
+        "sl_method":    sl_method,
+        "t_method":     t_method,
+        "rsi_zone":     zone,
+        "trail_note":   "Raise SL to breakeven after T1 is hit",
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTRADAY — 15m Early Momentum Scalp (same-day trade)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_intraday(
+    entry: float, eff_atr: float, adx, rsi, macd_hist, atr_pct,
+    swing_low, swing_high, bb_upper, bb_lower,
+    s1, s2, r1, r2, swing_low_raw, swing_high_raw,
+    candle_low: Optional[float] = None,
+) -> dict:
+    """
+    Intraday 15m scalp logic:
+    • SL   — below the triggering candle's OWN LOW + 0.5×ATR buffer
+             (this is tighter than multi-day swing → better RR for scalps)
+             Fallback to 15m swing low if candle_low is impractical
+    • T1   — session high / R1 / BB_UPPER (min 1.5:1 RR)
+    • T2   — day's R1 or 2.5×RR — exit before 3:15 PM regardless
+    • T3   — NONE (same-day trade, do not hold for extended target)
+    • Trail note: "Exit by 3:15 PM even if targets not hit"
+    """
+    atr_base, sl_atr_buf, sl_pct_buf, min_rr, max_sl_atr = _MODE_CONFIG["INTRADAY"]
+
+    # SL: prefer candle_low (triggering bar's own low) over multi-day structure
+    # This keeps risk tighter for an intraday scalp
+    buf = max(sl_atr_buf * eff_atr, sl_pct_buf * entry)
+
+    if candle_low is not None and _safe(candle_low) and candle_low < entry:
+        raw_sl    = candle_low - buf
+        sl_method = f"Below candle low ₹{round(candle_low, 2)} — buffer ₹{round(buf, 2)} (anti-trap)"
+    else:
+        # Fallback: 15m swing structure
+        support, sup_label = _pick_support(entry, _safe(swing_low), _safe(s1), _safe(swing_low_raw), _safe(s2))
+        if support is not None:
+            raw_sl, sl_method = _sl_from_support(entry, support, eff_atr, sl_atr_buf, sl_pct_buf, max_sl_atr, sup_label)
+        else:
+            raw_sl    = entry - 1.0 * eff_atr
+            sl_method = f"1×ATR fallback — no 15m structure below entry"
+
+    # Hard cap: intraday SL max 2.5×ATR
+    if (entry - raw_sl) > max_sl_atr * eff_atr:
+        raw_sl    = entry - max_sl_atr * eff_atr
+        sl_method = f"Capped at {max_sl_atr}×ATR (intraday risk limit)"
+
+    stop_loss = round(raw_sl, 2)
+    risk      = max(entry - stop_loss, entry * 0.003)
+
+    zone = _rsi_zone(rsi)
+
+    # Target: session-level resistance
+    resistance, res_label = _pick_resistance(entry, _safe(swing_high), _safe(r1), _safe(bb_upper), _safe(swing_high_raw), _safe(r2))
+
+    if resistance is not None:
+        t1_raw   = resistance
+        t_method = f"T1: {res_label} ₹{round(t1_raw, 2)} (intraday)"
+    else:
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: min {min_rr}×RR (no intraday resistance found)"
+
+    if (t1_raw - entry) < min_rr * risk:
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: bumped to {min_rr}×RR ({res_label} too close)"
+
+    target_1 = round(t1_raw, 2)
+    rr_ratio  = round((target_1 - entry) / risk, 2) if risk > 0 else 0.0
+
+    # T2 — only if not overbought (2.5×RR or R2)
+    target_2 = None
+    if zone != "overbought":
+        r2_v = _safe(r2)
+        if r2_v and r2_v > target_1:
+            target_2  = round(r2_v, 2)
+            t_method += f" | T2: R2 ₹{target_2}"
+        else:
+            target_2  = round(entry + 2.5 * risk, 2)
+            t_method += f" | T2: 2.5×RR ₹{target_2}"
+
+    # NO T3 on intraday — must exit by end of day
+    return {
+        "stop_loss":    stop_loss,
+        "target_1":     target_1,
+        "target_2":     target_2,
+        "target_3":     None,
+        "rr_ratio":     rr_ratio,
+        "risk":         round(risk, 2),
+        "sl_method":    sl_method,
+        "t_method":     t_method,
+        "rsi_zone":     zone,
+        "trail_note":   "Exit by 3:15 PM even if targets not hit — no overnight positions",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE_1H — Hourly Swing Continuation (hold 1–5 days)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_live_1h(
+    entry: float, eff_atr: float, adx, rsi, macd_hist, atr_pct,
+    swing_low, swing_high, bb_upper, bb_lower,
+    s1, s2, r1, r2, swing_low_raw, swing_high_raw,
+) -> dict:
+    """
+    1H swing logic:
+    • SL   — below last hourly swing low + 0.5×ATR or 0.5% price buffer
+    • T1   — R1 / swing high (min 2:1 RR for 1H swing, overnight risk)
+    • T2   — R2 / BB_UPPER (not for overbought)
+    • T3   — NONE (1H setups don't have multi-week thesis)
+    • Trail note: "Trail SL to last hourly swing low after T1"
+    """
+    atr_base, sl_atr_buf, sl_pct_buf, min_rr, max_sl_atr = _MODE_CONFIG["LIVE_1H"]
+    scaled_mult = _adx_atr_scale(_safe(adx), _safe(atr_pct), atr_base)
+
+    support, sup_label = _pick_support(entry, _safe(swing_low), _safe(s1), _safe(swing_low_raw), _safe(s2))
+
+    if support is not None:
+        raw_sl, sl_method = _sl_from_support(entry, support, eff_atr, sl_atr_buf, sl_pct_buf, max_sl_atr, sup_label)
+    else:
+        raw_sl    = entry - scaled_mult * eff_atr
+        sl_method = f"ATR fallback ({scaled_mult}×ATR) — no 1H structure below entry"
+
+    stop_loss = round(raw_sl, 2)
+    risk      = max(entry - stop_loss, entry * 0.005)
+
+    zone = _rsi_zone(rsi)
+
+    resistance, res_label = _pick_resistance(entry, _safe(swing_high), _safe(r1), _safe(bb_upper), _safe(swing_high_raw), _safe(r2))
+
+    if resistance is not None:
+        t1_raw   = resistance
+        t_method = f"T1: {res_label} ₹{round(t1_raw, 2)}"
+    else:
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: min {min_rr}×RR (no 1H resistance found)"
+
+    # 1H swing: minimum 2:1 RR
+    if (t1_raw - entry) < min_rr * risk:
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: bumped to {min_rr}×RR ({res_label} too close)"
+
+    target_1 = round(t1_raw, 2)
+    rr_ratio  = round((target_1 - entry) / risk, 2) if risk > 0 else 0.0
+
+    # T2 — R2 or 3×RR (not for overbought)
+    target_2 = None
+    if zone != "overbought":
+        r2_v = _safe(r2)
+        if r2_v and r2_v > target_1:
+            target_2  = round(r2_v, 2)
+            t_method += f" | T2: R2 ₹{target_2}"
+        else:
+            target_2  = round(entry + 3.0 * risk, 2)
+            t_method += f" | T2: 3×RR ₹{target_2}"
+
+    # No T3 for 1H swings
+    return {
+        "stop_loss":    stop_loss,
+        "target_1":     target_1,
+        "target_2":     target_2,
+        "target_3":     None,
+        "rr_ratio":     rr_ratio,
+        "risk":         round(risk, 2),
+        "sl_method":    sl_method,
+        "t_method":     t_method,
+        "rsi_zone":     zone,
+        "trail_note":   "Trail SL to last hourly swing low after T1 is hit",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REVERSAL — Oversold Bounce / Mean Reversion (counter-trend, long-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_reversal(
+    entry: float, eff_atr: float, adx, rsi, macd_hist, atr_pct,
+    swing_low, swing_high, bb_upper, bb_lower,
+    s1, s2, r1, r2, swing_low_raw, swing_high_raw,
+    ema20: Optional[float] = None,
+    bb_mid: Optional[float] = None,
+    sma50: Optional[float] = None,
+) -> dict:
+    """
+    REVERSAL / Mean-Reversion logic (LONG-ONLY oversold bounce):
+
+    These are stocks down 18–60% from highs — volatility is HIGH.
+    The trade thesis is: "RSI curled up, MACD turning, price crossed EMA20.
+    Mean reversion to EMA20/SMA50 is underway."
+
+    SL:
+      → Below the recent oversold swing low with WIDE buffer (1.0×ATR or 1% price)
+      → The swing low here IS the entry trigger — if it breaks again, reversal failed
+      → Wide buffer critical: beaten-down stocks have huge daily ranges
+
+    Targets (MEAN REVERSION — not resistance-based like breakout scanners):
+      → T1: EMA20 or BB_MID (the stock is bouncing back to the mean)
+           This is the primary mean reversion target — usually 8–20% above entry
+      → T2: SMA50 (further reversion, price normalizing)
+      → T3: R1 (only on strong volume + MACD momentum — full recovery)
+
+    Why NOT swing high / R1 as T1?
+      These stocks have heavy overhead resistance from the 18–60% drop.
+      Going straight for resistance is unrealistic for a REVERSAL setup.
+      The mean (EMA20, SMA50) is what price magnetically returns to first.
+    """
+    atr_base, sl_atr_buf, sl_pct_buf, min_rr, max_sl_atr = _MODE_CONFIG["REVERSAL"]
+
+    # Volatility-scaled buffer (beaten stocks are volatile)
+    support, sup_label = _pick_support(entry, _safe(swing_low), _safe(s1), _safe(swing_low_raw), _safe(s2))
+
+    if support is not None:
+        raw_sl, sl_method = _sl_from_support(entry, support, eff_atr, sl_atr_buf, sl_pct_buf, max_sl_atr, sup_label)
+    else:
+        # No pivot swing — use recent candle low (the reversal trigger bar's low)
+        raw_sl    = entry - max(sl_atr_buf * eff_atr, sl_pct_buf * entry)
+        sl_method = f"Below entry by buffer ₹{round(entry - raw_sl, 2)} (no prior swing low found)"
+
+    stop_loss = round(raw_sl, 2)
+    risk      = max(entry - stop_loss, entry * 0.008)  # min 0.8% risk for reversal
+
+    # ── REVERSAL TARGETS: mean reversion levels, NOT overhead resistance ──────
+    t_method = ""
+
+    # T1: EMA20 or BB_MID (mean reversion target)
+    ema20_v = _safe(ema20)
+    bbmid_v = _safe(bb_mid)
+
+    t1_raw = None
+    if ema20_v and ema20_v > entry:
+        t1_raw   = ema20_v
+        t_method = f"T1: EMA20 ₹{round(t1_raw, 2)} (mean reversion)"
+    elif bbmid_v and bbmid_v > entry:
+        t1_raw   = bbmid_v
+        t_method = f"T1: BB Mid ₹{round(t1_raw, 2)} (mean reversion)"
+    else:
+        # Mean (EMA20/BB_MID) is below entry — stock has already recovered above mean
+        # Use R1 as primary target or minimum 2:1 RR
+        r1_v = _safe(r1)
+        if r1_v and r1_v > entry:
+            t1_raw   = r1_v
+            t_method = f"T1: R1 ₹{round(t1_raw, 2)} (price above mean — use resistance)"
+        else:
+            t1_raw   = entry + min_rr * risk
+            t_method = f"T1: min {min_rr}×RR (mean already crossed)"
+
+    # Enforce minimum 2:1 RR
+    if (t1_raw - entry) < min_rr * risk:
+        t1_raw   = entry + min_rr * risk
+        t_method = f"T1: bumped to {min_rr}×RR (mean too close to entry)"
+
+    target_1 = round(t1_raw, 2)
+    rr_ratio  = round((target_1 - entry) / risk, 2) if risk > 0 else 0.0
+
+    # T2: SMA50 (next mean reversion level)
+    target_2  = None
+    sma50_v   = _safe(sma50)
+    if sma50_v and sma50_v > target_1:
+        target_2  = round(sma50_v, 2)
+        t_method += f" | T2: SMA50 ₹{target_2} (further recovery)"
+    else:
+        # SMA50 not available or below T1 — use 3.5×RR
+        t2_cand   = round(entry + 3.5 * risk, 2)
+        if t2_cand > target_1:
+            target_2  = t2_cand
+            t_method += f" | T2: 3.5×RR ₹{target_2}"
+
+    # T3: R1 pivot only on strong momentum (MACD bull + volume surge)
+    target_3  = None
+    above_t2  = target_2 if target_2 else target_1
+    macd_bull = macd_hist is not None and _safe(abs(float(macd_hist))) is not None and float(macd_hist) > 0
+    adx_v     = _safe(adx)
+    r1_v      = _safe(r1)
+    if macd_bull and r1_v and r1_v > above_t2 and (adx_v is None or adx_v > 20):
+        target_3  = round(r1_v, 2)
+        t_method += f" | T3: R1 ₹{target_3} (full recovery — MACD momentum)"
+
+    zone = _rsi_zone(rsi)
+
+    return {
+        "stop_loss":    stop_loss,
+        "target_1":     target_1,
+        "target_2":     target_2,
+        "target_3":     target_3,
+        "rr_ratio":     rr_ratio,
+        "risk":         round(risk, 2),
+        "sl_method":    sl_method,
+        "t_method":     t_method,
+        "rsi_zone":     zone,
+        "trail_note":   "Book 50% at T1 (EMA20). Trail remainder to breakeven.",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API — single entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_sl_and_target(
+    entry_price:    float,
+    atr:            Optional[float],
+    candle_range:   float,
+    mode:           Optional[str]   = None,     # "EOD" | "INTRADAY" | "LIVE_1H" | "REVERSAL"
+    # ── Technical context ──────────────────────────────────────────
+    adx:            Optional[float] = None,
+    rsi:            Optional[float] = None,
+    macd_hist:      Optional[float] = None,
+    atr_pct:        Optional[float] = None,
+    swing_low:      Optional[float] = None,   # true pivot swing low
+    swing_high:     Optional[float] = None,   # true pivot swing high
+    bb_upper:       Optional[float] = None,
+    bb_lower:       Optional[float] = None,
+    bb_mid:         Optional[float] = None,   # used by REVERSAL (mean reversion T1)
+    s1:             Optional[float] = None,
+    s2:             Optional[float] = None,
+    r1:             Optional[float] = None,
+    r2:             Optional[float] = None,
+    swing_low_raw:  Optional[float] = None,   # rolling window fallback
+    swing_high_raw: Optional[float] = None,   # rolling window fallback
+    candle_low:     Optional[float] = None,   # used by INTRADAY (bar's own low)
+    ema20:          Optional[float] = None,   # used by REVERSAL (mean reversion T1)
+    sma50:          Optional[float] = None,   # used by REVERSAL (mean reversion T2)
+    # Backward-compat alias (old callers used timeframe=)
+    timeframe:      Optional[str]   = None,
+) -> dict:
+    """
+    Mode-dispatching SL/Target engine.
+
+    Returns dict with:
+        stop_loss   — placement respects structure + anti-trap buffer
+        target_1    — primary target (mean reversion for REVERSAL, resistance for others)
+        target_2    — secondary target (None for REVERSAL if overbought)
+        target_3    — extended target (EOD + REVERSAL only, on strong confluence)
+        rr_ratio    — R:R of target_1
+        risk        — ₹ risk per share
+        sl_method   — explanation of how SL was placed
+        t_method    — explanation of how targets were set
+        rsi_zone    — overbought / bullish / neutral / oversold
+        trail_note  — plain-English trailing instruction for the Telegram alert
+
+    Backward compatibility: if `mode` is not recognized, falls back to `timeframe`.
+    """
+    # Resolve effective mode — support both mode= (new) and timeframe= (old alias)
+    # Priority: mode > timeframe > "EOD" default
+    _TIMEFRAME_MAP = {
+        "EOD": "EOD", "1d": "EOD",
+        "INTRADAY": "INTRADAY", "15m": "INTRADAY",
+        "1H": "LIVE_1H", "1h": "LIVE_1H", "LIVE_1H": "LIVE_1H",
+        "REVERSAL": "REVERSAL",
+    }
+    effective_mode = (
+        _TIMEFRAME_MAP.get(mode or "", "")
+        or _TIMEFRAME_MAP.get(timeframe or "", "")
+        or "EOD"
+    )
+
+    # Resolve effective ATR
+    eff_atr = _safe(atr) or (_safe(candle_range) * 1.5 if _safe(candle_range) else None)
+    if eff_atr is None or eff_atr <= 0:
+        eff_atr = entry_price * 0.015   # last resort: 1.5% of price
+
+    kwargs = dict(
+        entry=entry_price, eff_atr=eff_atr,
+        adx=adx, rsi=rsi, macd_hist=macd_hist, atr_pct=atr_pct,
+        swing_low=swing_low, swing_high=swing_high,
+        bb_upper=bb_upper, bb_lower=bb_lower,
+        s1=s1, s2=s2, r1=r1, r2=r2,
+        swing_low_raw=swing_low_raw, swing_high_raw=swing_high_raw,
+    )
+
+    if effective_mode == "EOD":
+        return _compute_eod(**kwargs)
+    elif effective_mode == "INTRADAY":
+        return _compute_intraday(**kwargs, candle_low=candle_low)
+    elif effective_mode == "LIVE_1H":
+        return _compute_live_1h(**kwargs)
+    elif effective_mode == "REVERSAL":
+        return _compute_reversal(**kwargs, ema20=ema20, bb_mid=bb_mid, sma50=sma50)
+    else:
+        return _compute_eod(**kwargs)  # safe default

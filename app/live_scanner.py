@@ -374,28 +374,32 @@ def start():
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
-                    # ── Dynamic S/R and Indicator-based SL + Target ──────────────
+                    # ── Dynamic S/R and Indicator-based SL + Target (LIVE_1H mode) ──
                     current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
                     sl_result = compute_sl_and_target(
                         entry_price=candle_close,
                         atr=current_atr,
                         candle_range=candle_range,
-                        timeframe="1H",
-                        adx=latest.get("ADX") if "ADX" in latest else None,
+                        mode="LIVE_1H",
+                        adx=latest.get("ADX"),
                         rsi=rsi_val,
-                        macd_hist=latest.get("MACD_HIST") if "MACD_HIST" in latest else None,
-                        atr_pct=latest.get("ATR_PCT") if "ATR_PCT" in latest else None,
-                        swing_low=latest.get("SWING_LOW") if "SWING_LOW" in latest else None,
-                        swing_high=latest.get("SWING_HIGH") if "SWING_HIGH" in latest else None,
-                        bb_upper=latest.get("BB_UPPER") if "BB_UPPER" in latest else None,
-                        bb_lower=latest.get("BB_LOWER") if "BB_LOWER" in latest else None,
-                        s1=latest.get("S1") if "S1" in latest else None,
-                        s2=latest.get("S2") if "S2" in latest else None,
-                        r1=latest.get("R1") if "R1" in latest else None,
-                        r2=latest.get("R2") if "R2" in latest else None,
+                        macd_hist=latest.get("MACD_HIST"),
+                        atr_pct=latest.get("ATR_PCT"),
+                        swing_low=latest.get("SWING_LOW"),
+                        swing_high=latest.get("SWING_HIGH"),
+                        bb_upper=latest.get("BB_UPPER"),
+                        bb_lower=latest.get("BB_LOWER"),
+                        bb_mid=latest.get("BB_MID"),
+                        s1=latest.get("S1"),
+                        s2=latest.get("S2"),
+                        r1=latest.get("R1"),
+                        r2=latest.get("R2"),
+                        swing_low_raw=latest.get("SWING_LOW_RAW"),
+                        swing_high_raw=latest.get("SWING_HIGH_RAW"),
+                        candle_low=candle_low,
                     )
                     suggested_stop = sl_result["stop_loss"]
-                    target_price = sl_result["target_1"]
+                    target_price   = sl_result["target_1"]
 
                     saved = save_alert_if_new(
                         symbol,
@@ -441,6 +445,7 @@ def start():
                         "sl_method":        sl_result.get("sl_method"),
                         "t_method":         sl_result.get("t_method"),
                         "rr_ratio":         sl_result.get("rr_ratio"),
+                        "trail_note":       sl_result.get("trail_note"),
                         "peg":              row.get("PEG Ratio"),
                         "yoy_rev":          row.get("YOY Revenue %"),
                         "yoy_profit":       row.get("YOY Profit %"),
