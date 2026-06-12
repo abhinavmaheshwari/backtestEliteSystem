@@ -73,12 +73,16 @@ WINDOWS = {
 
 def wait_for_window(name: str):
     """Block until the scan window opens (weekday only)."""
-    start_time, _ = WINDOWS[name]
+    start_time, end_time = WINDOWS[name]
     while True:
         now = datetime.now(IST)
         if now.weekday() >= 5:
             logger.info(f"[{name}] 📅 Weekend — sleeping 1 hour...")
             time.sleep(3600)
+            continue
+        if now.time() > end_time:
+            logger.info(f"[{name}] 🕒 Past window end ({end_time}) — waiting for tomorrow...")
+            time.sleep(1800)  # Sleep 30 minutes before checking again
             continue
         if now.time() >= start_time:
             logger.info(f"[{name}] ✅ Window open | {now.strftime('%H:%M:%S')} | Launching scanner")
