@@ -239,7 +239,12 @@ def build_performance_data():
         symbol      = row["symbol"]
         alert_time  = row.get("alert_time") or ""
         alert_date  = row.get("alert_date") or (alert_time[:10] if alert_time else "")
-        entry_price = row.get("entry_price")
+        # Cast to float immediately — psycopg2 returns REAL/NUMERIC as decimal.Decimal
+        # and mixing Decimal with float in arithmetic raises TypeError.
+        def _f(v):
+            return float(v) if v is not None else None
+
+        entry_price = _f(row.get("entry_price"))
 
         cat_stored     = row.get("category")
         scanner_stored = row.get("scanner")
@@ -259,18 +264,18 @@ def build_performance_data():
             "entry_date":    alert_date,
             "alert_time":    alert_time,
             "entry_price":   entry_price,
-            "stop_loss":     row.get("stop_loss"),
-            "target_price":  row.get("target_price"),
+            "stop_loss":     _f(row.get("stop_loss")),
+            "target_price":  _f(row.get("target_price")),
             "current_price": None,
-            "exit_price":    row.get("exit_price"),   # pre-filled if already closed
-            "pnl_pct":       row.get("pnl_pct"),      # pre-filled if already closed
+            "exit_price":    _f(row.get("exit_price")),   # pre-filled if already closed
+            "pnl_pct":       _f(row.get("pnl_pct")),      # pre-filled if already closed
             "stopped_out":   row.get("status") == "LOSS",
             "target_hit":    row.get("status") == "WIN",
             "days_held":     _days_held(alert_date),
             "status":        row.get("status") or "OPEN",
             "score":         row.get("score"),
-            "rsi":           row.get("rsi"),
-            "volume_ratio":  row.get("volume_ratio"),
+            "rsi":           _f(row.get("rsi")),
+            "volume_ratio":  _f(row.get("volume_ratio")),
             "_db_closed":    row.get("status") in ("WIN", "LOSS"),  # internal flag
         })
 
