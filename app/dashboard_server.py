@@ -342,8 +342,8 @@ def api_all_tickers():
     try:
         from app.watchlist_cache import get_watchlist
         df = get_watchlist()
-        if 'SYMBOL' in df.columns:
-            return jsonify(df['SYMBOL'].dropna().unique().tolist())
+        if 'Stock' in df.columns:
+            return jsonify(df['Stock'].dropna().unique().tolist())
         return jsonify([])
     except Exception as e:
         logger.error(f"Failed to fetch tickers: {e}")
