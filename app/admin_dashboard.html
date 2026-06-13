@@ -972,6 +972,9 @@ async function generateAI(symbol, containerId, btnEl) {
         btnEl.innerText = "Analyzed ✅";
         
         if(data.error) {
+            btnEl.innerText = "Analyze ✨";
+            btnEl.disabled = false;
+            btnEl.style.opacity = "1";
             el.innerHTML = `<div style="font-size:11px; color:var(--warn);">${data.error}</div>`;
             return;
         }
@@ -1006,6 +1009,9 @@ async function generateAI(symbol, containerId, btnEl) {
         html += renderItem("Debt Reduction", data.debt_reduction);
         html += risksHtml;
         html += '</div>';
+        if(data.model_used) {
+            html += `<div style="text-align:right; font-size:9px; color:var(--muted); margin-top:8px; font-family:var(--font-mono);">⚡ Analyzed using ${data.model_used}</div>`;
+        }
         
         el.innerHTML = html;
         

@@ -36,7 +36,9 @@ def _try_gemini_model(model_name: str, gemini_key: str, text: str) -> dict:
         data = res.json()
         try:
             content_str = data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(content_str)
+            result = json.loads(content_str)
+            result["model_used"] = model_name
+            return result
         except Exception as e:
             raise Exception(f"Failed to parse response: {e}")
     else:
@@ -62,7 +64,9 @@ def _try_openai_model(model_name: str, openai_key: str, text: str) -> dict:
         data = res.json()
         try:
             content_str = data["choices"][0]["message"]["content"]
-            return json.loads(content_str)
+            result = json.loads(content_str)
+            result["model_used"] = model_name
+            return result
         except Exception as e:
             raise Exception(f"Failed to parse response: {e}")
     else:

@@ -369,14 +369,26 @@ def api_concall_ai(symbol):
             return jsonify({"error": "No recent concall transcripts or investor presentations found on NSE."}), 404
             
         # Parse the PDF
-        from pdf_parser import extract_text_from_nse_pdf
+        import sys
+        if os.path.dirname(__file__) not in sys.path:
+            sys.path.insert(0, os.path.dirname(__file__))
+            
+        try:
+            from app.pdf_parser import extract_text_from_nse_pdf
+        except ImportError:
+            from pdf_parser import extract_text_from_nse_pdf
+            
         text = extract_text_from_nse_pdf(target_pdf)
         
         if not text:
             return jsonify({"error": "Could not extract text from the PDF document."}), 500
             
         # Analyze with AI
-        from ai_analyzer import analyze_concall_text
+        try:
+            from app.ai_analyzer import analyze_concall_text
+        except ImportError:
+            from ai_analyzer import analyze_concall_text
+            
         ai_data = analyze_concall_text(text)
         
         if "error" in ai_data:
