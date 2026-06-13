@@ -727,7 +727,7 @@ def _main_impl():
         from email_engine import send_html_email
         logger.info("📧 Attempting to email fundamental watchlist...")
         
-        email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'Fundamental Score']]
+        email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'AI Confidence Boost', 'Fundamental Score']]
         table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
         
         html_content = f"""
