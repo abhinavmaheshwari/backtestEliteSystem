@@ -110,7 +110,9 @@ def analyze_concall_text(text: str) -> dict:
                 try:
                     key_display = f"...{gemini_key[-4:]}" if len(gemini_key) > 4 else "UNKNOWN"
                     logger.info(f"Attempting AI analysis with {model} (Key {i+1}/{len(gemini_keys)} ending in {key_display})...")
-                    return _try_gemini_model(model, gemini_key, text)
+                    result = _try_gemini_model(model, gemini_key, text)
+                    result["key_used"] = f"Key {i+1}"
+                    return result
                 except Exception as e:
                     import time
                     err_str = str(e)
@@ -120,7 +122,9 @@ def analyze_concall_text(text: str) -> dict:
                             logger.warning("All Gemini keys exhausted. Sleeping 45s and retrying last key...")
                             time.sleep(45)
                             try:
-                                return _try_gemini_model(model, gemini_key, text)
+                                result = _try_gemini_model(model, gemini_key, text)
+                                result["key_used"] = f"Key {i+1} (After Retry)"
+                                return result
                             except Exception as e2:
                                 logger.warning(f"{model} failed after retry: {e2}")
                                 errors.append(f"{model} (Retry): {str(e2)}")

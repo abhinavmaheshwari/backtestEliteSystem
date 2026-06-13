@@ -46,7 +46,8 @@ def run_worker_loop():
                     
                     if result and "error" not in result:
                         conf = result.get("management_confidence", "N/A")
-                        logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf}")
+                        key_used = result.get("key_used", "Key 1")
+                        logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
                     else:
                         logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {result.get('error', 'Unknown Error')}")
                         
