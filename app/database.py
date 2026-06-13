@@ -378,7 +378,6 @@ def get_all_scanner_health() -> list[dict]:
                 cur.execute("""
                     SELECT scanner_name, status, last_success, today_alerts, error_msg, updated_at
                     FROM scanner_health
-                    WHERE scanner_name IN ('DAILY_BUILDER', 'INTRADAY', '1H', 'EOD', 'REVERSAL')
                     ORDER BY scanner_name
                 """)
                 return [dict(row) for row in cur.fetchall()]
