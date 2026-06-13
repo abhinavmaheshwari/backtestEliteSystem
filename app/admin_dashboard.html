@@ -792,9 +792,9 @@ function renderScannerGrid(scanner_stats) {
             ${tooltipHtml}
           </button>
           <div class="scanner-stat-item">
-            <div class="scanner-stat-label">Last Success</div>
-            <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.last_success)}</div>
-            <div class="scanner-stat-sub">${fmtTs(data.last_success)}</div>
+            <div class="scanner-stat-label">Last Run</div>
+            <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.updated_at || data.last_success)}</div>
+            <div class="scanner-stat-sub">${fmtTs(data.updated_at || data.last_success)}</div>
           </div>
         </div>
         ${isDown && data.error ? `<div class="scanner-error">⚠ ${data.error}</div>` : ''}
@@ -1213,16 +1213,24 @@ function toggleTheme() {
 
 function exportCSV() {
   if (!window._currentFilteredTrades) return;
-  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Entry Price', 'Exit Price', 'P&L %', 'Status', 'Days Held', 'Score']];
+  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Entry Price', 'Stop Loss', 'Target', 'Exit Price', 'P&L %', 'P&L ₹', 'Capital', 'Shares', 'RSI', 'Vol Ratio', 'Status', 'Days Held', 'Score']];
   window._currentFilteredTrades.forEach(t => {
+    const pnl_rs = t.status === 'OPEN' && t.shares_bought ? ((t.current_price || t.entry_price) - t.entry_price) * t.shares_bought : (t.pnl_rs || '');
     rows.push([
       t.symbol,
       (t.alert_time||t.entry_date||'').slice(0,16),
       t.scanner || '',
       t.category || '',
       t.entry_price || '',
+      t.stop_loss || '',
+      t.target_price || '',
       t.exit_price || '',
       t.pnl_pct || '',
+      pnl_rs,
+      t.capital_allocated || '',
+      t.shares_bought || '',
+      t.rsi || '',
+      t.volume_ratio || '',
       t.status || '',
       t.days_held || '',
       t.score || ''
