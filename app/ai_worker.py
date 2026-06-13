@@ -21,8 +21,13 @@ def run_worker_loop():
                 time.sleep(300) # Sleep 5 mins if watchlist doesn't exist yet
                 continue
                 
-            # Read the latest watchlist
-            df = pd.read_csv(WATCHLIST_PATH)
+            # Read the latest watchlist (ensure we read the .csv file, not the .parquet)
+            csv_path = WATCHLIST_PATH.replace(".parquet", ".csv")
+            if not os.path.exists(csv_path):
+                time.sleep(300)
+                continue
+                
+            df = pd.read_csv(csv_path)
             
             # We only want to analyze the top 100 stocks to save API credits
             top_stocks = df.head(100)["Stock"].tolist()
@@ -40,7 +45,8 @@ def run_worker_loop():
                     result = fetch_and_analyze_concall(sym)
                     
                     if result and "error" not in result:
-                        logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym}.")
+                        conf = result.get("management_confidence", "N/A")
+                        logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf}")
                     else:
                         logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {result.get('error', 'Unknown Error')}")
                         
