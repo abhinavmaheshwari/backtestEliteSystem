@@ -840,6 +840,8 @@ async function generateAI(symbol, containerId, btnEl) {
         const data = await res.json();
         
         btnEl.innerText = "Analyzed ✅";
+        btnEl.disabled = false;
+        btnEl.style.opacity = "1";
         
         if(data.error) {
             btnEl.innerText = "Analyze ✨";
