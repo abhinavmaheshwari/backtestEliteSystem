@@ -358,12 +358,29 @@ def api_concall_ai(symbol):
             
         data = r.json()
         target_pdf = None
+        
+        # Priority 1: Transcripts
         for n in data:
-            desc = str(n.get("desc", ""))
-            # Look for Concall transcripts, Investor Meets, or Earnings Presentations
-            if "Con. Call" in desc or "Investor Meet" in desc or "Transcript" in desc or "Earnings" in desc:
+            desc = str(n.get("desc", "")).lower()
+            if "transcript" in desc:
                 target_pdf = n.get("attchmntFile")
                 break
+                
+        # Priority 2: Earnings / Investor Presentations
+        if not target_pdf:
+            for n in data:
+                desc = str(n.get("desc", "")).lower()
+                if "presentation" in desc or "earnings" in desc:
+                    target_pdf = n.get("attchmntFile")
+                    break
+                    
+        # Priority 3: General Concall Updates (Might just be a schedule)
+        if not target_pdf:
+            for n in data:
+                desc = str(n.get("desc", "")).lower()
+                if "con. call" in desc or "investor meet" in desc:
+                    target_pdf = n.get("attchmntFile")
+                    break
                 
         if not target_pdf:
             return jsonify({"error": "No recent concall transcripts or investor presentations found on NSE."}), 404
