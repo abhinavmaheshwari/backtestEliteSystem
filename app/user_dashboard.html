@@ -414,7 +414,7 @@
         <select id="filterCategory"><option value="">All categories</option></select>
         <input id="filterSymbol" type="text" placeholder="Search symbol…" style="width:130px">
         <button class="refresh-btn" onclick="exportCSV()" style="margin-left:8px;padding:6px 12px;">📥 Export CSV</button>
-        <button class="refresh-btn" onclick="document.getElementById('aiModal').style.display='flex'" style="margin-left:8px;padding:6px 12px; background:rgba(178,102,255,0.15); color:#b266ff; border:1px solid #b266ff;">🤖 AI Deep Dive</button>
+        <button id="aiDeepDiveBtn" class="refresh-btn" onclick="document.getElementById('aiModal').style.display='flex'" style="margin-left:8px;padding:6px 12px; background:rgba(178,102,255,0.15); color:#b266ff; border:1px solid #b266ff;">🤖 AI Deep Dive</button>
         <div style="margin-left:auto; text-align:right;">
         <div id="simNetPnl" style="font-family:var(--font-mono); font-size:18px; font-weight:600;">Est. Net P&L: ₹0</div>
         <div id="simFloating" style="font-size:12px; color:var(--muted); margin-top:4px;">Floating: ₹0</div>
@@ -1329,6 +1329,22 @@ async function initDashboard() {
   // Start viewer ping
   pingViewer();
   setInterval(pingViewer, 30000);
+
+  // Poll API Summary for AI Cache Count
+  async function updateAiCount() {
+    try {
+      const r = await fetch('/api/summary');
+      if (r.ok) {
+        const d = await r.json();
+        if (d.ai_cache_count !== undefined) {
+          const btn = document.getElementById('aiDeepDiveBtn');
+          if (btn) btn.innerHTML = `🤖 AI Deep Dive (${d.ai_cache_count} Cached)`;
+        }
+      }
+    } catch (e) {}
+  }
+  updateAiCount();
+  setInterval(updateAiCount, 60000);
 }
 
 // Trigger check

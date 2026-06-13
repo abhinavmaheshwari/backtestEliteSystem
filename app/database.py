@@ -461,6 +461,21 @@ def get_cached_concall_analysis(symbol: str, pdf_url: str):
                 return row[0]
             return None
 
+def get_ai_cache_count() -> int:
+    """Returns the total number of cached AI analyses."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(DISTINCT symbol) FROM ai_concall_cache_v3")
+                row = cur.fetchone()
+                if row:
+                    return int(row[0])
+    except Exception:
+        pass
+    return 0
+
+
 def get_recent_concall_analysis(symbol: str, max_age_days: int = 60):
     """Retrieves cached AI analysis for a symbol if it is less than max_age_days old."""
     init_db()

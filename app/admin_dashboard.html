@@ -417,7 +417,7 @@
         <select id="filterCategory"><option value="">All categories</option></select>
         <input id="filterSymbol" type="text" placeholder="Search symbol…" style="width:130px">
         <button class="refresh-btn" onclick="exportCSV()" style="margin-left:8px;padding:6px 12px;">📥 Export CSV</button>
-        <button class="refresh-btn" onclick="document.getElementById('aiModal').style.display='flex'" style="margin-left:8px;padding:6px 12px; background:rgba(178,102,255,0.15); color:#b266ff; border:1px solid #b266ff;">🤖 AI Deep Dive</button>
+        <button id="aiDeepDiveBtn" class="refresh-btn" onclick="document.getElementById('aiModal').style.display='flex'" style="margin-left:8px;padding:6px 12px; background:rgba(178,102,255,0.15); color:#b266ff; border:1px solid #b266ff;">🤖 AI Deep Dive</button>
         <div style="margin-left:auto; text-align:right;">
           <div id="simNetPnl" style="font-family:var(--font-mono); font-size:18px; font-weight:600;">Est. Net P&L: ₹0</div>
           <div id="simFloating" style="font-size:12px; color:var(--muted); margin-top:4px;">Floating: ₹0</div>
@@ -1531,7 +1531,13 @@ async function initDashboard() {
   const data = await loadData();
   // Try to overlay live scanner status from API
   const liveStatus = await loadScannerStatus();
-  if (liveStatus) data.scanner_stats = {...(data.scanner_stats||{}), ...liveStatus};
+  if (liveStatus) {
+    data.scanner_stats = {...(data.scanner_stats||{}), ...liveStatus};
+    if (liveStatus._ai_cache_count !== undefined) {
+      const btn = document.getElementById('aiDeepDiveBtn');
+      if (btn) btn.innerHTML = `🤖 AI Deep Dive (${liveStatus._ai_cache_count} Cached)`;
+    }
+  }
   window._scannerStats = data.scanner_stats || {};
 
   document.getElementById('loading').style.display = 'none';
@@ -1561,6 +1567,10 @@ async function initDashboard() {
     if (live) {
       window._scannerStats = {...(window._scannerStats||{}), ...live};
       renderScannerGrid(window._scannerStats);
+      if (live._ai_cache_count !== undefined) {
+        const btn = document.getElementById('aiDeepDiveBtn');
+        if (btn) btn.innerHTML = `🤖 AI Deep Dive (${live._ai_cache_count} Cached)`;
+      }
     }
   }, 60000);
 

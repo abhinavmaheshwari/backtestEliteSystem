@@ -108,14 +108,13 @@ def analyze_concall_text(text: str) -> dict:
             success = False
             for i, gemini_key in enumerate(gemini_keys):
                 try:
-                    key_display = f"...{gemini_key[-4:]}" if len(gemini_key) > 4 else "UNKNOWN"
-                    logger.info(f"Attempting AI analysis with {model} (Key {i+1}/{len(gemini_keys)} ending in {key_display})...")
+                    logger.info(f"Attempting AI analysis with {model} (Key {i+1}/{len(gemini_keys)})...")
                     result = _try_gemini_model(model, gemini_key, text)
                     result["key_used"] = f"Key {i+1}"
                     return result
                 except Exception as e:
                     import time
-                    err_str = str(e)
+                    err_str = str(e).replace(gemini_key, "[REDACTED_KEY]")
                     if "429" in err_str or "Quota" in err_str:
                         logger.warning(f"{model} hit rate limit on Key {i+1}.")
                         if i == len(gemini_keys) - 1:
@@ -126,10 +125,11 @@ def analyze_concall_text(text: str) -> dict:
                                 result["key_used"] = f"Key {i+1} (After Retry)"
                                 return result
                             except Exception as e2:
-                                logger.warning(f"{model} failed after retry: {e2}")
-                                errors.append(f"{model} (Retry): {str(e2)}")
+                                err2_str = str(e2).replace(gemini_key, "[REDACTED_KEY]")
+                                logger.warning(f"{model} failed after retry: {err2_str}")
+                                errors.append(f"{model} (Retry): {err2_str}")
                     else:
-                        logger.warning(f"{model} failed: {e}")
+                        logger.warning(f"{model} failed: {err_str}")
                         errors.append(f"{model}: {err_str}")
                         break # Skip to next model if it's not a quota issue
 

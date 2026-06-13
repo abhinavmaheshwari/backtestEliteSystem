@@ -180,7 +180,10 @@ def api_summary():
         val = get_system_state("performance_data")
         if val:
             data = json.loads(val)
-            return jsonify(data.get("summary", {}))
+            summary = data.get("summary", {})
+            from database import get_ai_cache_count
+            summary["ai_cache_count"] = get_ai_cache_count()
+            return jsonify(summary)
     except Exception:
         logger.exception("❌ /api/summary failed")
     return jsonify({"error": "No data yet"}), 404
@@ -194,12 +197,14 @@ def api_scanner_status():
     alerts table is queried live for today's trades per scanner.
     """
     try:
-        from database import get_all_scanner_health, get_scanner_today_trades
+        from database import get_all_scanner_health, get_scanner_today_trades, get_ai_cache_count
         from datetime import date as _date
         today_str = _date.today().isoformat()
 
         health_rows = get_all_scanner_health()
-        result = {}
+        result = {
+            "_ai_cache_count": get_ai_cache_count()
+        }
         for row in health_rows:
             sc = row["scanner_name"]
             today_trades = get_scanner_today_trades(sc, today_str)
@@ -473,8 +478,13 @@ def fetch_and_analyze_concall(symbol):
         logger.error(f"Error in concall AI analysis for {symbol}: {e}")
         return {"error": str(e)}
 
-@app.route('/api/concall_ai/<symbol>', methods=['GET'])
+@app.route("/api/concall_ai/<symbol>")
 def api_concall_ai(symbol):
+    from database import get_recent_concall_analysis
+    cached = get_recent_concall_analysis(symbol, max_age_days=60)
+    if cached:
+        return jsonify(cached)
+        
     res = fetch_and_analyze_concall(symbol)
     if "error" in res:
         return jsonify(res), 500 if "extract text" in res.get("error", "") else 404
