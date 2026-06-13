@@ -66,6 +66,12 @@ def calculate_trade_allocation(entry_price: float, stop_loss: float, score: int 
     shares_to_buy = int(risk_rupees / risk_per_share)
     capital_required = shares_to_buy * entry_price
     
+    # Position Sizing Rule: Never allocate more than 15% of Total Equity to a single trade
+    max_capital_per_trade = total_equity * 0.15
+    if capital_required > max_capital_per_trade:
+        shares_to_buy = int(max_capital_per_trade / entry_price)
+        capital_required = shares_to_buy * entry_price
+    
     # Check if we have enough available cash. If not, scale down.
     if capital_required > available_margin:
         shares_to_buy = int(available_margin / entry_price)

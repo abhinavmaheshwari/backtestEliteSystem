@@ -412,7 +412,7 @@ def start():
                     }
                 }
 
-                saved = save_alert_if_new(
+                saved, cap_alloc, shares = save_alert_if_new(
                     symbol,
                     dedup_key,
                     ist_now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -459,7 +459,9 @@ def start():
                     "peg":              row.get("PEG Ratio"),
                     "yoy_rev":          row.get("YOY Revenue %"),
                     "yoy_profit":       row.get("YOY Profit %"),
-                    "roe":              row.get("ROE %")
+                    "roe":              row.get("ROE %"),
+                    "capital_allocated": cap_alloc,
+                    "shares_bought":     shares
                 })
                 total_alerts += 1
 

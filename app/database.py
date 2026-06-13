@@ -211,10 +211,9 @@ def save_alert_if_new(
     volume_ratio: float = None,
     context: dict = None,
     **kwargs
-) -> bool:
+) -> tuple[bool, float, int]:
     """
-    Insert a new alert.  Returns True if inserted, False if it already existed
-    (duplicate on symbol + breakout_type + alert_date).
+    Insert a new alert.  Returns (inserted, capital_allocated, shares_bought).
     """
     context_str = json.dumps(context) if context is not None else None
     
@@ -243,11 +242,11 @@ def save_alert_if_new(
                       entry_price, stop_loss, target_price, signals, score,
                       rsi, volume_ratio, context_str, capital_allocated, shares_bought))
                 conn.commit()
-                return cur.rowcount > 0
+                return cur.rowcount > 0, capital_allocated, shares_bought
             except Exception:
                 conn.rollback()
                 logger.exception(f"❌ save_alert_if_new failed for {symbol}")
-                return False
+                return False, 0.0, 0
 
 
 def update_alert_outcome(

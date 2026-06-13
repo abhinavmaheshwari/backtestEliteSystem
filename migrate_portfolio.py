@@ -75,6 +75,12 @@ def run_migration():
                 shares_to_buy = int(risk_rupees / risk_per_share)
                 capital_required = shares_to_buy * ep
                 
+                # Position Sizing Rule: Never allocate more than 15% of Total Equity
+                max_capital_per_trade = current_total_equity * 0.15
+                if capital_required > max_capital_per_trade:
+                    shares_to_buy = int(max_capital_per_trade / ep)
+                    capital_required = shares_to_buy * ep
+                
                 if capital_required > current_available:
                     shares_to_buy = int(max(0, current_available) / ep)
                     capital_required = shares_to_buy * ep

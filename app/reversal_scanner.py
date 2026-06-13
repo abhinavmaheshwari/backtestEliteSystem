@@ -407,7 +407,7 @@ def _run_scan():
         }
 
 
-        saved = save_alert_if_new(
+        saved, cap_alloc, shares = save_alert_if_new(
             symbol,
             dedup_key,
             ist_now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -447,10 +447,12 @@ def _run_scan():
             "t_method":         sl_result.get("t_method"),
             "rr_ratio":         sl_result.get("rr_ratio"),
             "trail_note":       sl_result.get("trail_note"),
-            "peg":              row.get("PEG Ratio"),
+            "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
             "yoy_rev":          row.get("YOY Revenue %"),
             "yoy_profit":       row.get("YOY Profit %"),
             "roe":              row.get("ROE %"),
+            "capital_allocated": cap_alloc,
+            "shares_bought":     shares
         })
         total_alerts += 1
 

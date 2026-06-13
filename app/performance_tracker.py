@@ -274,6 +274,8 @@ def build_performance_data():
             "days_held":     _days_held(alert_date),
             "status":        row.get("status") or "OPEN",
             "shares_bought": row.get("shares_bought", 0),
+            "capital_allocated": _f(row.get("capital_allocated")),
+            "pnl_rs":        _f(row.get("pnl_rs")),
             "score":         row.get("score"),
             "rsi":           _f(row.get("rsi")),
             "volume_ratio":  _f(row.get("volume_ratio")),

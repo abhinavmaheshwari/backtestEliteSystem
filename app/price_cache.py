@@ -44,10 +44,13 @@ def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval:
 
 
 
+def to_yf_sym(sym: str) -> str:
+    return sym.replace("_", "-") + ".NS"
+
 def _download_single_ticker(sym: str, period: str, interval: str) -> pd.DataFrame | None:
     """Fallback mechanism if batch downloading repeatedly fails."""
     try:
-        ns_sym = f"{sym}.NS"
+        ns_sym = to_yf_sym(sym)
         df = yf.download(ns_sym, period=period, interval=interval, progress=False, auto_adjust=True, threads=False)
         if df is not None and not df.empty:
             return df.reset_index().copy()
@@ -63,7 +66,7 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
 
     for i in range(0, total, batch_size):
         batch = symbols[i : i + batch_size]
-        tickers_str = " ".join(f"{sym}.NS" for sym in batch)
+        tickers_str = " ".join(to_yf_sym(sym) for sym in batch)
         batch_end = min(i + batch_size, total)
         
         logger.info(f"📥 Fetching Batch ({i}–{batch_end}/{total}) [{interval}]")
@@ -85,9 +88,10 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
                 if isinstance(raw.columns, pd.MultiIndex):
                     level0 = raw.columns.get_level_values(0)
                     for sym in batch:
-                        ns_sym = f"{sym}.NS"
-                        if ns_sym in level0 or sym in level0:
-                            key = ns_sym if ns_sym in level0 else sym
+                        ns_sym = to_yf_sym(sym)
+                        yf_base = sym.replace("_", "-")
+                        if ns_sym in level0 or yf_base in level0:
+                            key = ns_sym if ns_sym in level0 else yf_base
                             sym_df = raw[key].reset_index().copy()
                             if not sym_df.empty:
                                 all_data[sym] = sym_df

@@ -3,7 +3,7 @@
 # CONSOLIDATED EOD REPORT WITH TELEGRAM FALLBACK
 # =====================================================================================
 
-import sqlite3
+from database import get_connection
 import pandas as pd
 from datetime import datetime
 import logging
@@ -21,10 +21,9 @@ def generate_and_send_daily_summary():
     
     # ── 1. FETCH TODAY'S ALERTS & SAVE TO CSV ────────────────────────────────────────
     try:
-        conn = sqlite3.connect(DB_PATH)
-        query = f"SELECT symbol, breakout_type, alert_time FROM alerts WHERE alert_date = '{today_str}' ORDER BY alert_time DESC"
-        alerts_df = pd.read_sql_query(query, conn)
-        conn.close()
+        with get_connection() as conn:
+            query = f"SELECT symbol, breakout_type, alert_time FROM alerts WHERE alert_date = '{today_str}' ORDER BY alert_time DESC"
+            alerts_df = pd.read_sql_query(query, conn)
         
         if not alerts_df.empty:
             alerts_df[['Category', 'Signals', 'Date', 'Scanner']] = alerts_df['breakout_type'].str.split('|', expand=True)

@@ -183,6 +183,14 @@ def format_alert(a, scanner="1H"):
             lines.append(f"├─ T3: ₹{a['target_3']}")
     lines[-1] = lines[-1].replace("├─", "└─")
     
+    cap_alloc = a.get("capital_allocated", 0)
+    shares = a.get("shares_bought", 0)
+    if cap_alloc and shares:
+        lines.append("")
+        lines.append("<b>🏦 Portfolio Allocation:</b>")
+        lines.append(f"├─ Buy:    {shares} shares")
+        lines.append(f"└─ Capital: ₹{cap_alloc:,.2f}")
+    
     if trail_note:
         lines.append(f"💡 <i>{trail_note}</i>")
     
