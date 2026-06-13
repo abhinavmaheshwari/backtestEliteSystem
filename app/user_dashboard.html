@@ -767,7 +767,10 @@ function buildTradeRows(trades, maxAbs, prefix) {
             </div>
           </div>
                     <div class="detail-item" style="grid-column: 1 / -1; padding-top: 16px; border-top: 1px dashed rgba(0,212,161,.15);">
-            <div class="detail-label" style="color:var(--accent);">Live Catalysts</div>
+            <div class="detail-label" style="color:var(--accent); display:flex; justify-content:space-between; align-items:center;">
+              <span>Live Catalysts</span>
+              <a href="https://www.nseindia.com/get-quotes/equity?symbol=${t.symbol}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:9px;border:1px solid rgba(0,212,161,.3);padding:2px 6px;border-radius:4px;transition:0.2s;">Official NSE Notices ↗</a>
+            </div>
             <div class="detail-val" style="margin-top:4px; max-height:150px; overflow-y:auto; padding-right:8px;">
               ${(window.NEWS_CACHE && window.NEWS_CACHE[t.symbol]) ? window.NEWS_CACHE[t.symbol] : `
                 <div id="news-${id}" style="font-size:11px; font-weight:normal; color:var(--text); font-family:var(--font-body); line-height:1.4;">Waiting...</div>
@@ -1083,7 +1086,7 @@ function toggleTheme() {
 
 function exportCSV() {
   if (!window._currentFilteredTrades) return;
-  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Entry Price', 'Stop Loss', 'Target', 'Exit Price', 'P&L %', 'P&L ₹', 'Capital', 'Shares', 'RSI', 'Vol Ratio', 'Status', 'Days Held', 'Score']];
+  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Signals', 'Entry Price', 'Stop Loss', 'Target', 'Exit Price', 'P&L %', 'P&L ₹', 'Capital', 'Shares', 'RSI', 'Vol Ratio', 'Status', 'Days Held', 'Score']];
   window._currentFilteredTrades.forEach(t => {
     const pnl_rs = t.status === 'OPEN' && t.shares_bought ? ((t.current_price || t.entry_price) - t.entry_price) * t.shares_bought : (t.pnl_rs || '');
     rows.push([
@@ -1091,6 +1094,7 @@ function exportCSV() {
       (t.alert_time||t.entry_date||'').slice(0,16),
       t.scanner || '',
       t.category || '',
+      t.signals || '',
       t.entry_price || '',
       t.stop_loss || '',
       t.target_price || '',
