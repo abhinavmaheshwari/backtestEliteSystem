@@ -148,7 +148,7 @@ def init_db():
 
                 # ── AI Concall Cache table ─────────────────────────────────────────
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS ai_concall_cache_v2 (
+                    CREATE TABLE IF NOT EXISTS ai_concall_cache_v3 (
                         id            SERIAL PRIMARY KEY,
                         symbol        TEXT NOT NULL,
                         pdf_url       TEXT UNIQUE NOT NULL,
@@ -453,7 +453,7 @@ def get_cached_concall_analysis(symbol: str, pdf_url: str):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT analysis_data
-                FROM ai_concall_cache_v2
+                FROM ai_concall_cache_v3
                 WHERE symbol = %s AND pdf_url = %s
             """, (symbol, pdf_url))
             row = cur.fetchone()
@@ -469,7 +469,7 @@ def save_concall_analysis(symbol: str, pdf_url: str, analysis_data: dict):
             with conn.cursor() as cur:
                 import json
                 cur.execute("""
-                    INSERT INTO ai_concall_cache_v2 (symbol, pdf_url, analysis_data)
+                    INSERT INTO ai_concall_cache_v3 (symbol, pdf_url, analysis_data)
                     VALUES (%s, %s, %s)
                     ON CONFLICT (pdf_url) DO UPDATE
                     SET analysis_data = EXCLUDED.analysis_data,

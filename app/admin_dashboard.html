@@ -1011,8 +1011,25 @@ async function generateAI(symbol, containerId, btnEl) {
         const volVsPrice = data.volume_vs_pricing || null;
         const capex = data.capex_and_launches || data.capex_plans || null;
         const wcDebt = data.working_capital_debt || data.debt_reduction || null;
+        const delta = data.guidance_delta || null;
 
         html += renderItem("Management Confidence", data.management_confidence ? data.management_confidence + " / 10" : null, true);
+        
+        if (delta && delta !== '-' && delta !== 'Not Mentioned') {
+            const isDowngrade = delta.toLowerCase().includes('downgrade') || delta.toLowerCase().includes('cut') || delta.toLowerCase().includes('lower');
+            const isUpgrade = delta.toLowerCase().includes('upgrade') || delta.toLowerCase().includes('raise') || delta.toLowerCase().includes('higher');
+            let bColor = 'rgba(178,102,255,0.3)';
+            let tColor = 'var(--text)';
+            if(isDowngrade) { bColor = 'var(--danger)'; tColor = 'var(--danger)'; }
+            else if(isUpgrade) { bColor = '#00e5a0'; tColor = '#00e5a0'; }
+            
+            html += `
+            <div style="grid-column: 1 / -1; background:var(--card2); padding:12px; border-radius:4px; border-left:4px solid ${bColor};">
+                <div style="font-size:10px; color:var(--muted); text-transform:uppercase; margin-bottom:4px; font-weight:bold;">QoQ Guidance Delta</div>
+                <div style="font-size:13px; color:${tColor}; line-height:1.4; font-family:var(--font-body); font-weight:600;">${delta}</div>
+            </div>`;
+        }
+
         html += renderItem("Top-Line Guidance", topLine, true);
         html += renderItem("Bottom-Line & Margins", bottomLine);
         html += renderItem("Demand Environment", demandEnv);

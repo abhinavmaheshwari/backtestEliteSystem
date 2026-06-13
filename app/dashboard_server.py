@@ -378,33 +378,42 @@ def api_concall_ai(symbol):
             return jsonify({"error": "Failed to fetch NSE announcements."}), 500
             
         data = r.json()
-        target_pdf = None
+        target_pdfs = []
         
         # Priority 1: Transcripts
         for n in data:
             desc = str(n.get("desc", "")).lower()
             if "transcript" in desc:
-                target_pdf = n.get("attchmntFile")
-                break
+                url = n.get("attchmntFile")
+                if url and url not in target_pdfs:
+                    target_pdfs.append(url)
+            if len(target_pdfs) == 2: break
                 
         # Priority 2: Earnings / Investor Presentations
-        if not target_pdf:
+        if not target_pdfs:
             for n in data:
                 desc = str(n.get("desc", "")).lower()
                 if "presentation" in desc or "earnings" in desc:
-                    target_pdf = n.get("attchmntFile")
-                    break
+                    url = n.get("attchmntFile")
+                    if url and url not in target_pdfs:
+                        target_pdfs.append(url)
+                if len(target_pdfs) == 2: break
                     
         # Priority 3: General Concall Updates (Might just be a schedule)
-        if not target_pdf:
+        if not target_pdfs:
             for n in data:
                 desc = str(n.get("desc", "")).lower()
                 if "con. call" in desc or "investor meet" in desc:
-                    target_pdf = n.get("attchmntFile")
-                    break
+                    url = n.get("attchmntFile")
+                    if url and url not in target_pdfs:
+                        target_pdfs.append(url)
+                if len(target_pdfs) == 2: break
                 
-        if not target_pdf:
+        if not target_pdfs:
             return jsonify({"error": "No recent concall transcripts or investor presentations found on NSE."}), 404
+            
+        target_pdf = target_pdfs[0]
+        target_pdf_2 = target_pdfs[1] if len(target_pdfs) > 1 else None
             
         # Check Cache
         try:
@@ -427,10 +436,16 @@ def api_concall_ai(symbol):
         except ImportError:
             from pdf_parser import extract_text_from_nse_pdf
             
-        text = extract_text_from_nse_pdf(target_pdf)
-        
-        if not text:
+        text_1 = extract_text_from_nse_pdf(target_pdf)
+        if not text_1:
             return jsonify({"error": "Could not extract text from the PDF document."}), 500
+            
+        text = "--- LATEST QUARTER ---\n" + text_1
+        
+        if target_pdf_2:
+            text_2 = extract_text_from_nse_pdf(target_pdf_2)
+            if text_2:
+                text += "\n\n--- PREVIOUS QUARTER ---\n" + text_2
             
         # Analyze with AI
         try:
