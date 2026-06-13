@@ -1125,6 +1125,32 @@ function renderTradeTable() {
   });
 }
 
+document.addEventListener('DOMContentLoaded', () => {
+    applySorting('pnl_rs', 'desc');
+
+    // Populate datalist with unique tickers from the table for autocomplete
+    const tableRows = document.querySelectorAll('tbody tr');
+    const symbols = new Set();
+    tableRows.forEach(row => {
+        const sym = row.querySelector('.symbol-col');
+        if(sym) symbols.add(sym.innerText.trim());
+    });
+    
+    const datalist = document.createElement('datalist');
+    datalist.id = 'tickerList';
+    symbols.forEach(sym => {
+        const option = document.createElement('option');
+        option.value = sym;
+        datalist.appendChild(option);
+    });
+    document.body.appendChild(datalist);
+    
+    // Attach to inputs
+    document.getElementById('searchBox').setAttribute('list', 'tickerList');
+    const aiInput = document.getElementById('aiModalTicker');
+    if(aiInput) aiInput.setAttribute('list', 'tickerList');
+});
+
 document.addEventListener('click', e => {
   const th = e.target.closest('th[data-col]'); if(!th)return;
   const col = th.dataset.col;
