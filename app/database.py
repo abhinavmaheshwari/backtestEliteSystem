@@ -116,6 +116,10 @@ def init_db():
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS exit_price   REAL",
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS pnl_pct      REAL",
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS closed_at    TEXT",
+                    # Portfolio tracking columns
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS capital_allocated REAL DEFAULT 0.0",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS shares_bought     INTEGER DEFAULT 0",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS pnl_rs            REAL",
                     # Diagnostic parameters context JSONB
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS context      JSONB",
                 ]:
@@ -206,12 +210,25 @@ def save_alert_if_new(
     rsi: float = None,
     volume_ratio: float = None,
     context: dict = None,
+    **kwargs
 ) -> bool:
     """
     Insert a new alert.  Returns True if inserted, False if it already existed
     (duplicate on symbol + breakout_type + alert_date).
     """
     context_str = json.dumps(context) if context is not None else None
+    
+    # Calculate portfolio allocation dynamically if not provided
+    from app.portfolio_engine import calculate_trade_allocation
+    capital_allocated = kwargs.get('capital_allocated')
+    shares_bought = kwargs.get('shares_bought')
+    
+    if capital_allocated is None or shares_bought is None:
+        if entry_price and stop_loss:
+            capital_allocated, shares_bought = calculate_trade_allocation(entry_price, stop_loss, score or 80)
+        else:
+            capital_allocated, shares_bought = 0.0, 0
+            
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
@@ -219,12 +236,12 @@ def save_alert_if_new(
                     INSERT INTO alerts
                         (symbol, breakout_type, alert_time, scanner, category,
                          entry_price, stop_loss, target_price, signals, score,
-                         rsi, volume_ratio, status, context)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s)
+                         rsi, volume_ratio, status, context, capital_allocated, shares_bought)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s)
                     ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
                 """, (symbol, breakout_type, alert_time, scanner, category,
                       entry_price, stop_loss, target_price, signals, score,
-                      rsi, volume_ratio, context_str))
+                      rsi, volume_ratio, context_str, capital_allocated, shares_bought))
                 conn.commit()
                 return cur.rowcount > 0
             except Exception:
@@ -238,6 +255,7 @@ def update_alert_outcome(
     status: str,          # "WIN" | "LOSS"
     exit_price: float,
     pnl_pct: float,
+    pnl_rs: float = None,
     closed_at: Optional[str] = None,
 ) -> None:
     """
@@ -255,10 +273,11 @@ def update_alert_outcome(
                     SET status     = %s,
                         exit_price = %s,
                         pnl_pct    = %s,
+                        pnl_rs     = %s,
                         closed_at  = %s
                     WHERE id = %s
                       AND status = 'OPEN'   -- never overwrite an already-closed row
-                """, (status, exit_price, pnl_pct, closed_at, alert_id))
+                """, (status, exit_price, pnl_pct, pnl_rs, closed_at, alert_id))
                 conn.commit()
                 if cur.rowcount:
                     logger.info(f"🔒 Alert {alert_id} locked as {status} | exit={exit_price} pnl={pnl_pct}%")

@@ -36,6 +36,30 @@
     --glow:     0 0 15px rgba(5,150,105,.2);
   }
 
+  [data-theme="dark"] {
+    --bg:       #0f172a;
+    --surface:  #1e293b;
+    --card:     #1e293b;
+    --card2:    #334155;
+    --border:   rgba(255,255,255,.08);
+    --border2:  rgba(255,255,255,.15);
+    --text:     #f8fafc;
+    --muted:    #94a3b8;
+    --muted2:   #cbd5e1;
+    --shadow:   0 4px 20px rgba(0,0,0,.2);
+  }
+    --win:      #059669;
+    --loss:     #e11d48;
+    --open:     #2563eb;
+    --neutral:  #64748b;
+    --down:     #e11d48;
+    --font-mono:'JetBrains Mono','Fira Code',monospace;
+    --font-body:'Inter',system-ui,sans-serif;
+    --radius:   10px;
+    --shadow:   0 4px 20px rgba(0,0,0,.06);
+    --glow:     0 0 15px rgba(5,150,105,.2);
+  }
+
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text); font-family:var(--font-body); font-size:14px; min-height:100vh; }
 
@@ -274,6 +298,11 @@
     .scanner-alert-tooltip { width:90vw; }
   }
 </style>
+<script>
+  const savedTheme = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 
@@ -301,6 +330,7 @@
       </div>
     </div>
     <div class="header-right">
+      <button class="refresh-btn" onclick="toggleTheme()" style="font-size:16px; padding:4px 8px; border-radius:50%; width:32px; height:32px; justify-content:center;">🌓</button>
       <span id="viewerCount" title="Active Viewers" style="font-family:var(--font-mono); font-size:12px; color:var(--accent); display:flex; align-items:center; gap:6px; background:var(--accent-dim); padding:6px 10px; border-radius:6px; border:1px solid rgba(5,150,105,0.2);">
         <div class="live-dot" style="margin:0;"></div> <span id="vCountVal">1</span> online
       </span>
@@ -336,6 +366,12 @@
       <div class="drill-body" id="drill-body"></div>
     </div>
 
+    <!-- EQUITY CURVE -->
+    <div class="section-label" style="margin-top:20px;">Equity Curve (Simulated)</div>
+    <div class="card" style="margin-bottom:28px;">
+      <canvas id="equityChart" height="70"></canvas>
+    </div>
+
     <!-- CATEGORY WIN RATES -->
     <div class="section-label">Category Performance</div>
     <div class="kpi-row" id="catGrid" style="margin-bottom:28px"></div>
@@ -361,7 +397,14 @@
         <select id="filterCategory"><option value="">All categories</option></select>
         <input id="filterSymbol" type="text" placeholder="Search symbol…" style="width:130px">
         <button class="refresh-btn" onclick="exportCSV()" style="margin-left:8px;padding:6px 12px;">📥 Export CSV</button>
-        <span id="tradeCount" style="margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--muted)"></span>
+        <div style="margin-left:auto; text-align:right;">
+          <div id="simResult" style="font-family:var(--font-mono); font-size:18px; font-weight:600;">Est. Net P&L: ₹0</div>
+          <div id="simFloating" style="font-size:12px; color:var(--muted); margin-top:4px;">Floating: ₹0</div>
+        </div>
+        <div style="border-left:1px solid var(--border); padding-left:16px; text-align:right;">
+          <div id="simPeak" style="font-family:var(--font-mono); font-size:18px; font-weight:600; color:var(--text);">Peak: ₹0</div>
+          <div id="simDrawdown" style="font-size:12px; color:var(--warn); margin-top:4px;">Drawdown: 0.0%</div>
+        </div>
       </div>
       <div class="tbl-wrap">
         <table>
@@ -906,23 +949,178 @@ function renderCategoryStats() {
 function updateSim() {
   const cap = parseFloat(document.getElementById('simCapital').value) || 100000;
   const risk = parseFloat(document.getElementById('simRisk').value) || 2;
-  let totalNet = 0;
-  const riskRs = cap * (risk/100);
-  ALL_TRADES.forEach(t => {
-    if (t.status === 'WIN' || t.status === 'LOSS') {
-      const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
-      if (riskPerShare > 0) {
-        const shares = riskRs / riskPerShare;
-        const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
-        totalNet += profit;
-      }
+  
+  let closedTrades = ALL_TRADES.filter(t => ['WIN','LOSS'].includes(t.status));
+  closedTrades.sort((a,b) => {
+    const da = a.closed_at || a.entry_date || '';
+    const db = b.closed_at || b.entry_date || '';
+    return da.localeCompare(db);
+  });
+
+  let currentEquity = cap;
+  
+  closedTrades.forEach(t => {
+    const riskRs = currentEquity * (risk/100);
+    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
+    if (riskPerShare > 0) {
+      const shares = riskRs / riskPerShare;
+      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
+      currentEquity += profit;
     }
   });
+
+  let totalNet = currentEquity - cap;
+
+  let totalFloating = 0;
+  let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
+  openTrades.forEach(t => {
+    const riskRs = currentEquity * (risk/100);
+    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
+    if (riskPerShare > 0) {
+      const shares = riskRs / riskPerShare;
+      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
+      totalFloating += profit;
+    }
+  });
+
   const resEl = document.getElementById('simResult');
   if(resEl) {
     resEl.textContent = 'Est. Net P&L: ' + (totalNet>=0?'+':'') + '₹' + Math.round(totalNet).toLocaleString('en-IN');
     resEl.style.color = totalNet >= 0 ? 'var(--win)' : 'var(--loss)';
   }
+  const floatEl = document.getElementById('simFloating');
+  if(floatEl) {
+    floatEl.textContent = 'Floating: ' + (totalFloating>=0?'+':'') + '₹' + Math.round(totalFloating).toLocaleString('en-IN');
+    floatEl.style.color = totalFloating >= 0 ? 'var(--win)' : 'var(--loss)';
+  }
+  renderEquityCurve();
+}
+
+function renderEquityCurve() {
+  const ctx = document.getElementById('equityChart');
+  if (!ctx || typeof Chart === 'undefined') return;
+  
+  let closedTrades = ALL_TRADES.filter(t => ['WIN','LOSS'].includes(t.status));
+  closedTrades.sort((a,b) => {
+    const da = a.closed_at || a.entry_date || '';
+    const db = b.closed_at || b.entry_date || '';
+    return da.localeCompare(db);
+  });
+  
+  let cap = parseFloat(document.getElementById('simCapital').value) || 100000;
+  let risk = parseFloat(document.getElementById('simRisk').value) || 2;
+  let equity = cap;
+  let peakEquity = cap;
+  
+  let labels = ['Start'];
+  let dataPoints = [equity];
+  
+  closedTrades.forEach(t => {
+    const riskRs = equity * (risk/100); // Compounding risk
+    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
+    if (riskPerShare > 0) {
+      const shares = riskRs / riskPerShare;
+      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
+      equity += profit;
+      if (equity > peakEquity) peakEquity = equity;
+      labels.push((t.closed_at || t.entry_date).split('T')[0]);
+      dataPoints.push(equity);
+    }
+  });
+
+  // Calculate live floating PnL on top of closed equity
+  let totalFloating = 0;
+  let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
+  openTrades.forEach(t => {
+    const riskRs = equity * (risk/100);
+    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
+    if (riskPerShare > 0) {
+      const shares = riskRs / riskPerShare;
+      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
+      totalFloating += profit;
+    }
+  });
+
+  let finalEquity = equity + totalFloating;
+  if (finalEquity > peakEquity) peakEquity = finalEquity;
+  
+  labels.push('Live (Floating)');
+  dataPoints.push(finalEquity);
+
+  let currentDrawdown = 0;
+  if (peakEquity > 0) {
+     currentDrawdown = ((peakEquity - finalEquity) / peakEquity) * 100;
+  }
+  
+  const peakEl = document.getElementById('simPeak');
+  if (peakEl) peakEl.textContent = 'Peak: ₹' + Math.round(peakEquity).toLocaleString('en-IN');
+  const ddEl = document.getElementById('simDrawdown');
+  if (ddEl) {
+     ddEl.textContent = 'Drawdown: ' + currentDrawdown.toFixed(1) + '%';
+     ddEl.style.color = currentDrawdown > 10 ? 'var(--loss)' : 'var(--muted)';
+  }
+
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+  const tickColor = isDark ? '#94a3b8' : '#64748b';
+
+  if (window.equityChart) {
+    window.equityChart.data.labels = labels;
+    window.equityChart.data.datasets[0].data = dataPoints;
+    window.equityChart.options.scales.x.grid.color = gridColor;
+    window.equityChart.options.scales.y.grid.color = gridColor;
+    window.equityChart.options.scales.x.ticks.color = tickColor;
+    window.equityChart.options.scales.y.ticks.color = tickColor;
+    window.equityChart.update();
+  } else {
+    window.equityChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Portfolio Value (₹)',
+          data: dataPoints,
+          borderColor: '#059669',
+          backgroundColor: 'rgba(5, 150, 105, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.1,
+          pointRadius: 0,
+          pointHitRadius: 10,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function(ctx) { return '₹' + Math.round(ctx.raw).toLocaleString('en-IN'); }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: gridColor, drawBorder: false },
+            ticks: { color: tickColor, maxTicksLimit: 10 }
+          },
+          y: {
+            grid: { color: gridColor, drawBorder: false },
+            ticks: { color: tickColor, callback: val => '₹'+(val/1000)+'k' }
+          }
+        }
+      }
+    });
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  if (window.equityChart) renderEquityCurve();
 }
 
 function exportCSV() {

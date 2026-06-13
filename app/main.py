@@ -322,6 +322,16 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_sigterm)
     signal.signal(signal.SIGINT, handle_sigterm)
 
+    # ONE-TIME PORTFOLIO MIGRATION (Runs automatically on boot)
+    try:
+        logger.info("⚙️ Triggering portfolio migration script...")
+        import sys
+        sys.path.insert(0, os.path.dirname(APP_DIR))
+        from migrate_portfolio import run_migration
+        run_migration()
+    except Exception as e:
+        logger.error(f"❌ Portfolio migration failed: {e}")
+
     watchdog_thread = threading.Thread(target=run_watchdog, name="Watchdog", daemon=True)
     watchdog_thread.start()
 

@@ -169,16 +169,22 @@ def _check_sl_and_target(
     hit_time is the formatted string of the candle timestamp when hit.
     """
     for ts, row in hist.iterrows():
+        open_price = float(row["Open"])
         low  = float(row["Low"])
         high = float(row["High"])
 
         # Check SL first (conservative — protect capital before counting gains)
         if low <= stop_loss:
-            return "SL_HIT", stop_loss, ts.strftime("%Y-%m-%d %H:%M:%S")
+            # If the candle opened below the SL (e.g., gap down), we take the loss 
+            # at the open price, not the theoretical SL level.
+            exit_price = open_price if open_price < stop_loss else stop_loss
+            return "SL_HIT", exit_price, ts.strftime("%Y-%m-%d %H:%M:%S")
 
         # Then check target
         if high >= target_price:
-            return "TARGET_HIT", target_price, ts.strftime("%Y-%m-%d %H:%M:%S")
+            # Similarly, if it gapped up above target, book at open
+            exit_price = open_price if open_price > target_price else target_price
+            return "TARGET_HIT", exit_price, ts.strftime("%Y-%m-%d %H:%M:%S")
 
     return "OPEN", None, None
 
@@ -267,6 +273,7 @@ def build_performance_data():
             "target_hit":    row.get("status") == "WIN",
             "days_held":     _days_held(alert_date),
             "status":        row.get("status") or "OPEN",
+            "shares_bought": row.get("shares_bought", 0),
             "score":         row.get("score"),
             "rsi":           _f(row.get("rsi")),
             "volume_ratio":  _f(row.get("volume_ratio")),
@@ -317,17 +324,19 @@ def build_performance_data():
                     t["stopped_out"] = True
                     t["exit_price"]  = exit_p
                     t["pnl_pct"]     = round((exit_p - ep) / ep * 100, 2)
+                    t["pnl_rs"]      = t["shares_bought"] * (exit_p - ep) if t["shares_bought"] else 0.0
                     t["closed_at"]   = hit_time
                     logger.debug(f"🛑 {sym} SL HIT | entry={ep} sl={sl} pnl={t['pnl_pct']}%")
-                    update_alert_outcome(t["id"], "LOSS", exit_p, t["pnl_pct"], closed_at=hit_time)
+                    update_alert_outcome(t["id"], "LOSS", exit_p, t["pnl_pct"], pnl_rs=t["pnl_rs"], closed_at=hit_time)
 
                 elif outcome == "TARGET_HIT":
                     t["target_hit"] = True
                     t["exit_price"] = exit_p
                     t["pnl_pct"]    = round((exit_p - ep) / ep * 100, 2)
+                    t["pnl_rs"]      = t["shares_bought"] * (exit_p - ep) if t["shares_bought"] else 0.0
                     t["closed_at"]   = hit_time
                     logger.debug(f"🎯 {sym} TARGET HIT | entry={ep} target={tp} pnl={t['pnl_pct']}%")
-                    update_alert_outcome(t["id"], "WIN", exit_p, t["pnl_pct"], closed_at=hit_time)
+                    update_alert_outcome(t["id"], "WIN", exit_p, t["pnl_pct"], pnl_rs=t["pnl_rs"], closed_at=hit_time)
 
                 else:
                     # Still open — mark-to-market
@@ -349,8 +358,9 @@ def build_performance_data():
                     # Find the first candle that breached the Stop Loss
                     hit_row = hist[hist["Low"] <= sl]
                     hit_time = hit_row.index[0].strftime("%Y-%m-%d %H:%M:%S") if not hit_row.empty else None
+                    t["pnl_rs"]      = t["shares_bought"] * (sl - ep) if t["shares_bought"] else 0.0
                     t["closed_at"]   = hit_time
-                    update_alert_outcome(t["id"], "LOSS", sl, t["pnl_pct"], closed_at=hit_time)
+                    update_alert_outcome(t["id"], "LOSS", sl, t["pnl_pct"], pnl_rs=t["pnl_rs"], closed_at=hit_time)
                 elif cur_p:
                     t["pnl_pct"] = round((cur_p - ep) / ep * 100, 2)
             elif cur_p:
