@@ -31,7 +31,7 @@ def _try_gemini_model(model_name: str, gemini_key: str, text: str) -> dict:
             "responseMimeType": "application/json"
         }
     }
-    res = requests.post(url, json=payload, timeout=30)
+    res = requests.post(url, json=payload, timeout=90)
     if res.status_code == 200:
         data = res.json()
         try:
@@ -59,7 +59,7 @@ def _try_openai_model(model_name: str, openai_key: str, text: str) -> dict:
             {"role": "user", "content": "TRANSCRIPT TEXT:\n" + text}
         ]
     }
-    res = requests.post(url, headers=headers, json=payload, timeout=30)
+    res = requests.post(url, headers=headers, json=payload, timeout=90)
     if res.status_code == 200:
         data = res.json()
         try:
@@ -94,7 +94,7 @@ def analyze_concall_text(text: str) -> dict:
 
     # Fallback Chain 1: Gemini Models
     if gemini_key:
-        gemini_models = ["gemini-1.5-pro-latest", "gemini-2.5-flash", "gemini-1.5-flash"]
+        gemini_models = ["gemini-1.5-pro-latest", "gemini-2.5-flash", "gemini-1.5-flash-latest"]
         for model in gemini_models:
             try:
                 logger.info(f"Attempting AI analysis with {model}...")
