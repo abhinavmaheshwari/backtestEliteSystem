@@ -1,0 +1,40 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual Environment ──
+venv/
+.venv/
+env/
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Data / Runtime ──
+data/
+*.parquet
+*.db
+*.sqlite3
+
+# ── Secrets ──
+.env
+.env.*
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Test scratch files ──
+test_*.py
+
+# ── Stale artifacts ──
+1cd
