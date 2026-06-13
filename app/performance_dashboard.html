@@ -277,6 +277,15 @@
 </head>
 <body>
 
+<div id="nameModalOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:9999; align-items:center; justify-content:center; backdrop-filter:blur(5px);">
+  <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; padding:32px; width:100%; max-width:380px; box-shadow:var(--shadow); text-align:center;">
+    <h3 style="font-family:var(--font-mono); font-size:18px; margin-bottom:12px; color:var(--text);">Welcome to Elite Breakout</h3>
+    <p style="font-size:13px; color:var(--muted); margin-bottom:24px;">Please enter your name to access the dashboard.</p>
+    <input type="text" id="viewerNameInput" placeholder="Your Name" style="width:100%; background:var(--card2); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:8px; font-family:var(--font-body); font-size:14px; margin-bottom:16px; outline:none;" onkeydown="if(event.key==='Enter') submitViewerName()">
+    <button onclick="submitViewerName()" style="width:100%; background:var(--accent); color:#fff; border:none; padding:10px; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:0.2s;">Enter Dashboard</button>
+  </div>
+</div>
+
 <div id="loading">
   <div class="spinner"></div>
   <div class="loading-text">Loading performance data…</div>
@@ -292,6 +301,9 @@
       </div>
     </div>
     <div class="header-right">
+      <span id="viewerCount" title="Active Viewers" style="font-family:var(--font-mono); font-size:12px; color:var(--accent); display:flex; align-items:center; gap:6px; background:var(--accent-dim); padding:6px 10px; border-radius:6px; border:1px solid rgba(5,150,105,0.2);">
+        <div class="live-dot" style="margin:0;"></div> <span id="vCountVal">1</span> online
+      </span>
       <span class="header-stats" id="header-stats"></span>
       <button class="refresh-btn" id="refreshBtn" onclick="doRefresh()">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -956,8 +968,54 @@ async function doRefresh() {
   btn.classList.remove('spinning');
 }
 
+// ── Viewer Tracking
+let viewerName = localStorage.getItem('viewerName');
+
+function checkViewerName() {
+  if (!viewerName) {
+    document.getElementById('nameModalOverlay').style.display = 'flex';
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('main').style.display = 'none';
+    return false;
+  }
+  return true;
+}
+
+function submitViewerName() {
+  const input = document.getElementById('viewerNameInput').value.trim();
+  if (input.length > 0) {
+    viewerName = input;
+    localStorage.setItem('viewerName', viewerName);
+    document.getElementById('nameModalOverlay').style.display = 'none';
+    document.getElementById('loading').style.display = 'flex';
+    initDashboard();
+  }
+}
+
+async function pingViewer() {
+  if (!viewerName) return;
+  try {
+    const urls = ['https://elitebreakoutsystem-production.up.railway.app/api/viewers', '/api/viewers'];
+    let data = null;
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: viewerName})
+        });
+        if (r.ok) { data = await r.json(); break; }
+      } catch (e) {}
+    }
+    if (data && data.active_count) {
+      document.getElementById('vCountVal').textContent = data.active_count;
+      document.getElementById('viewerCount').title = 'Active: ' + data.viewers.join(', ');
+    }
+  } catch(e) {}
+}
+
 // ── MAIN
-(async () => {
+async function initDashboard() {
   const data = await loadData();
   // Try to overlay live scanner status from API
   const liveStatus = await loadScannerStatus();
@@ -993,7 +1051,16 @@ async function doRefresh() {
       renderScannerGrid(window._scannerStats);
     }
   }, 60000);
-})();
+
+  // Start viewer ping
+  pingViewer();
+  setInterval(pingViewer, 30000);
+}
+
+// Trigger check
+if (checkViewerName()) {
+  initDashboard();
+}
 </script>
 </body>
 </html>

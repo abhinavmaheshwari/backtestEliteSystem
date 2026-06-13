@@ -10,7 +10,8 @@ import json
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify, send_file, Response
+import time
+from flask import Flask, jsonify, send_file, Response, request
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -36,6 +37,29 @@ app = Flask(__name__)
 # ── Disable Flask startup banner in production ───────────────────────────────────────
 import logging as _logging
 _logging.getLogger("werkzeug").setLevel(_logging.WARNING)
+
+_active_viewers = {}
+
+@app.route("/api/viewers", methods=["POST", "GET"])
+def api_viewers():
+    """Tracks active viewers by IP and Name. Cleans up inactive ones (>120s)."""
+    now = time.time()
+    if request.method == "POST":
+        data = request.json or {}
+        name = data.get("name", "Unknown")
+        # Get real IP behind proxy (e.g. Railway)
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+        _active_viewers[ip] = {"name": name, "last_seen": now}
+
+    # Clean up stale viewers
+    stale_ips = [ip for ip, info in _active_viewers.items() if now - info["last_seen"] > 120]
+    for sip in stale_ips:
+        del _active_viewers[sip]
+
+    return jsonify({
+        "active_count": len(_active_viewers),
+        "viewers": [info["name"] for info in _active_viewers.values()]
+    })
 
 # ── CORS + cache headers on every response ──────────────────────────────────────────
 @app.after_request
