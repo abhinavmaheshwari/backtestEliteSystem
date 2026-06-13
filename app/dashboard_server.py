@@ -11,7 +11,9 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
+import threading
 from flask import Flask, jsonify, send_file, Response, request
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -222,6 +224,72 @@ def api_scanner_status():
         logger.exception("❌ /api/scanner_status failed")
         return jsonify({"_error": str(exc)}), 500
 
+# ── Endpoints for Market Ticker & Catalyst News ────────────────────────────────────
+
+_indices_cache = {"data": None, "timestamp": 0}
+_indices_lock = threading.Lock()
+
+@app.route("/api/indices")
+def api_indices():
+    """Fetch live NIFTY 50, BANKNIFTY, and SENSEX with 1-min caching."""
+    with _indices_lock:
+        if _indices_cache["data"] and (time.time() - _indices_cache["timestamp"] < 60):
+            return jsonify(_indices_cache["data"])
+        
+    try:
+        symbols = {"NIFTY 50": "^NSEI", "BANKNIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
+        data = {}
+        for name, sym in symbols.items():
+            ticker = yf.Ticker(sym)
+            info = ticker.info
+            price = info.get("regularMarketPrice") or info.get("previousClose")
+            prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
+            pct_change = 0.0
+            if price and prev_close:
+                pct_change = round(((price - prev_close) / prev_close) * 100, 2)
+            data[name] = {"price": price, "pct_change": pct_change}
+            
+        with _indices_lock:
+            _indices_cache["data"] = data
+            _indices_cache["timestamp"] = time.time()
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Failed to fetch indices: {e}")
+        return jsonify(_indices_cache["data"] or {})
+
+_news_cache = {}
+_news_lock = threading.Lock()
+
+@app.route("/api/news/<symbol>")
+def api_news(symbol):
+    """Fetch recent 3 news headlines for a symbol with 15-min caching."""
+    # Append .NS for Yahoo Finance compatibility if not present and if it doesn't have an extension
+    yf_symbol = symbol if "." in symbol else f"{symbol}.NS"
+    
+    with _news_lock:
+        cached = _news_cache.get(yf_symbol)
+        if cached and (time.time() - cached["timestamp"] < 900): # 15 min cache
+            return jsonify(cached["data"])
+            
+    try:
+        ticker = yf.Ticker(yf_symbol)
+        raw_news = ticker.news[:3]
+        news = []
+        for n in raw_news:
+            news.append({
+                "title": n.get("title", ""),
+                "summary": n.get("summary", ""),
+                "link": n.get("link") or n.get("clickThroughUrl", {}).get("url", ""),
+                "provider": n.get("provider", {}).get("displayName", ""),
+                "date": n.get("pubDate", "")
+            })
+            
+        with _news_lock:
+            _news_cache[yf_symbol] = {"data": news, "timestamp": time.time()}
+        return jsonify(news)
+    except Exception as e:
+        logger.error(f"Failed to fetch news for {yf_symbol}: {e}")
+        return jsonify([])
 
 # ── Scanner DOWN helpers — write to Postgres, not just memory ─────────────────────────
 

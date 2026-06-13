@@ -62,7 +62,7 @@ GAP_LOOKBACK_BARS           = 10
 
 # ✅ NOTE: No macro regime check in this scanner — alerts fire irrespective of market trend.
 
-def start():
+def start(run_once=False):
     init_db()
     
     prev_delivery_map    = fetch_previous_day_delivery()

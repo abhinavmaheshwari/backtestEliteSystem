@@ -303,8 +303,25 @@
   document.documentElement.setAttribute('data-theme', savedTheme);
 </script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
+    <!-- TRADINGVIEW MODAL -->
+  <div id="tvModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:9999; flex-direction:column; padding:30px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <div style="color:var(--text); font-family:var(--font-mono); font-weight:700; font-size:18px; letter-spacing:1px;">LIVE INTERACTIVE CHART</div>
+      <button onclick="document.getElementById('tvModal').style.display='none'" style="background:var(--warn); border:none; color:#000; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:700;">✕ Close</button>
+    </div>
+    <div id="tv-container" style="flex:1; background:#0b0e14; border-radius:8px; overflow:hidden; border:1px solid var(--border);"></div>
+  </div>
+
+  <!-- MARKET TICKER -->
+  <div id="market-ticker" style="background:#0b0e14; border-bottom:1px solid var(--border); padding:6px 16px; font-size:12px; font-family:var(--font-mono); color:var(--muted); display:flex; gap:20px; align-items:center; overflow-x:auto; white-space:nowrap;">
+    <div style="font-weight:700; color:var(--text); letter-spacing:1px; margin-right:10px;">LIVE MARKETS</div>
+    <div id="ticker-content" style="display:flex; gap:24px;">
+      <span style="opacity:0.5;">Fetching indices...</span>
+    </div>
+  </div>
 
 <div id="nameModalOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:9999; align-items:center; justify-content:center; backdrop-filter:blur(5px);">
   <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; padding:32px; width:100%; max-width:380px; box-shadow:var(--shadow); text-align:center;">
@@ -498,7 +515,59 @@ const fmtDetailTime = ts => {
 };
 
 // ── LOAD DATA
-async function loadData() {
+async 
+  function openChart(symbol) {
+    document.getElementById('tvModal').style.display = 'flex';
+    document.getElementById('tv-container').innerHTML = '';
+    new TradingView.widget({
+      "autosize": true,
+      "symbol": "NSE:" + symbol,
+      "interval": "D",
+      "timezone": "Asia/Kolkata",
+      "theme": "dark",
+      "style": "1",
+      "locale": "en",
+      "enable_publishing": false,
+      "backgroundColor": "#0b0e14",
+      "gridColor": "rgba(255, 255, 255, 0.06)",
+      "hide_top_toolbar": false,
+      "hide_legend": false,
+      "save_image": false,
+      "container_id": "tv-container"
+    });
+  }
+
+  function fetchNews(symbol, containerId, btnId) {
+    const btn = document.getElementById(btnId);
+    if(btn) btn.style.display = 'none';
+    const container = document.getElementById(containerId);
+    container.innerHTML = '<span style="color:var(--muted)">Loading...</span>';
+    
+    fetch('/api/news/' + symbol)
+      .then(r => r.json())
+      .then(data => {
+        if (!data || data.length === 0) {
+          container.innerHTML = '<span style="color:var(--muted)">No recent news found.</span>';
+          return;
+        }
+        let html = '<div style="display:flex; flex-direction:column; gap:12px;">';
+        data.forEach(item => {
+          const date = new Date(item.date).toLocaleDateString('en-IN');
+          html += `<div>
+            <a href="${item.link}" target="_blank" style="color:var(--accent); text-decoration:none; font-weight:600; font-size:13px; display:block; margin-bottom:4px;">${item.title}</a>
+            <div style="font-size:11px; color:var(--muted);">${item.provider} • ${date}</div>
+          </div>`;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+      })
+      .catch(err => {
+        container.innerHTML = '<span style="color:var(--warn)">Failed to load news.</span>';
+        if(btn) btn.style.display = 'block';
+      });
+  }
+
+function loadData() {
   const urls = [
     'https://elitebreakoutsystem-production.up.railway.app/data/performance_data.json',
     '../data/performance_data.json', './data/performance_data.json', 'performance_data.json',
@@ -1110,6 +1179,27 @@ async function initDashboard() {
 if (checkViewerName()) {
   initDashboard();
 }
+
+      // Fetch indices
+      fetch('/api/indices')
+        .then(r => r.json())
+        .then(data => {
+          const tc = document.getElementById('ticker-content');
+          if (!tc || Object.keys(data).length === 0) return;
+          let html = '';
+          for (const [name, info] of Object.entries(data)) {
+            const color = info.pct_change >= 0 ? 'var(--accent)' : 'var(--warn)';
+            const sign = info.pct_change >= 0 ? '+' : '';
+            html += `<div style="display:flex; gap:6px; align-items:baseline;">
+              <span style="color:var(--text);">${name}</span>
+              <span>${info.price ? info.price.toLocaleString('en-IN') : 'N/A'}</span>
+              <span style="color:${color}; font-weight:600;">${sign}${info.pct_change}%</span>
+            </div>`;
+          }
+          tc.innerHTML = html;
+        })
+        .catch(err => console.error("Failed to load indices", err));
+
 </script>
 </body>
 </html>

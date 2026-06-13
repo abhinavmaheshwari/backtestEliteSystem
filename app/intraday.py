@@ -60,7 +60,7 @@ MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0
 GAP_LOOKBACK_BARS           = 10    
 
 
-def start():
+def start(run_once=False):
     init_db()
 
     prev_delivery_map    = fetch_previous_day_delivery()
@@ -562,7 +562,13 @@ def start():
             if fired:
                 logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
+
+            if run_once:
+                logger.info("🧪 TEST RUN COMPLETE. Exiting loop.")
+                break
+            
             elapsed     = (datetime.now(IST) - scan_start).total_seconds()
+
             sleep_time  = max(0, 300 - elapsed)
             time.sleep(sleep_time)
 
