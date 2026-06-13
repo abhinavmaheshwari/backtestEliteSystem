@@ -652,19 +652,16 @@ def _main_impl():
         .reset_index(drop=True)
     )
 
-    # --- AI CONCALL INTEGRATION (TOP 50 ONLY) ---
-    logger.info("🤖 Running AI Concall deep dives on Top 50 fundamental stocks...")
+    # --- AI CONCALL INTEGRATION (ALL STOCKS) ---
+    logger.info("🤖 Checking Database for cached AI Concall reports on all fundamental stocks...")
     try:
         from database import get_recent_concall_analysis
         
         ai_scores = []
+        total_len = len(final_df)
         for i, rrow in final_df.iterrows():
-            if i >= 50:
-                ai_scores.append(0)
-                continue
-                
             sym = rrow["Stock"]
-            logger.info(f"[{i+1}/50] Checking DB for cached AI Concall of {sym}")
+            logger.info(f"[{i+1}/{total_len}] Checking DB for cached AI Concall of {sym}")
             
             try:
                 # 1. Check recent cache (60 days)
