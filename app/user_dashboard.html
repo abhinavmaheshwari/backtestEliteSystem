@@ -558,8 +558,9 @@ function openChart(symbol) {
         data.forEach(item => {
           const date = new Date(item.date).toLocaleDateString('en-IN');
           html += `<div>
-            <a href="${item.link}" target="_blank" style="color:var(--accent); text-decoration:none; font-weight:600; font-size:13px; display:block; margin-bottom:4px;">${item.title}</a>
-            <div style="font-size:11px; color:var(--muted);">${item.provider} • ${date}</div>
+            <a href="${item.link}" target="_blank" style="color:var(--accent); text-decoration:none; font-weight:600; font-size:12px; display:block; margin-bottom:4px; line-height:1.3;">${item.title}</a>
+            ${item.summary ? `<div style="font-size:11px; color:var(--text); opacity:0.8; margin-bottom:4px; line-height:1.4;">${item.summary.substring(0, 120)}...</div>` : ''}
+            <div style="font-size:10px; color:var(--muted);">${item.provider} • ${date}</div>
           </div>`;
         });
         html += '</div>';
@@ -746,7 +747,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
           </div>
           <div class="detail-item">
             <div class="detail-label">RSI</div>
-            <div class="detail-val" style="color:var(--accent2)">${t.rsi??'—'}</div>
+            <div class="detail-val" style="color:var(--accent)">${t.rsi??'—'}</div>
           </div>
           <div class="detail-item">
             <div class="detail-label">Vol Ratio</div>
@@ -764,9 +765,9 @@ function buildTradeRows(trades, maxAbs, prefix) {
             </div>
           </div>
           <div class="detail-item" style="grid-column: span 2; min-width: 200px;">
-            <div class="detail-label" style="color:var(--accent2);">Live Catalysts</div>
+            <div class="detail-label" style="color:var(--accent);">Live Catalysts</div>
             <div class="detail-val" style="margin-top:4px;">
-              <div id="news-${prefix}-${t.id}" style="font-size:11px; font-weight:normal; color:var(--text); max-height:80px; overflow-y:auto; font-family:var(--font-body); line-height:1.4;">Waiting...</div>
+              <div id="news-${prefix}-${t.id}" style="font-size:11px; font-weight:normal; color:var(--text); max-height:150px; overflow-y:auto; font-family:var(--font-body); line-height:1.4;">Waiting...</div>
               <button id="btn-news-${prefix}-${t.id}" onclick="fetchNews('${t.symbol}', 'news-${prefix}-${t.id}', 'btn-news-${prefix}-${t.id}')" style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:10px; cursor:pointer; margin-top:6px;">Fetch Latest News</button>
             </div>
           </div>
