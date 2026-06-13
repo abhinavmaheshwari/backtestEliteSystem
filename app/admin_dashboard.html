@@ -1004,11 +1004,21 @@ async function generateAI(symbol, containerId, btnEl) {
             </div>`;
         }
         
+        // Handle graceful degradation for old caches
+        const topLine = data.top_line_guidance || data.growth_outlook || null;
+        const bottomLine = data.bottom_line_guidance || data.margin_outlook || null;
+        const demandEnv = data.demand_environment || null;
+        const volVsPrice = data.volume_vs_pricing || null;
+        const capex = data.capex_and_launches || data.capex_plans || null;
+        const wcDebt = data.working_capital_debt || data.debt_reduction || null;
+
         html += renderItem("Management Confidence", data.management_confidence ? data.management_confidence + " / 10" : null, true);
-        html += renderItem("Growth Outlook", data.growth_outlook);
-        html += renderItem("Margin Outlook", data.margin_outlook);
-        html += renderItem("Capex Plans", data.capex_plans);
-        html += renderItem("Debt Reduction", data.debt_reduction);
+        html += renderItem("Top-Line Guidance", topLine, true);
+        html += renderItem("Bottom-Line & Margins", bottomLine);
+        html += renderItem("Demand Environment", demandEnv);
+        html += renderItem("Volume vs Pricing Mix", volVsPrice);
+        html += renderItem("Capex & Launches", capex);
+        html += renderItem("Working Capital & Debt", wcDebt);
         html += risksHtml;
         html += '</div>';
         if(data.model_used) {
@@ -1141,11 +1151,46 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             document.body.appendChild(datalist);
             
-            // Attach to inputs
             const searchBox = document.getElementById('searchBox');
             if(searchBox) searchBox.setAttribute('list', 'tickerList');
             const aiInput = document.getElementById('aiModalTicker');
-            if(aiInput) aiInput.setAttribute('list', 'tickerList');
+            if(aiInput) {
+                // Custom absolute-positioned dropdown to fix browser bug in modals
+                const wrapper = document.createElement('div');
+                wrapper.style.position = 'relative';
+                wrapper.style.flex = '1';
+                aiInput.parentNode.insertBefore(wrapper, aiInput);
+                wrapper.appendChild(aiInput);
+                
+                const dropdown = document.createElement('div');
+                dropdown.style.position = 'absolute';
+                dropdown.style.top = '100%';
+                dropdown.style.left = '0';
+                dropdown.style.width = '100%';
+                dropdown.style.maxHeight = '200px';
+                dropdown.style.overflowY = 'auto';
+                dropdown.style.background = 'var(--bg)';
+                dropdown.style.border = '1px solid var(--border)';
+                dropdown.style.borderRadius = '0 0 6px 6px';
+                dropdown.style.zIndex = '10000';
+                dropdown.style.display = 'none';
+                dropdown.style.boxShadow = '0 4px 12px rgba(0,0,0,0.5)';
+                wrapper.appendChild(dropdown);
+                
+                aiInput.addEventListener('input', e => {
+                    const val = e.target.value.toUpperCase();
+                    if(!val) { dropdown.style.display = 'none'; return; }
+                    const matches = symbols.filter(s => s.startsWith(val)).slice(0, 50);
+                    if(matches.length === 0) { dropdown.style.display = 'none'; return; }
+                    
+                    dropdown.innerHTML = matches.map(m => `<div style="padding:8px 12px; cursor:pointer; color:var(--text); border-bottom:1px solid rgba(255,255,255,0.05); font-size:12px;" onmouseover="this.style.background='var(--card2)'" onmouseout="this.style.background='transparent'" onclick="document.getElementById('aiModalTicker').value='${m}'; this.parentNode.style.display='none';">${m}</div>`).join('');
+                    dropdown.style.display = 'block';
+                });
+                
+                document.addEventListener('click', e => {
+                    if(!wrapper.contains(e.target)) dropdown.style.display = 'none';
+                });
+            }
         })
         .catch(err => console.error("Failed to load ticker list", err));
 });
