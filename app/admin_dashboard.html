@@ -460,11 +460,20 @@
       <h2 style="font-size:16px; font-weight:600; letter-spacing:-0.2px; color:var(--text); margin:0;">Database Exports</h2>
       <div style="font-size:13px; color:var(--muted)">Raw CSV extracts</div>
     </div>
-    <div style="display:flex; gap:12px; margin-bottom: 28px; flex-wrap: wrap;">
+    <div style="display:flex; gap:12px; margin-bottom: 32px; flex-wrap: wrap;">
       <button class="btn btn-outline" onclick="window.open('/admin/export/alerts', '_blank')">📥 Alerts & Trades</button>
       <button class="btn btn-outline" onclick="window.open('/admin/export/ai_concall_cache_v3', '_blank')">📥 AI Concall Cache</button>
       <button class="btn btn-outline" onclick="window.open('/admin/export/scanner_health', '_blank')">📥 Scanner Health</button>
       <button class="btn btn-outline" onclick="window.open('/admin/export/system_state', '_blank')">📥 System State</button>
+    </div>
+
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid var(--border); padding-bottom:8px; margin-bottom:16px;">
+      <h2 style="font-size:16px; font-weight:600; letter-spacing:-0.2px; color:var(--text); margin:0;">Watchlist Files</h2>
+      <div style="font-size:13px; color:var(--muted)">Daily builder generated files</div>
+    </div>
+    <div style="display:flex; gap:12px; margin-bottom: 28px; flex-wrap: wrap;">
+      <button class="btn btn-outline" onclick="window.open('/admin/export/watchlist/fundamental', '_blank')">📄 Elite Fundamental List</button>
+      <button class="btn btn-outline" onclick="window.open('/admin/export/watchlist/excluded', '_blank')">📄 Excluded Stocks</button>
     </div>
 
   </div>

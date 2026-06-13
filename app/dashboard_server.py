@@ -208,6 +208,27 @@ def export_csv_data(table):
         logger.error(f"Error exporting CSV for table {table}: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/admin/export/watchlist/<list_type>")
+def export_watchlist(list_type):
+    """Exports the daily generated watchlist CSVs."""
+    from config import DATA_DIR
+    import os
+    from flask import send_file
+    
+    if list_type == "fundamental":
+        file_path = os.path.join(DATA_DIR, "elite_fundamental_watchlist.csv")
+        filename = "elite_fundamental_watchlist.csv"
+    elif list_type == "excluded":
+        file_path = os.path.join(DATA_DIR, "elite_fundamental_watchlist_excluded.csv")
+        filename = "elite_fundamental_watchlist_excluded.csv"
+    else:
+        return jsonify({"error": "Invalid list type requested."}), 400
+        
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Watchlist file not found. Ensure daily builder has run."}), 404
+        
+    return send_file(file_path, as_attachment=True, download_name=filename)
+
 
 @app.route("/api/summary")
 def api_summary():
