@@ -398,7 +398,7 @@
         <input id="filterSymbol" type="text" placeholder="Search symbol…" style="width:130px">
         <button class="refresh-btn" onclick="exportCSV()" style="margin-left:8px;padding:6px 12px;">📥 Export CSV</button>
         <div style="margin-left:auto; text-align:right;">
-          <div id="simResult" style="font-family:var(--font-mono); font-size:18px; font-weight:600;">Est. Net P&L: ₹0</div>
+          <div id="simNetPnl" style="font-family:var(--font-mono); font-size:18px; font-weight:600;">Est. Net P&L: ₹0</div>
           <div id="simFloating" style="font-size:12px; color:var(--muted); margin-top:4px;">Floating: ₹0</div>
         </div>
         <div style="border-left:1px solid var(--border); padding-left:16px; text-align:right;">
@@ -416,7 +416,7 @@
               <th data-col="scanner">Scanner</th>
               <th data-col="category">Category</th>
               <th data-col="entry_price" style="cursor:pointer">Entry ₹</th>
-              <th data-col="current_price" style="cursor:pointer">CMP ₹</th>
+              <th data-col="current_price" style="cursor:pointer">CMP/Exit ₹</th>
               <th data-col="capital_allocated" style="cursor:pointer">Capital ₹</th>
               <th data-col="shares_bought" style="cursor:pointer">Shares</th>
               <th data-col="pnl_pct" style="cursor:pointer" class="desc">P&amp;L %</th>
@@ -765,11 +765,11 @@ function buildTradeRows(trades, maxAbs, prefix) {
       <td><span class="badge badge-scanner">${t.scanner||'—'}</span></td>
       <td style="color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-body)">${t.category||'—'}</td>
       <td>${fmt(t.entry_price)}</td>
-      <td>${fmt(t.current_price)}</td>
+      <td>${fmt(t.exit_price || t.current_price)}</td>
       <td>${fmt(t.capital_allocated)}</td>
-      <td>${t.shares_bought||'—'}</td>
+      <td>${t.shares_bought||'\u2014'}</td>
       <td><div class="pnl-wrap"><div class="pnl-bar-track"><div class="pnl-bar-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="pnl-text ${pctClass(t.pnl_pct)}">${pct(t.pnl_pct)}</span></div></td>
-      <td class="${pctClass(t.pnl_rs)}">${t.pnl_rs != null ? fmt(t.pnl_rs) : '—'}</td>
+      <td class="${pctClass(t.status === 'OPEN' && t.shares_bought ? (t.current_price - t.entry_price) * t.shares_bought : t.pnl_rs)}">${t.status === 'OPEN' && t.shares_bought ? fmt((t.current_price - t.entry_price) * t.shares_bought) : (t.pnl_rs != null ? fmt(t.pnl_rs) : '\u2014')}</td>
       <td>${sc}</td>
       <td style="color:var(--muted)">${t.days_held!=null?t.days_held+'d':'—'}</td>
       <td>${badgeHtml(t.status)}</td>
@@ -848,7 +848,7 @@ function renderMiniTable(trades) {
     <thead><tr>
       <th style="width:20px"></th>
       <th>Symbol</th><th data-col="entry_date">Date &amp; Time</th><th>Scanner</th><th>Category</th>
-      <th>Entry \u20b9</th><th>CMP \u20b9</th><th>Capital \u20b9</th><th>Shares</th><th>P&amp;L %</th><th>P&amp;L \u20b9</th><th>Score</th><th>Days</th><th>Status</th>
+      <th>Entry \u20b9</th><th>CMP/Exit \u20b9</th><th>Capital \u20b9</th><th>Shares</th><th>P&amp;L %</th><th>P&amp;L \u20b9</th><th>Score</th><th>Days</th><th>Status</th>
     </tr></thead>
     <tbody>${buildTradeRows(trades, maxAbs, 'drill-')}</tbody>
   </table>`;
@@ -955,7 +955,6 @@ function renderCategoryStats() {
 
 function updateSim() {
   const cap = parseFloat(document.getElementById('simCapital').value) || 100000;
-  const risk = parseFloat(document.getElementById('simRisk').value) || 2;
   
   let closedTrades = ALL_TRADES.filter(t => ['WIN','LOSS'].includes(t.status));
   closedTrades.sort((a,b) => {
@@ -967,13 +966,7 @@ function updateSim() {
   let currentEquity = cap;
   
   closedTrades.forEach(t => {
-    const riskRs = currentEquity * (risk/100);
-    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
-    if (riskPerShare > 0) {
-      const shares = riskRs / riskPerShare;
-      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
-      currentEquity += profit;
-    }
+    currentEquity += (t.pnl_rs || 0);
   });
 
   let totalNet = currentEquity - cap;
@@ -981,19 +974,21 @@ function updateSim() {
   let totalFloating = 0;
   let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
   openTrades.forEach(t => {
-    const riskRs = currentEquity * (risk/100);
-    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
-    if (riskPerShare > 0) {
-      const shares = riskRs / riskPerShare;
-      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
-      totalFloating += profit;
+    if (t.shares_bought) {
+      totalFloating += (t.current_price - t.entry_price) * t.shares_bought;
     }
   });
 
   const resEl = document.getElementById('simResult');
+  const resEl2 = document.getElementById('simNetPnl');
+  const netText = (totalNet>=0?'+':'') + '₹' + Math.round(totalNet).toLocaleString('en-IN');
   if(resEl) {
-    resEl.textContent = 'Est. Net P&L: ' + (totalNet>=0?'+':'') + '₹' + Math.round(totalNet).toLocaleString('en-IN');
-    resEl.style.color = totalNet >= 0 ? 'var(--win)' : 'var(--loss)';
+    resEl.textContent = 'Net P&L: ' + netText;
+    resEl.style.color = totalNet >= 0 ? 'var(--accent)' : 'var(--warn)';
+  }
+  if(resEl2) {
+    resEl2.textContent = 'Net Realized: ' + netText;
+    resEl2.style.color = totalNet >= 0 ? 'var(--accent)' : 'var(--warn)';
   }
   const floatEl = document.getElementById('simFloating');
   if(floatEl) {
@@ -1015,7 +1010,6 @@ function renderEquityCurve() {
   });
   
   let cap = parseFloat(document.getElementById('simCapital').value) || 100000;
-  let risk = parseFloat(document.getElementById('simRisk').value) || 2;
   let equity = cap;
   let peakEquity = cap;
   
@@ -1023,28 +1017,18 @@ function renderEquityCurve() {
   let dataPoints = [equity];
   
   closedTrades.forEach(t => {
-    const riskRs = equity * (risk/100); // Compounding risk
-    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
-    if (riskPerShare > 0) {
-      const shares = riskRs / riskPerShare;
-      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
-      equity += profit;
-      if (equity > peakEquity) peakEquity = equity;
-      labels.push((t.closed_at || t.entry_date).split('T')[0]);
-      dataPoints.push(equity);
-    }
+    equity += (t.pnl_rs || 0);
+    if (equity > peakEquity) peakEquity = equity;
+    labels.push((t.closed_at || t.entry_date).split('T')[0]);
+    dataPoints.push(equity);
   });
 
   // Calculate live floating PnL on top of closed equity
   let totalFloating = 0;
   let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
   openTrades.forEach(t => {
-    const riskRs = equity * (risk/100);
-    const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
-    if (riskPerShare > 0) {
-      const shares = riskRs / riskPerShare;
-      const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
-      totalFloating += profit;
+    if (t.shares_bought) {
+      totalFloating += (t.current_price - t.entry_price) * t.shares_bought;
     }
   });
 
