@@ -764,7 +764,8 @@ function renderTradeTable() {
     return sortDir*(va>vb?1:va<vb?-1:0);
   });
   const maxAbs = Math.max(...ALL_TRADES.map(t=>Math.abs(t.pnl_pct||0)), 1);
-  document.getElementById('tradeCount').textContent = `${filtered.length} trade${filtered.length!==1?'s':''}`;
+  const tc = document.getElementById('tradeCount');
+  if (tc) tc.textContent = `${filtered.length} trade${filtered.length!==1?'s':''}`;
   const body = document.getElementById('tradeBody');
   if (!filtered.length) {
     body.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--muted)">No trades match this filter.</td></tr>`;
