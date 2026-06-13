@@ -392,8 +392,8 @@ def api_concall_ai(symbol):
         for n in data:
             desc = str(n.get("desc", "")).lower()
             if "transcript" in desc:
-                url = n.get("attchmntFile")
-                if url and url not in target_pdfs:
+                url = str(n.get("attchmntFile", ""))
+                if url.lower().endswith(".pdf") and url not in target_pdfs:
                     target_pdfs.append(url)
             if len(target_pdfs) == 2: break
                 
@@ -402,8 +402,8 @@ def api_concall_ai(symbol):
             for n in data:
                 desc = str(n.get("desc", "")).lower()
                 if "presentation" in desc or "earnings" in desc:
-                    url = n.get("attchmntFile")
-                    if url and url not in target_pdfs:
+                    url = str(n.get("attchmntFile", ""))
+                    if url.lower().endswith(".pdf") and url not in target_pdfs:
                         target_pdfs.append(url)
                 if len(target_pdfs) == 2: break
                     
@@ -412,8 +412,8 @@ def api_concall_ai(symbol):
             for n in data:
                 desc = str(n.get("desc", "")).lower()
                 if "con. call" in desc or "investor meet" in desc:
-                    url = n.get("attchmntFile")
-                    if url and url not in target_pdfs:
+                    url = str(n.get("attchmntFile", ""))
+                    if url.lower().endswith(".pdf") and url not in target_pdfs:
                         target_pdfs.append(url)
                 if len(target_pdfs) == 2: break
                 
