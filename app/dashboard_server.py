@@ -12,7 +12,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
 import threading
-from flask import Flask, jsonify, send_file, Response, request
+from flask import Flask, jsonify, send_file, Response, request, make_response
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
