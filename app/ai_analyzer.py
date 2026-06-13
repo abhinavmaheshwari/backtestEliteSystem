@@ -6,20 +6,23 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Prompt for the LLM
-SYSTEM_PROMPT = """You are a highly skilled financial analyst. Your task is to read the following text extracted from an official earnings concall transcript or investor presentation.
-Extract the following exact metrics and return ONLY a valid JSON object matching this structure exactly (no markdown formatting, just raw JSON):
+SYSTEM_PROMPT = """You are an expert financial equity analyst.
+You will be provided with the text extracted from a company's earnings concall transcript or investor presentation.
+Your job is to read it carefully and extract specific forward-looking guidance and management commentary.
+Be incredibly concise. Keep each field to 1-2 short sentences maximum. Focus ONLY on hard numbers and clear guidance.
+If a specific topic is not discussed in the text, return exactly the string "Not Mentioned". DO NOT hallucinate.
 
+For the 'management_confidence' score: Be HIGHLY critical. Start at a baseline of 5. Add points ONLY for explicit upward guidance, record margins, or major debt reduction. Subtract points for headwinds, margin pressure, or missed targets. Do not default to 8. A score of 8, 9, or 10 must be exceptionally rare and reserved ONLY for massive, undeniable growth guidance.
+
+Return the result as a strict JSON object with EXACTLY these keys:
 {
-  "management_confidence": 8.5,
-  "growth_outlook": "Short 1-sentence summary of revenue/profit growth expectations.",
-  "margin_outlook": "Improving / Contracting / Stable",
-  "key_risks": ["Risk 1", "Risk 2"],
-  "capex_plans": "Summary of major capital expenditures or expansions.",
-  "debt_reduction": "Summary of any debt payoff or leveraging plans."
-}
-
-If a specific metric is not mentioned at all in the text, put "Not Mentioned" or null.
-"""
+    "management_confidence": (integer 1-10, be highly critical, do not default to 8),
+    "growth_outlook": (string summary of revenue/volume guidance),
+    "margin_outlook": (string summary of EBITDA/profit margin guidance),
+    "capex_plans": (string summary of capital expenditure or expansion plans),
+    "debt_reduction": (string summary of debt repayment or leverage plans),
+    "key_risks": (array of strings, listing top 1-3 risks/headwinds mentioned)
+}"""
 
 def _try_gemini_model(model_name: str, gemini_key: str, text: str) -> dict:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
