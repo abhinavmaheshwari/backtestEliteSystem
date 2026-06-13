@@ -154,6 +154,13 @@ def run_live_scanner():
 def run_performance_tracker():
     """Refreshes dashboard data every 5 minutes all day on weekdays."""
     from performance_tracker import build_performance_data
+    
+    # Always run once on boot to ensure fresh dashboard data, even on weekends
+    try:
+        build_performance_data()
+    except Exception:
+        logger.exception("❌ PERFORMANCE TRACKER | Initial boot refresh failed")
+        
     while True:
         now = datetime.now(IST)
         if now.weekday() >= 5:
