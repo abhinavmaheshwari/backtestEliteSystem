@@ -49,32 +49,20 @@ def calculate_trade_allocation(entry_price: float, stop_loss: float, score: int 
     total_equity = state["total_equity"]
     available_margin = state["available_margin"]
     
-    # Dynamic Risk Assessment
+    # Fixed Allocation Assessment based on Conviction (Score)
     if score >= 90:
-        dynamic_risk_percent = 0.03  # High conviction
-    elif score >= 80:
-        dynamic_risk_percent = 0.02  # Normal conviction
+        allocation_percent = 0.15  # High conviction: 15% of total equity
     else:
-        dynamic_risk_percent = 0.01  # Lower conviction
+        allocation_percent = 0.10  # Normal/Low conviction: 10% of total equity
         
-    risk_rupees = total_equity * dynamic_risk_percent
-    risk_per_share = abs(entry_price - stop_loss)
+    capital_required = total_equity * allocation_percent
     
-    if risk_per_share <= 0:
-        return 0.0, 0
-        
-    shares_to_buy = int(risk_rupees / risk_per_share)
-    capital_required = shares_to_buy * entry_price
-    
-    # Position Sizing Rule: Never allocate more than 15% of Total Equity to a single trade
-    max_capital_per_trade = total_equity * 0.15
-    if capital_required > max_capital_per_trade:
-        shares_to_buy = int(max_capital_per_trade / entry_price)
-        capital_required = shares_to_buy * entry_price
-    
-    # Check if we have enough available cash. If not, scale down.
+    # Check if we have enough available cash. If not, allocate whatever is left.
     if capital_required > available_margin:
-        shares_to_buy = int(available_margin / entry_price)
-        capital_required = shares_to_buy * entry_price
+        capital_required = max(0.0, available_margin)
         
-    return float(capital_required), shares_to_buy
+    shares_to_buy = int(capital_required / entry_price)
+    # Recalculate exact capital based on whole shares
+    final_capital = shares_to_buy * entry_price
+        
+    return float(final_capital), shares_to_buy
