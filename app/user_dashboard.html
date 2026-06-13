@@ -316,8 +316,8 @@
   </div>
 
   <!-- MARKET TICKER -->
-  <div id="market-ticker" style="background:#0b0e14; border-bottom:1px solid var(--border); padding:6px 16px; font-size:12px; font-family:var(--font-mono); color:var(--muted); display:flex; gap:20px; align-items:center; overflow-x:auto; white-space:nowrap;">
-    <div style="font-weight:700; color:var(--text); letter-spacing:1px; margin-right:10px;">LIVE MARKETS</div>
+  <div id="market-ticker" style="background:#0b0e14; border-bottom:1px solid var(--border); padding:6px 16px; font-size:12px; font-family:var(--font-mono); color:#94a3b8; display:flex; gap:20px; align-items:center; overflow-x:auto; white-space:nowrap;">
+    <div style="font-weight:700; color:#ffffff; letter-spacing:1px; margin-right:10px;">LIVE MARKETS</div>
     <div id="ticker-content" style="display:flex; gap:24px;">
       <span style="opacity:0.5;">Fetching indices...</span>
     </div>
@@ -753,8 +753,16 @@ function buildTradeRows(trades, maxAbs, prefix) {
           </div>
           <div class="detail-item">
             <div class="detail-label">Actions</div>
-            <div class="detail-val" style="margin-top:6px;">
-              <a href="https://in.tradingview.com/chart/?symbol=NSE:${t.symbol}" target="_blank" style="color:var(--accent2);text-decoration:none;font-size:11px;font-weight:700;">View Chart ↗</a>
+            <div class="detail-val" style="margin-top:6px; display:flex; flex-direction:column; gap:6px;">
+              <button onclick="openChart('${t.symbol}')" style="background:var(--accent); color:#000; border:none; padding:4px 10px; border-radius:4px; font-size:10px; font-weight:700; cursor:pointer; max-width:max-content;">📊 In-App Chart</button>
+              <a href="https://in.tradingview.com/chart/?symbol=NSE:${t.symbol}" target="_blank" style="color:var(--muted);text-decoration:none;font-size:10px;font-weight:600;">Browser Chart ↗</a>
+            </div>
+          </div>
+          <div class="detail-item" style="grid-column: span 2; min-width: 200px;">
+            <div class="detail-label" style="color:var(--accent2);">Live Catalysts</div>
+            <div class="detail-val" style="margin-top:4px;">
+              <div id="news-${prefix}-${t.id}" style="font-size:11px; font-weight:normal; color:var(--text); max-height:80px; overflow-y:auto; font-family:var(--font-body); line-height:1.4;">Waiting...</div>
+              <button id="btn-news-${prefix}-${t.id}" onclick="fetchNews('${t.symbol}', 'news-${prefix}-${t.id}', 'btn-news-${prefix}-${t.id}')" style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:10px; cursor:pointer; margin-top:6px;">Fetch Latest News</button>
             </div>
           </div>
           ${t.signals ? `<div class="detail-signals">⚡ ${t.signals}</div>` : ''}
@@ -1002,7 +1010,7 @@ function renderEquityCurve() {
   const gridColor = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
   const tickColor = isDark ? '#94a3b8' : '#64748b';
 
-  if (window.equityChart) {
+  if (window.equityChart instanceof Chart) {
     window.equityChart.data.labels = labels;
     window.equityChart.data.datasets[0].data = dataPoints;
     window.equityChart.options.scales.x.grid.color = gridColor;
@@ -1190,7 +1198,7 @@ if (checkViewerName()) {
             const color = info.pct_change >= 0 ? 'var(--accent)' : 'var(--warn)';
             const sign = info.pct_change >= 0 ? '+' : '';
             html += `<div style="display:flex; gap:6px; align-items:baseline;">
-              <span style="color:var(--text);">${name}</span>
+              <span style="color:#ffffff;">${name}</span>
               <span>${info.price ? info.price.toLocaleString('en-IN') : 'N/A'}</span>
               <span style="color:${color}; font-weight:600;">${sign}${info.pct_change}%</span>
             </div>`;
