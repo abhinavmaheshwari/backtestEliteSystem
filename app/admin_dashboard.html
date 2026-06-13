@@ -785,7 +785,7 @@ function renderScannerGrid(scanner_stats) {
         </div>
       </div>`).join('');
 
-    const tooltipHtml = data.today_alerts > 0 ? `
+    let tooltipHtml = data.today_alerts > 0 ? `
       <div class="scanner-alert-tooltip">
         <div class="sat-header">Today's Alerts — ${sc} (${data.today_alerts})</div>
         ${tooltipRows}
