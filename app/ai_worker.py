@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 
 def run_worker_loop():
     """Infinite loop that scans the watchlist CSV and fetches AI concall reports."""
-    from app.config import WATCHLIST_PATH
-    from app.database import get_recent_concall_analysis
-    from app.dashboard_server import fetch_and_analyze_concall
+    from config import WATCHLIST_PATH
+    from database import get_recent_concall_analysis
+    from dashboard_server import fetch_and_analyze_concall
     
     logger.info("🤖 AI Worker Thread Started. Monitoring watchlist for missing caches...")
     
