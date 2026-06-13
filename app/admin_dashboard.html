@@ -896,7 +896,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
               <a href="https://in.tradingview.com/chart/?symbol=NSE:${t.symbol}" target="_blank" style="color:var(--muted);text-decoration:none;font-size:10px;font-weight:600;">Browser Chart ↗</a>
             </div>
           </div>
-          <div style="grid-column: 1 / -1; padding-top: 16px; border-top: 1px dashed rgba(0,212,161,.15); display:grid; grid-template-columns: 1fr 1fr; gap:24px;">
+          <div style="grid-column: 1 / -1; padding-top: 16px; border-top: 1px dashed rgba(0,212,161,.15); display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap:24px; width: 100%; box-sizing: border-box;">
             <div class="detail-item">
               <div class="detail-label" style="color:var(--accent);">Live Catalysts</div>
               <div class="detail-val" style="margin-top:4px; max-height:150px; overflow-y:auto; padding-right:8px;">
