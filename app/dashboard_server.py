@@ -82,7 +82,11 @@ def add_headers(response):
 def index():
     """Serve the user dashboard HTML."""
     if USER_DASHBOARD_PATH and os.path.exists(USER_DASHBOARD_PATH):
-        return send_file(USER_DASHBOARD_PATH)
+        r = make_response(send_file(USER_DASHBOARD_PATH))
+        r.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        r.headers['Pragma'] = 'no-cache'
+        r.headers['Expires'] = '0'
+        return r
     return Response(
         "<h2 style='font-family:monospace;color:#00e5a0;background:#0b0e14;margin:0;padding:40px'>"
         "⚠️ user_dashboard.html not found.</h2>",
@@ -93,7 +97,11 @@ def index():
 def admin_index():
     """Serve the admin dashboard HTML."""
     if ADMIN_DASHBOARD_PATH and os.path.exists(ADMIN_DASHBOARD_PATH):
-        return send_file(ADMIN_DASHBOARD_PATH)
+        r = make_response(send_file(ADMIN_DASHBOARD_PATH))
+        r.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        r.headers['Pragma'] = 'no-cache'
+        r.headers['Expires'] = '0'
+        return r
     return Response(
         "<h2 style='font-family:monospace;color:#00e5a0;background:#0b0e14;margin:0;padding:40px'>"
         "⚠️ admin_dashboard.html not found.</h2>",
