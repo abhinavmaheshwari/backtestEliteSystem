@@ -763,6 +763,8 @@ function renderScannerGrid(scanner_stats) {
   el.innerHTML = '';
 
   allScanners.forEach(sc => {
+    if (sc === 'AIWorker') return; // Skip old duplicate database row
+
     const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
     const meta = SCANNER_META[sc] || {label:sc, desc:''};
     const isDown = data.status === 'DOWN';
@@ -806,12 +808,22 @@ function renderScannerGrid(scanner_stats) {
     let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
 
     if (isAiWorker) {
+      let totalCount = "Total";
+      let lastStock = "";
+      if (data.error && data.error.includes("Total:")) {
+          const parts = data.error.split("|");
+          if (parts.length >= 2) {
+              lastStock = parts[0].trim();
+              totalCount = parts[1].replace("Total:", "").trim();
+          }
+      }
+      
       alertLabel = "Processed";
       alertHtml = `
       <div class="scanner-alert-count" style="color: #6366f1;">
-        ${data.today_alerts} <span style="font-size:13px;color:var(--muted);font-weight:400">/ Total</span>
+        ${data.today_alerts} <span style="font-size:13px;color:var(--muted);font-weight:400">/ ${totalCount}</span>
       </div>`;
-      alertSub = "Stocks cached";
+      alertSub = lastStock ? lastStock : "Stocks cached";
       tooltipHtml = '';
     }
 

@@ -35,7 +35,7 @@ def run_worker_loop():
             total_stocks = len(pending_stocks)
             
             processed_count = 0
-            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
+            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: None | Total: {total_stocks}")
 
             max_retries = 3
             for attempt in range(max_retries):
@@ -47,7 +47,7 @@ def run_worker_loop():
                         if cached:
                             # Already cached, skip
                             processed_count += 1
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                             continue
                             
                         # 2. No cache. Fetch it.
@@ -59,7 +59,7 @@ def run_worker_loop():
                             key_used = result.get("key_used", "Key 1")
                             logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
                             processed_count += 1
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                         else:
                             error_msg = result.get('error', 'Unknown Error')
                             logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {error_msg}")
@@ -94,7 +94,7 @@ def run_worker_loop():
             
         # Once we've checked the whole list, sleep for 30 minutes before checking again
         logger.info(f"🤖 [AI WORKER] Finished scanning entire universe ({total_stocks} stocks). Sleeping for 30 minutes.")
-        upsert_scanner_health("AI Worker", "IDLE", last_success=datetime.now().isoformat(), today_alerts=processed_count)
+        upsert_scanner_health("AI Worker", "IDLE", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: Finished | Total: {total_stocks}")
         time.sleep(1800)
 
 def start_worker():
