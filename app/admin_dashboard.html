@@ -65,7 +65,7 @@
 
   /* ── HEADER ── */
   .header {
-    background:linear-gradient(135deg,#ffffff 0%,#f8fafc 100%);
+    background:var(--card);
     border-bottom:1px solid var(--border);
     padding:16px 28px;
     display:flex; align-items:center; justify-content:space-between;
@@ -550,33 +550,35 @@ function openChart(symbol) {
   }
 
   function fetchNews(symbol, containerId, btnId) {
-    const btn = document.getElementById(btnId);
-    if(btn) btn.style.display = 'none';
     const container = document.getElementById(containerId);
-    container.innerHTML = '<span style="color:var(--muted)">Loading...</span>';
+    const btn = document.getElementById(btnId);
+    if (btn) btn.innerText = 'Fetching...';
     
     fetch('/api/news/' + symbol)
       .then(r => r.json())
       .then(data => {
-        if (!data || data.length === 0) {
-          container.innerHTML = '<span style="color:var(--muted)">No recent news found.</span>';
-          return;
+        let html = '';
+        if (data.length === 0) {
+          html = '<div style="font-size:11px;color:var(--muted);margin-top:4px;">No recent news found.</div>';
+        } else {
+          html = '<div style="display:flex; flex-direction:column; gap:12px;">';
+          data.forEach(item => {
+            const date = new Date(item.date).toLocaleDateString('en-IN');
+            html += `<div>
+              <a href="${item.link}" target="_blank" style="color:var(--accent); text-decoration:none; font-weight:600; font-size:13px; display:block; margin-bottom:4px; line-height:1.4; font-family:var(--font-body); white-space:normal;">${item.title}</a>
+              ${item.summary ? `<div style="font-size:11px; color:var(--text); opacity:0.8; margin-bottom:4px; line-height:1.4; font-family:var(--font-body); white-space:normal;">${item.summary.substring(0, 150)}...</div>` : ''}
+              <div style="font-size:10px; color:var(--muted); font-family:var(--font-body);">${item.provider} • ${date}</div>
+            </div>`;
+          });
+          html += '</div>';
         }
-        let html = '<div style="display:flex; flex-direction:column; gap:12px;">';
-        data.forEach(item => {
-          const date = new Date(item.date).toLocaleDateString('en-IN');
-          html += `<div>
-            <a href="${item.link}" target="_blank" style="color:var(--accent); text-decoration:none; font-weight:600; font-size:12px; display:block; margin-bottom:4px; line-height:1.3;">${item.title}</a>
-            ${item.summary ? `<div style="font-size:11px; color:var(--text); opacity:0.8; margin-bottom:4px; line-height:1.4;">${item.summary.substring(0, 120)}...</div>` : ''}
-            <div style="font-size:10px; color:var(--muted);">${item.provider} • ${date}</div>
-          </div>`;
-        });
-        html += '</div>';
-        container.innerHTML = html;
+        if (!window.NEWS_CACHE) window.NEWS_CACHE = {};
+        window.NEWS_CACHE[symbol] = html;
+        if (container) container.innerHTML = html;
+        if (btn) btn.style.display = 'none';
       })
       .catch(err => {
-        container.innerHTML = '<span style="color:var(--warn)">Failed to load news.</span>';
-        if(btn) btn.style.display = 'block';
+        if (btn) btn.innerText = 'Error (Retry)';
       });
   }
 
@@ -894,11 +896,13 @@ function buildTradeRows(trades, maxAbs, prefix) {
               <a href="https://in.tradingview.com/chart/?symbol=NSE:${t.symbol}" target="_blank" style="color:var(--muted);text-decoration:none;font-size:10px;font-weight:600;">Browser Chart ↗</a>
             </div>
           </div>
-          <div class="detail-item" style="grid-column: span 2; min-width: 200px;">
+                    <div class="detail-item" style="grid-column: span 3; min-width: 300px; padding-right:20px;">
             <div class="detail-label" style="color:var(--accent);">Live Catalysts</div>
-            <div class="detail-val" style="margin-top:4px;">
-              <div id="news-${prefix}-${t.id}" style="font-size:11px; font-weight:normal; color:var(--text); max-height:150px; overflow-y:auto; font-family:var(--font-body); line-height:1.4;">Waiting...</div>
-              <button id="btn-news-${prefix}-${t.id}" onclick="fetchNews('${t.symbol}', 'news-${prefix}-${t.id}', 'btn-news-${prefix}-${t.id}')" style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:10px; cursor:pointer; margin-top:6px;">Fetch Latest News</button>
+            <div class="detail-val" style="margin-top:4px; max-height:150px; overflow-y:auto; padding-right:8px;">
+              ${(window.NEWS_CACHE && window.NEWS_CACHE[t.symbol]) ? window.NEWS_CACHE[t.symbol] : `
+                <div id="news-${id}" style="font-size:11px; font-weight:normal; color:var(--text); font-family:var(--font-body); line-height:1.4;">Waiting...</div>
+                <button id="btn-news-${id}" onclick="fetchNews('${t.symbol}', 'news-${id}', 'btn-news-${id}')" style="background:var(--card2); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:10px; cursor:pointer; margin-top:6px;">Fetch Latest News</button>
+              `}
             </div>
           </div>
           ${t.signals ? `<div class="detail-signals">⚡ ${t.signals}</div>` : ''}
@@ -920,6 +924,8 @@ function toggleDetail(id) {
     expandedIds.add(id);
     panel.classList.replace('closed','open');
     mainRow && mainRow.classList.add('open');
+    const btn = document.getElementById('btn-news-' + id);
+    if (btn) btn.click();
   }
 }
 
