@@ -348,10 +348,18 @@ def api_notices(symbol):
 def api_all_tickers():
     """Returns a list of all active NSE symbols for frontend autocomplete."""
     try:
-        from app.watchlist_cache import get_watchlist
-        df = get_watchlist()
-        if 'Stock' in df.columns:
-            return jsonify(df['Stock'].dropna().unique().tolist())
+        import pandas as pd
+        import os
+        tickers = set()
+        for f in ['data/elite_fundamental_watchlist.csv', 'data/elite_fundamental_watchlist_excluded.csv']:
+            if os.path.exists(f):
+                try:
+                    df = pd.read_csv(f)
+                    if 'Stock' in df.columns:
+                        tickers.update(df['Stock'].dropna().unique().tolist())
+                except: pass
+        if tickers:
+            return jsonify(sorted(list(tickers)))
         return jsonify([])
     except Exception as e:
         logger.error(f"Failed to fetch tickers: {e}")

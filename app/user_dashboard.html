@@ -1404,7 +1404,43 @@ document.addEventListener('DOMContentLoaded', () => {
             if(searchBox) searchBox.setAttribute('list', 'tickerList');
             
             const aiInput = document.getElementById('aiModalTicker');
-            if(aiInput) aiInput.setAttribute('list', 'tickerList');
+            if(aiInput) {
+                // Custom absolute-positioned dropdown to fix browser bug in modals
+                const wrapper = document.createElement('div');
+                wrapper.style.position = 'relative';
+                wrapper.style.flex = '1';
+                aiInput.parentNode.insertBefore(wrapper, aiInput);
+                wrapper.appendChild(aiInput);
+                
+                const dropdown = document.createElement('div');
+                dropdown.style.position = 'absolute';
+                dropdown.style.top = '100%';
+                dropdown.style.left = '0';
+                dropdown.style.width = '100%';
+                dropdown.style.maxHeight = '200px';
+                dropdown.style.overflowY = 'auto';
+                dropdown.style.background = 'var(--bg)';
+                dropdown.style.border = '1px solid var(--border)';
+                dropdown.style.borderRadius = '0 0 6px 6px';
+                dropdown.style.zIndex = '10000';
+                dropdown.style.display = 'none';
+                dropdown.style.boxShadow = '0 4px 12px rgba(0,0,0,0.5)';
+                wrapper.appendChild(dropdown);
+                
+                aiInput.addEventListener('input', e => {
+                    const val = e.target.value.toUpperCase();
+                    if(!val) { dropdown.style.display = 'none'; return; }
+                    const matches = symbols.filter(s => s.startsWith(val)).slice(0, 50);
+                    if(matches.length === 0) { dropdown.style.display = 'none'; return; }
+                    
+                    dropdown.innerHTML = matches.map(m => `<div style="padding:8px 12px; cursor:pointer; color:var(--text); border-bottom:1px solid rgba(255,255,255,0.05); font-size:12px;" onmouseover="this.style.background='var(--card2)'" onmouseout="this.style.background='transparent'" onclick="document.getElementById('aiModalTicker').value='${m}'; this.parentNode.style.display='none';">${m}</div>`).join('');
+                    dropdown.style.display = 'block';
+                });
+                
+                document.addEventListener('click', e => {
+                    if(!wrapper.contains(e.target)) dropdown.style.display = 'none';
+                });
+            }
         })
         .catch(err => console.error("Failed to load ticker list", err));
 });
