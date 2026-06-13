@@ -721,7 +721,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
       <td>${badgeHtml(t.status)}</td>
     </tr>
     <tr class="detail-row">
-      <td colspan="11">
+      <td colspan="14">
         <div class="detail-panel ${isOpen?'open':'closed'}" id="dp-${id}">
           <div class="detail-item">
             <div class="detail-label">Stop Loss</div>
@@ -904,7 +904,7 @@ function renderTradeTable() {
   if (tc) tc.textContent = `${filtered.length} trade${filtered.length!==1?'s':''}`;
   const body = document.getElementById('tradeBody');
   if (!filtered.length) {
-    body.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--muted)">No trades match this filter.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:32px;color:var(--muted)">No trades match this filter.</td></tr>`;
     return;
   }
   body.innerHTML = buildTradeRows(filtered, maxAbs, 'main-');
