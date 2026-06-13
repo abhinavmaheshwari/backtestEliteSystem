@@ -983,11 +983,11 @@ async function generateAI(symbol, containerId, btnEl) {
         let html = '<div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">';
         
         const renderItem = (label, val, highlight=false) => {
-            if(!val || val === "Not Mentioned") return "";
+            const displayVal = (!val || val === "Not Mentioned" || val === "null") ? "-" : val;
             return `
-            <div style="background:var(--card2); padding:8px 12px; border-radius:4px; border-left:2px solid ${highlight ? '#b266ff' : 'rgba(178,102,255,0.3)'};">
+            <div style="background:var(--card2); padding:8px 12px; border-radius:4px; border-left:2px solid ${highlight ? '#b266ff' : 'rgba(178,102,255,0.3)'}; opacity: ${displayVal === '-' ? '0.5' : '1'};">
                 <div style="font-size:9px; color:var(--muted); text-transform:uppercase; margin-bottom:4px;">${label}</div>
-                <div style="font-size:11px; color:var(--text); line-height:1.4; font-family:var(--font-body); font-weight:${highlight ? '700' : 'normal'}; ${highlight && label==='Management Confidence' ? 'color:#b266ff; font-size:14px;' : ''}">${val}</div>
+                <div style="font-size:11px; color:var(--text); line-height:1.4; font-family:var(--font-body); font-weight:${highlight ? '700' : 'normal'}; ${highlight && label==='Management Confidence' && displayVal!=='-' ? 'color:#b266ff; font-size:14px;' : ''}">${displayVal}</div>
             </div>`;
         };
         
