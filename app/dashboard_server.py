@@ -365,9 +365,8 @@ def api_all_tickers():
         logger.error(f"Failed to fetch tickers: {e}")
         return jsonify([])
 
-@app.route('/api/concall_ai/<symbol>', methods=['GET'])
-def api_concall_ai(symbol):
-    """Fetches the latest Concall transcript from NSE, parses the PDF, and uses AI to summarize it."""
+def fetch_and_analyze_concall(symbol):
+    """Internal function to fetch and analyze concall, returning a dict instead of a Response."""
     yf_symbol = symbol.replace('.NS', '')
     url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={yf_symbol}"
     
@@ -383,7 +382,7 @@ def api_concall_ai(symbol):
         r = s.get(url, headers=headers, timeout=5)
         
         if r.status_code != 200:
-            return jsonify({"error": "Failed to fetch NSE announcements."}), 500
+            return {"error": "Failed to fetch NSE announcements."}
             
         data = r.json()
         target_pdfs = []
@@ -418,7 +417,7 @@ def api_concall_ai(symbol):
                 if len(target_pdfs) == 2: break
                 
         if not target_pdfs:
-            return jsonify({"error": "No recent concall transcripts or investor presentations found on NSE."}), 404
+            return {"error": "No recent concall transcripts or investor presentations found on NSE."}
             
         target_pdf = target_pdfs[0]
         target_pdf_2 = target_pdfs[1] if len(target_pdfs) > 1 else None
@@ -432,7 +431,7 @@ def api_concall_ai(symbol):
         cached_data = get_cached_concall_analysis(symbol, target_pdf)
         if cached_data:
             logger.info(f"Returning CACHED AI analysis for {symbol}")
-            return jsonify(cached_data)
+            return cached_data
             
         # Parse the PDF
         import sys
@@ -446,7 +445,7 @@ def api_concall_ai(symbol):
             
         text_1 = extract_text_from_nse_pdf(target_pdf)
         if not text_1:
-            return jsonify({"error": "Could not extract text from the PDF document."}), 500
+            return {"error": "Could not extract text from the PDF document."}
             
         text = "--- LATEST QUARTER ---\n" + text_1
         
@@ -464,16 +463,22 @@ def api_concall_ai(symbol):
         ai_data = analyze_concall_text(text)
         
         if "error" in ai_data:
-            return jsonify(ai_data), 500
+            return ai_data
             
         # Save to Cache
         save_concall_analysis(symbol, target_pdf, ai_data)
         
-        return jsonify(ai_data)
-        
+        return ai_data
     except Exception as e:
-        logger.error(f"AI Concall failed for {symbol}: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in concall AI analysis for {symbol}: {e}")
+        return {"error": str(e)}
+
+@app.route('/api/concall_ai/<symbol>', methods=['GET'])
+def api_concall_ai(symbol):
+    res = fetch_and_analyze_concall(symbol)
+    if "error" in res:
+        return jsonify(res), 500 if "extract text" in res.get("error", "") else 404
+    return jsonify(res)
 
 # ── Scanner DOWN helpers
 

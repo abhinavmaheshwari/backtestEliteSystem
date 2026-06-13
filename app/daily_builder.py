@@ -652,6 +652,62 @@ def _main_impl():
         .reset_index(drop=True)
     )
 
+    # --- AI CONCALL INTEGRATION (TOP 50 ONLY) ---
+    logger.info("🤖 Running AI Concall deep dives on Top 50 fundamental stocks...")
+    try:
+        from database import get_recent_concall_analysis
+        from dashboard_server import fetch_and_analyze_concall
+        
+        ai_scores = []
+        for i, rrow in final_df.iterrows():
+            if i >= 50:
+                ai_scores.append(0)
+                continue
+                
+            sym = rrow["Stock"]
+            logger.info(f"[{i+1}/50] Checking AI Concall for {sym}")
+            
+            try:
+                # 1. Check recent cache (60 days)
+                cached = get_recent_concall_analysis(sym, max_age_days=60)
+                if cached:
+                    logger.info(f"   -> Using cached AI report")
+                    ai_data = cached
+                else:
+                    logger.info(f"   -> Fetching live AI report from NSE...")
+                    ai_data = fetch_and_analyze_concall(sym)
+                    
+                # 2. Apply Alpha Boost
+                score = 0
+                if ai_data and not "error" in ai_data:
+                    conf = ai_data.get("management_confidence")
+                    if conf:
+                        try:
+                            conf_val = int(str(conf).split('/')[0].strip())
+                            if conf_val >= 8: score = 15
+                            elif conf_val == 7: score = 10
+                            elif conf_val <= 4: score = -15
+                        except Exception: pass
+                        
+                ai_scores.append(score)
+                if score != 0:
+                    logger.info(f"   -> AI Boost: {score}")
+                    
+            except Exception as e:
+                logger.error(f"Failed AI check for {sym}: {e}")
+                ai_scores.append(0)
+                
+        final_df["AI Confidence Boost"] = ai_scores
+        
+        # Re-apply boosts to the final Fundamental Score
+        final_df["Fundamental Score"] = final_df["Fundamental Score"] + final_df["AI Confidence Boost"]
+        
+        # Resort based on new scores
+        final_df = final_df.sort_values(by=["Fundamental Score", "ROE %"], ascending=False).reset_index(drop=True)
+    except Exception as e:
+        logger.error(f"Failed to run AI Concall Integration: {e}")
+    # --------------------------------------------
+
     final_df.to_csv(OUTPUT_CSV, index=False)
     final_df.to_parquet(OUTPUT_PARQUET, index=False)
 

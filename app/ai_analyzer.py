@@ -107,8 +107,19 @@ def analyze_concall_text(text: str) -> dict:
                 logger.info(f"Attempting AI analysis with {model}...")
                 return _try_gemini_model(model, gemini_key, text)
             except Exception as e:
-                logger.warning(f"{model} failed: {e}")
-                errors.append(f"{model}: {str(e)}")
+                import time
+                err_str = str(e)
+                if "429" in err_str or "Quota" in err_str:
+                    logger.warning(f"{model} hit rate limit (429). Sleeping for 45s and retrying...")
+                    time.sleep(45)
+                    try:
+                        return _try_gemini_model(model, gemini_key, text)
+                    except Exception as e2:
+                        logger.warning(f"{model} failed after retry: {e2}")
+                        errors.append(f"{model} (Retry): {str(e2)}")
+                else:
+                    logger.warning(f"{model} failed: {e}")
+                    errors.append(f"{model}: {err_str}")
 
     # Fallback Chain 2: OpenAI Models
     if openai_key:

@@ -461,6 +461,23 @@ def get_cached_concall_analysis(symbol: str, pdf_url: str):
                 return row[0]
             return None
 
+def get_recent_concall_analysis(symbol: str, max_age_days: int = 60):
+    """Retrieves cached AI analysis for a symbol if it is less than max_age_days old."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT analysis_data
+                FROM ai_concall_cache_v3
+                WHERE symbol = %s AND created_at >= NOW() - INTERVAL '%s days'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (symbol, max_age_days))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            return None
+
 def save_concall_analysis(symbol: str, pdf_url: str, analysis_data: dict):
     """Saves AI analysis to the cache for a specific PDF url."""
     init_db()
