@@ -32,7 +32,7 @@ from config import (
     MAX_PRE_BREAKOUT_RED_CANDLES,
     MIN_STOCK_PRICE,
 )
-d
+
 
 
 logger = logging.getLogger(__name__)
