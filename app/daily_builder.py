@@ -60,11 +60,7 @@ def _mark_sent_today():
         logging.getLogger(__name__).warning(f"⚠️ Could not write send guard to DB: {e}")
 
 # ── LOGGING SETUP ────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+
 logger = logging.getLogger(__name__)
 
 # =====================================================================================
@@ -129,7 +125,7 @@ MIN_ROA_FIN       = 0.8
 
 # PATH A — non-financial
 HIGH_GROWTH_YOY    = 15.0
-HIGH_GROWTH_QOQ    =  5.0
+
 COMPOUNDER_YOY     =  3.0
 STEADY_YOY         = 10.0
 TURNAROUND_PROFIT  = 30.0
@@ -539,6 +535,18 @@ def classify_stock(row: pd.Series) -> dict | None:
 # =====================================================================================
 
 def main():
+    import os
+    from datetime import datetime, time as dt_time
+    from zoneinfo import ZoneInfo
+    from config import WATCHLIST_PATH
+    
+    ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    market_open = dt_time(9, 15) <= ist_now.time() <= dt_time(15, 30)
+    
+    if market_open and ist_now.weekday() < 5 and os.path.exists(WATCHLIST_PATH):
+        logger.warning("⏳ Market is open. Skipping daily builder to avoid unstable snapshot.")
+        return
+
     from database import upsert_scanner_health
     try:
         upsert_scanner_health("DAILY_BUILDER", "OK", error_msg=None)

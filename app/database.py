@@ -33,7 +33,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
 
-import psycopg2
+
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
@@ -381,18 +381,6 @@ def get_scanner_today_trades(scanner_name: str, today_str: str) -> list[dict]:
                 logger.exception(f"❌ get_scanner_today_trades failed for {scanner_name}")
                 return []
 
-
-def cleanup_old_alerts(days: int = None) -> None:
-    """
-    NO-OP — deletion permanently disabled for performance tracking integrity.
-
-    All alerts are retained indefinitely so win/loss/P&L history is never lost.
-    The `days` parameter is accepted for backward compatibility with scanner
-    call sites but has no effect.
-
-    To manually purge data if storage becomes a concern, run directly in Postgres
-    using an appropriate truncate or partition drop logic.
-    """
     logger.debug("🗑️  cleanup_old_alerts called — deletion disabled, all data retained.")
 
 

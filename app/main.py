@@ -15,6 +15,7 @@ import threading
 import logging
 import time
 import traceback
+import signal
 from zoneinfo import ZoneInfo
 from datetime import datetime, time as dt_time
 
@@ -313,6 +314,14 @@ def run_watchdog():
 # =====================================================================================
 
 if __name__ == "__main__":
+    def handle_sigterm(*args):
+        logger.info("🛑 SIGTERM received — container shutting down. Closing gracefuly...")
+        _telegram_notify("🛑 System shutting down (Railway container restart/stop).")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
     watchdog_thread = threading.Thread(target=run_watchdog, name="Watchdog", daemon=True)
     watchdog_thread.start()
 

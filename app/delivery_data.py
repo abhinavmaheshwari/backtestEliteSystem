@@ -44,13 +44,18 @@ def _get_robust_session() -> requests.Session:
     session.mount("https://", adapter)
     return session
 
-def _last_trading_date(reference: date) -> date:
-    d = reference - timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
+
+_delivery_cache = None
+_delivery_cache_date = None
 
 def fetch_previous_day_delivery() -> dict[str, float]:
+    global _delivery_cache, _delivery_cache_date
+    from datetime import datetime as _dt
+    today = _dt.now().date()
+    
+    if _delivery_cache is not None and _delivery_cache_date == today:
+        return _delivery_cache
+
     from datetime import datetime as _dt
     today = _dt.now().date()
     for days_back in range(1, 5):
@@ -60,6 +65,8 @@ def fetch_previous_day_delivery() -> dict[str, float]:
         result = fetch_delivery_data(candidate)
         if result:
             logger.info(f"📦 Previous-day delivery loaded | Date={candidate}")
+            _delivery_cache = result
+            _delivery_cache_date = today
             return result
     return {}
 

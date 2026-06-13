@@ -1,1 +1,1 @@
-worker: python app/live_scanner.py
+web: python app/main.py

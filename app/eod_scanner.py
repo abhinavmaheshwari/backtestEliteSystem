@@ -15,10 +15,11 @@ from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new, cleanup_old_alerts
+from database import init_db, save_alert_if_new
 from delivery_data import fetch_delivery_data
 from price_cache import fetch_watchlist_data
 from sl_target_helper import compute_sl_and_target
+from watchlist_cache import get_watchlist
 
 from sector_rotation import get_sector_scores
 
@@ -27,23 +28,18 @@ from config import (
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
-    DEDUP_DAYS,
     ADX_MIN_THRESHOLD,
     MAX_PRE_BREAKOUT_RED_CANDLES,
+    MIN_STOCK_PRICE,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+
 
 logger = logging.getLogger(__name__)
 
 IST        = ZoneInfo("Asia/Kolkata")
 CHUNK_SIZE = 10
 
-TIMEFRAME               = "1d"
 MIN_SIGNALS             = SCAN_CONFIG["1d"]["MIN_SIGNALS"]
 MIN_BODY_RATIO          = SCAN_CONFIG["1d"]["MIN_BODY_RATIO"]
 MIN_CLOSE_POSITION      = SCAN_CONFIG["1d"]["MIN_CLOSE_POSITION"]
@@ -54,7 +50,7 @@ MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]
 MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]             
 MIN_SCORE               = SCORE_THRESHOLDS["1d"]                   
 
-MIN_STOCK_PRICE             = 50.0
+# MIN_STOCK_PRICE imported from config (₹100)
 RSI_LOOKBACK_BARS           = 5    
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
 MAX_SINGLE_DAY_MOVE_PCT     = 15.0
@@ -64,7 +60,6 @@ GAP_LOOKBACK_BARS           = 10
 
 def start():
     init_db()
-    cleanup_old_alerts(days=DEDUP_DAYS)
     
     ist_now = datetime.now(IST)
     logger.info("=" * 80)
@@ -72,7 +67,11 @@ def start():
     logger.info("=" * 80)
 
     try:
-        watchlist = pd.read_parquet(WATCHLIST_PATH)
+        try:
+            watchlist = get_watchlist()
+        except Exception:
+            time.sleep(300)
+            continue
 
         delivery_map: dict[str, float] = {}
         all_ticker_data = {}
@@ -321,6 +320,7 @@ def start():
                     if "ATR" in ticker.columns and not pd.isna(latest.get("ATR"))
                     else None
                 )
+
 
                 score = calculate_score(
                     category=category,

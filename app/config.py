@@ -25,10 +25,12 @@ CHAT_ID   = os.getenv("CHAT_ID")
 _thread_eod      = os.getenv("THREAD_EOD")
 _thread_intraday = os.getenv("THREAD_INTRADAY")
 _thread_1h       = os.getenv("THREAD_1H")
+_thread_reversal = os.getenv("THREAD_REVERSAL")
 
 THREAD_EOD      = int(_thread_eod)      if _thread_eod      else None
 THREAD_INTRADAY = int(_thread_intraday) if _thread_intraday else None
 THREAD_1H       = int(_thread_1h)       if _thread_1h       else None
+THREAD_REVERSAL = int(_thread_reversal) if _thread_reversal else None
 
 # =====================================================================================
 # DATA DIRECTORY & PATHS
@@ -88,6 +90,7 @@ SCAN_CONFIG = {
 }
 
 ADX_MIN_THRESHOLD = 25
+MIN_STOCK_PRICE = 100.0    # No penny stocks — matches daily_builder MIN_PRICE
 
 DELIVERY_CONVICTION_THRESHOLDS = {
     "institutional": 60,
@@ -98,7 +101,8 @@ DELIVERY_CONVICTION_THRESHOLDS = {
 
 BATCH_DOWNLOAD_SIZE = 30
 YAHOO_TIMEOUT = 30
-DEDUP_DAYS = 7
+PRICE_CACHE_TTL_SECONDS = 180  # Raised to 3 mins to cover slow EOD + 1H tandem scans
+
 
 TELEGRAM_CHUNK_SIZE = 10
 TELEGRAM_RETRIES = 3

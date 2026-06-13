@@ -321,18 +321,3 @@ def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> dict[str, floa
     signals = _prune_redundant_signals(signals)
 
     return signals
-
-
-def get_signal_names(signals: dict[str, float]) -> list[str]:
-    """Convenience function: extract signal names from weighted scores dict."""
-    return list(signals.keys())
-
-
-def get_signal_strength(signals: dict[str, float], signal_name: str) -> float:
-    """Convenience function: get strength score for a specific signal."""
-    return signals.get(signal_name, 0.0)
-
-
-def get_total_signal_strength(signals: dict[str, float]) -> float:
-    """Convenience function: sum of all signal strengths."""
-    return sum(signals.values()) if signals else 0.0

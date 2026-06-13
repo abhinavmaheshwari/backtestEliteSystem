@@ -74,29 +74,7 @@ def breakout_lines(signals):
         for s in signals
     )
 
-# =====================================================================================
-# TREND STRUCTURE BLOCK
-# =====================================================================================
 
-def trend_structure_lines(alert):
-    lines = []
-    above_ema20  = alert.get("above_ema20")
-    above_sma50  = alert.get("above_sma50")
-    golden_cross = alert.get("golden_cross")
-
-    if above_ema20 is not None:
-        icon = "✅" if above_ema20 else "❌"
-        lines.append(f"{icon} Above EMA20")
-    if above_sma50 is not None:
-        icon = "✅" if above_sma50 else "❌"
-        lines.append(f"{icon} Above SMA50")
-    if golden_cross is not None:
-        icon = "✅" if golden_cross else "❌"
-        lines.append(f"{icon} Bullish 50/200 DMA (Golden Cross)")
-
-    return "\n".join(lines) if lines else "—"
-
-# =====================================================================================
 # SINGLE ALERT BLOCK
 # =====================================================================================
 
@@ -118,12 +96,8 @@ _BAR_LABEL = {
 }
 
 def format_alert(a, scanner="1H"):
-    tier     = score_tier(a["score"])
-    bar      = score_bar(a["score"])
     cat      = category_label(a["category"])
     bk       = breakout_lines(a["breakout_signals"])
-    trend    = trend_structure_lines(a)
-    bar_type = _BAR_LABEL.get(scanner, scanner)
 
     # ── VALUATION BADGE (PEG) ──
     peg = a.get("peg")
@@ -155,74 +129,64 @@ def format_alert(a, scanner="1H"):
     day_low      = a.get("day_low")
     delivery_pct = a.get("delivery_pct")   
 
-    price_lines = [f"Price:    ₹{a['price']}"]
-    if open_price is not None: price_lines.append(f"Open:     ₹{open_price}")
-    if day_high is not None:   price_lines.append(f"Day High: ₹{day_high}")
-    if day_low is not None:    price_lines.append(f"Day Low:  ₹{day_low}")
-    if "atr_stop" in a:
-        price_lines.append(f"Stop Loss: ₹{a['atr_stop']}")
-    if "target_price" in a:
-        price_lines.append(f"Target 1:  ₹{a['target_price']}  (primary)")
-        if a.get("target_2"):
-            price_lines.append(f"Target 2:  ₹{a['target_2']}")
-        if a.get("target_3"):
-            price_lines.append(f"Target 3:  ₹{a['target_3']}  (extended)")
-    if a.get("rr_ratio"):
-        price_lines.append(f"R:R Ratio: {a['rr_ratio']}:1")
 
-    price_block = "\n".join(price_lines)
 
     if delivery_pct is not None:
         if delivery_pct >= 60: deliv_label = "🏦 Institutional"
         elif delivery_pct >= 40: deliv_label = "📦 Positional"
         elif delivery_pct >= 25: deliv_label = "📬 Moderate"
         else: deliv_label = "🔄 Intraday churn"
-        delivery_line = f"Delivery:         {delivery_pct:.1f}%  {deliv_label}"
+        delivery_line = f"{delivery_pct:.1f}% {deliv_label}"
     else:
         delivery_line = None
 
     # ── TRAILING SL / EXIT NOTE ─────────────────────────────────────────────
     trail_note  = a.get("trail_note")
-    trail_block = f"\n💡 <b>Exit Plan:</b> {trail_note}" if trail_note else ""
 
     # ── ASSEMBLE FINAL MESSAGE ──
     lines = [
         _DIV,
-        f"Stock: <b>{a['symbol']}</b>{peg_badge}",
+        f"🚀 <b>{a['symbol']}</b> {peg_badge}",
+        _DIV,
+        f"<b>Category:</b> {cat}",
+        f"<b>Score:</b> {score_tier(score)}  {score_bar(score)}  ({score}/100)",
         "",
-        "Category:",
-        cat,
-        "",
-        "Technical Triggers:",
-        bk,
-        "",
-        price_block,
+        "<b>📊 Price Action:</b>",
+        f"├─ CMP:       ₹{a['price']}",
     ]
-    if trail_block:
-        lines.append(trail_block)
-    lines += [
-        "",
-        f"RSI:              {a['rsi']}",
-        f"Volume Expansion: {a['volume_ratio']}x",
-        f"Candle:           🟢 Bullish | Body {a['body_ratio']}%",
-    ]
+    if open_price is not None and day_high is not None and day_low is not None:
+        lines.append(f"├─ Day Range: ₹{day_low} - ₹{day_high}")
     if delivery_line:
-        lines.append(delivery_line)
+        lines.append(f"└─ Delivery:  {delivery_line}")
+    else:
+        lines[-1] = lines[-1].replace("├─", "└─")
 
+    lines.append("")
+    lines.append("<b>⚡ Triggers:</b>")
+    lines.append(bk)
+    
     if moat_block:
-        lines.append(moat_block)
+        lines.append("")
+        lines.append("<b>💎 Fundamentals:</b>")
+        lines.append(f"├─ YoY Growth: Rev +{yoy_rev}% | Profit +{yoy_profit}%")
+        lines.append(f"└─ Quality:    ROE {roe}%")
 
-    lines += [
-        "",
-        "Trend Structure:",
-        trend,
-        "",
-        "Setup Score:",
-        f"{a['score']}/100  {tier}",
-        bar,
-        "",
-        f"Bar: {bar_type}",
-    ]
+    lines.append("")
+    lines.append(f"<b>🎯 Execution (R:R {a.get('rr_ratio', 'N/A')}:1):</b>")
+    if "atr_stop" in a:
+        lines.append(f"├─ SL: ₹{a['atr_stop']}")
+    if "target_price" in a:
+        lines.append(f"├─ T1: ₹{a['target_price']}")
+        if a.get("target_2"):
+            lines.append(f"├─ T2: ₹{a['target_2']}")
+        if a.get("target_3"):
+            lines.append(f"├─ T3: ₹{a['target_3']}")
+    lines[-1] = lines[-1].replace("├─", "└─")
+    
+    if trail_note:
+        lines.append(f"💡 <i>{trail_note}</i>")
+    
+
     return "\n".join(lines)
 
 

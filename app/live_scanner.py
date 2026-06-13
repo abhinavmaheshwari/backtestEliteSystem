@@ -17,10 +17,11 @@ from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new, cleanup_old_alerts
+from database import init_db, save_alert_if_new
 from delivery_data import fetch_previous_day_delivery
 from price_cache import fetch_watchlist_data 
 from sl_target_helper import compute_sl_and_target
+from watchlist_cache import get_watchlist
 
 from sector_rotation import get_sector_scores
 
@@ -29,16 +30,12 @@ from config import (
     SCORE_THRESHOLDS,
     SCAN_CONFIG,
     BATCH_DOWNLOAD_SIZE,
-    DEDUP_DAYS,
     ADX_MIN_THRESHOLD,
     MAX_PRE_BREAKOUT_RED_CANDLES,
+    MIN_STOCK_PRICE,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +53,7 @@ MIN_RSI                 = SCAN_CONFIG["1h"]["MIN_RSI"]
 MAX_RSI                 = SCAN_CONFIG["1h"]["MAX_RSI"]
 MIN_SCORE               = SCORE_THRESHOLDS["1h"]
 
-MIN_STOCK_PRICE             = 50.0
+# MIN_STOCK_PRICE imported from config (₹100)
 RSI_LOOKBACK_BARS           = 3
 MAX_DISTANCE_FROM_52W_HIGH_PCT = 15.0
 MAX_SINGLE_CANDLE_MOVE_PCT  = 6.0
@@ -67,7 +64,6 @@ GAP_LOOKBACK_BARS           = 10
 
 def start():
     init_db()
-    cleanup_old_alerts(days=DEDUP_DAYS)
     
     prev_delivery_map    = fetch_previous_day_delivery()
     _delivery_fetch_date = datetime.now(IST).date()
@@ -99,15 +95,10 @@ def start():
         sleep_time = 300  
         try:
             try:
-                watchlist = pd.read_parquet(WATCHLIST_PATH)
+                watchlist = get_watchlist()
             except Exception:
-                try:
-                    from daily_builder import build_watchlist
-                    build_watchlist()
-                    watchlist = pd.read_parquet(WATCHLIST_PATH)
-                except Exception:
-                    time.sleep(300)
-                    continue
+                time.sleep(300)
+                continue
 
             # ── BATCH DOWNLOAD: 1H + DAILY CONTEXT (MTA) ────────────────────────────
             all_ticker_data = {}

@@ -401,13 +401,9 @@ class SectorRotationResult:
     scores:           dict[str, SectorScore]   # sector_name → SectorScore
     strong_sectors:   set[str]                 # LEADING + IMPROVING
     weak_sectors:     set[str]                 # WEAKENING + LAGGING
-    rotation_report:  str                      # Telegram-ready summary
     scan_date:        date
     nifty_return_pct: float
     errors:           list[str] = field(default_factory=list)
-
-    def sector_for(self, symbol: str) -> Optional[str]:
-        return NSE_SECTOR_MAP.get(symbol.strip().upper())
 
     def score_bonus_for(self, tv_sector: str) -> int:
         """
@@ -540,26 +536,6 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
     return results
 
 
-def _download_close_single(ticker: str) -> Optional[pd.Series]:
-    """Individual ticker fallback — used only when batch download fails for a ticker."""
-    try:
-        df = yf.download(
-            ticker,
-            period=DOWNLOAD_PERIOD,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            threads=False,
-        )
-        return _parse_close_series(df, ticker)
-    except Exception:
-        logger.exception(f"⚠️  _download_close_single({ticker}) failed")
-        return None
-
-
-# Legacy alias — keeps any external callers working unchanged.
-def _download_close(ticker: str) -> Optional[pd.Series]:
-    return _download_close_single(ticker)
 
 
 def _pct_return(series: pd.Series, lookback: int) -> Optional[float]:

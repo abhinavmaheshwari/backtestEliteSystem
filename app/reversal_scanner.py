@@ -10,17 +10,14 @@ from datetime import datetime
 from technical_indicators import apply_indicators
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new, cleanup_old_alerts
+from database import init_db, save_alert_if_new
 from price_cache import fetch_watchlist_data
-from config import WATCHLIST_PATH, DEDUP_DAYS, CLIMAX_VOLUME_LOOKBACK, MIN_CANDLE_RANGE_PCT
+from watchlist_cache import get_watchlist
+from config import WATCHLIST_PATH, CLIMAX_VOLUME_LOOKBACK, MIN_CANDLE_RANGE_PCT, MIN_STOCK_PRICE
 from sl_target_helper import compute_sl_and_target
 from delivery_data import fetch_previous_day_delivery
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+
 logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -34,7 +31,7 @@ RSI_CURL_MIN           = 40
 MIN_VOLUME_RATIO       = 1.5
 
 # ── QUALITY FILTERS (high-quality stocks only) ───────────────────────────────────────
-MIN_STOCK_PRICE        = 100.0    # no penny stocks
+# MIN_STOCK_PRICE imported from config (₹100)
 MIN_AVG_DAILY_VOLUME   = 300_000  # ~₹3Cr+ liquidity at ₹100 price
 MIN_ROE                = 12.0     # return on equity threshold (%)
 MIN_YOY_REVENUE_GROWTH = 8.0      # min revenue growth % (skip shrinking businesses)
@@ -152,7 +149,7 @@ def _score_reversal(
 
 def _run_scan():
     """Execute a single reversal scan pass. Called inside the scheduling loop."""
-    cleanup_old_alerts(days=DEDUP_DAYS)
+    init_db()
 
     ist_now = datetime.now(IST)
     logger.info("=" * 80)
@@ -161,7 +158,11 @@ def _run_scan():
 
     prev_delivery_map = fetch_previous_day_delivery()
 
-    watchlist = pd.read_parquet(WATCHLIST_PATH)
+    try:
+        watchlist = get_watchlist()
+    except Exception:
+        logger.error("Failed to load watchlist, skipping run.")
+        return
     # Pulling 1y data to ensure we catch the 52W High correctly
     all_ticker_data = fetch_watchlist_data(watchlist, period="1y", interval="1d")
 
@@ -404,6 +405,7 @@ def _run_scan():
                 "trail_note":       sl_result.get("trail_note")
             }
         }
+
 
         saved = save_alert_if_new(
             symbol,

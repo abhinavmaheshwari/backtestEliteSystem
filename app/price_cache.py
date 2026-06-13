@@ -9,14 +9,18 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from config import BATCH_DOWNLOAD_SIZE
+try:
+    from config import BATCH_DOWNLOAD_SIZE, PRICE_CACHE_TTL_SECONDS
+except ImportError:
+    from config import BATCH_DOWNLOAD_SIZE
+    PRICE_CACHE_TTL_SECONDS = 90
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 _cache: dict[tuple, dict] = {}
 _lock = threading.Lock()
-CACHE_TTL_SECONDS = 90
+CACHE_TTL_SECONDS = PRICE_CACHE_TTL_SECONDS
 MAX_RETRIES = 3
 
 def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval: str = "15m") -> dict[str, pd.DataFrame]:
@@ -38,12 +42,7 @@ def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval:
 
     return result
 
-def invalidate(interval: str = None, period: str = None):
-    with _lock:
-        if interval and period:
-            _cache.pop((interval, period), None)
-        else:
-            _cache.clear()
+
 
 def _download_single_ticker(sym: str, period: str, interval: str) -> pd.DataFrame | None:
     """Fallback mechanism if batch downloading repeatedly fails."""

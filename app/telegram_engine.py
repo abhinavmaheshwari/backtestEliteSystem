@@ -56,6 +56,11 @@ try:
 except ImportError:
     THREAD_1H = None
 
+try:
+    from config import THREAD_REVERSAL
+except ImportError:
+    THREAD_REVERSAL = None
+
 # =====================================================================================
 # THREAD ROUTING — scan_type → message_thread_id
 # =====================================================================================
@@ -64,6 +69,7 @@ THREAD_MAP = {
     "EOD":      THREAD_EOD,
     "INTRADAY": THREAD_INTRADAY,
     "1H":       THREAD_1H,
+    "REVERSAL": THREAD_REVERSAL,
 }
 
 # =====================================================================================

@@ -11,7 +11,7 @@
 #     2. ADDITIVE SCORING — five independent components, each with a max point budget
 #
 # SCORING BREAKDOWN (max 100 + bonuses):
-#   Category weight   — 30 pts   (stock quality tier: Elite/High Growth/Mature)
+#   Category weight   — 30 pts   (Wealth Compounder/Long Term Compounder/Consistent Performer/Blue Chip Stable/Debt-Free Cash Generator/Capital Efficient/Efficient Lender/Dividend Aristocrat/High Momentum/Recovery Play)
 #   Breakout signals  — 25 pts   (signal count × 8, capped at 3; +1 for 52W signal)
 #   RSI quality       — 15 pts   (sweet-spot band + direction bonus)
 #   Volume quality    — 20 pts   (surge intensity)

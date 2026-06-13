@@ -149,40 +149,6 @@ def _adx_atr_scale(adx: Optional[float], atr_pct: Optional[float], base: float) 
     return round(m, 3)
 
 
-def _cluster_support(
-    swing_lows: list[Optional[float]],
-    entry: float,
-    cluster_pct: float = 1.0,
-) -> tuple[Optional[float], str]:
-    """
-    v5 NEW: Multi-swing clustering for SL placement.
-
-    Scans multiple swing lows — if 2+ cluster within cluster_pct% of each other,
-    the cluster zone is a much stronger support than any single point.
-
-    Returns the lowest point of the cluster (for buffer placement below it)
-    and a label describing the cluster.
-    """
-    # Filter valid levels below entry
-    valid = sorted(
-        [float(v) for v in swing_lows if v is not None and _safe(v) is not None and float(v) < entry],
-        reverse=True,  # nearest to entry first
-    )
-
-    if len(valid) < 2:
-        return None, "none"
-
-    # Check if any 2 consecutive levels cluster within cluster_pct%
-    for i in range(len(valid) - 1):
-        level_a = valid[i]
-        level_b = valid[i + 1]
-        if level_a > 0:
-            gap_pct = abs(level_a - level_b) / level_a * 100
-            if gap_pct <= cluster_pct:
-                cluster_bottom = min(level_a, level_b)
-                return cluster_bottom, f"swing cluster (₹{level_b:.2f}–₹{level_a:.2f}, gap {gap_pct:.1f}%)"
-
-    return None, "none"
 
 
 def _cap_target(
