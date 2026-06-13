@@ -300,7 +300,7 @@ def get_all_alerts() -> list[dict]:
                     scanner, category, entry_price, stop_loss, target_price,
                     signals, score, rsi, volume_ratio,
                     status, exit_price, pnl_pct, closed_at,
-                    capital_allocated, shares_bought, pnl_rs
+                    capital_allocated, shares_bought, pnl_rs, context
                 FROM alerts
                 ORDER BY alert_time DESC
             """)

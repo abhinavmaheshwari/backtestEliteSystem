@@ -1216,7 +1216,7 @@ function toggleTheme() {
 
 function exportCSV() {
   if (!window._currentFilteredTrades) return;
-  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Signals', 'Entry Price', 'Stop Loss', 'Target', 'Exit Price', 'P&L %', 'P&L ₹', 'Capital', 'Shares', 'RSI', 'Vol Ratio', 'Status', 'Days Held', 'Score']];
+  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Signals', 'Entry Price', 'Stop Loss', 'Target', 'Exit Price', 'P&L %', 'P&L ₹', 'Capital', 'Shares', 'RSI', 'Vol Ratio', 'Status', 'Days Held', 'Score', 'Filters/Context']];
   window._currentFilteredTrades.forEach(t => {
     const pnl_rs = t.status === 'OPEN' && t.shares_bought ? ((t.current_price || t.entry_price) - t.entry_price) * t.shares_bought : (t.pnl_rs || '');
     rows.push([
@@ -1237,7 +1237,8 @@ function exportCSV() {
       t.volume_ratio || '',
       t.status || '',
       t.days_held || '',
-      t.score || ''
+      t.score || '',
+      t.context ? JSON.stringify(t.context) : ''
     ]);
   });
   const csv = rows.map(r => r.join(',')).join('\n');

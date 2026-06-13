@@ -280,6 +280,7 @@ def build_performance_data():
             "rsi":           _f(row.get("rsi")),
             "volume_ratio":  _f(row.get("volume_ratio")),
             "closed_at":     row.get("closed_at"),        # ISO timestamp when SL/Target locked
+            "context":       row.get("context"),          # Diagnostic filters and context
             "_db_closed":    row.get("status") in ("WIN", "LOSS"),  # internal flag
         })
 
