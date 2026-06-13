@@ -415,10 +415,13 @@
               <th data-col="entry_date">Date</th>
               <th data-col="scanner">Scanner</th>
               <th data-col="category">Category</th>
-              <th data-col="entry_price">Entry ₹</th>
-              <th data-col="current_price">CMP ₹</th>
-              <th data-col="pnl_pct">P&amp;L %</th>
-              <th data-col="score">Score</th>
+              <th data-col="entry_price" style="cursor:pointer">Entry ₹</th>
+              <th data-col="current_price" style="cursor:pointer">CMP ₹</th>
+              <th data-col="capital_allocated" style="cursor:pointer">Capital ₹</th>
+              <th data-col="shares_bought" style="cursor:pointer">Shares</th>
+              <th data-col="pnl_pct" style="cursor:pointer" class="desc">P&amp;L %</th>
+              <th data-col="pnl_rs" style="cursor:pointer">P&amp;L ₹</th>
+              <th data-col="score" style="cursor:pointer">Score</th>
               <th data-col="days_held">Days</th>
               <th data-col="status" class="sort-asc">Status</th>
             </tr>
@@ -763,7 +766,10 @@ function buildTradeRows(trades, maxAbs, prefix) {
       <td style="color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-body)">${t.category||'—'}</td>
       <td>${fmt(t.entry_price)}</td>
       <td>${fmt(t.current_price)}</td>
+      <td>${fmt(t.capital_allocated)}</td>
+      <td>${t.shares_bought||'—'}</td>
       <td><div class="pnl-wrap"><div class="pnl-bar-track"><div class="pnl-bar-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="pnl-text ${pctClass(t.pnl_pct)}">${pct(t.pnl_pct)}</span></div></td>
+      <td class="${pctClass(t.pnl_rs)}">${t.pnl_rs != null ? fmt(t.pnl_rs) : '—'}</td>
       <td>${sc}</td>
       <td style="color:var(--muted)">${t.days_held!=null?t.days_held+'d':'—'}</td>
       <td>${badgeHtml(t.status)}</td>
@@ -841,8 +847,8 @@ function renderMiniTable(trades) {
   return `<table>
     <thead><tr>
       <th style="width:20px"></th>
-      <th>Symbol</th><th>Date &amp; Time</th><th>Scanner</th><th>Category</th>
-      <th>Entry \u20b9</th><th>CMP \u20b9</th><th>P&amp;L %</th><th>Score</th><th>Days</th><th>Status</th>
+      <th>Symbol</th><th data-col="entry_date">Date &amp; Time</th><th>Scanner</th><th>Category</th>
+      <th>Entry \u20b9</th><th>CMP \u20b9</th><th>Capital \u20b9</th><th>Shares</th><th>P&amp;L %</th><th>P&amp;L \u20b9</th><th>Score</th><th>Days</th><th>Status</th>
     </tr></thead>
     <tbody>${buildTradeRows(trades, maxAbs, 'drill-')}</tbody>
   </table>`;
