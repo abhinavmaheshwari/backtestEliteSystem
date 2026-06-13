@@ -26,11 +26,15 @@ APP_DIR        = os.path.dirname(os.path.abspath(__file__))
 PERF_JSON_PATH = os.path.join(DATA_DIR, "performance_data.json")
 
 # ── Locate the dashboard HTML ────────────────────────────────────────────────────────
-_DASHBOARD_CANDIDATES = [
-    os.path.join(APP_DIR,  "performance_dashboard.html"),
-    os.path.join(BASE_DIR, "performance_dashboard.html"),
-]
-DASHBOARD_HTML_PATH = next((p for p in _DASHBOARD_CANDIDATES if os.path.exists(p)), None)
+def get_html_path(filename):
+    candidates = [
+        os.path.join(APP_DIR, filename),
+        os.path.join(BASE_DIR, filename),
+    ]
+    return next((p for p in candidates if os.path.exists(p)), None)
+
+USER_DASHBOARD_PATH = get_html_path("user_dashboard.html")
+ADMIN_DASHBOARD_PATH = get_html_path("admin_dashboard.html")
 
 app = Flask(__name__)
 
@@ -74,13 +78,23 @@ def add_headers(response):
 
 @app.route("/")
 def index():
-    """Serve the performance dashboard HTML."""
-    if DASHBOARD_HTML_PATH and os.path.exists(DASHBOARD_HTML_PATH):
-        return send_file(DASHBOARD_HTML_PATH)
+    """Serve the user dashboard HTML."""
+    if USER_DASHBOARD_PATH and os.path.exists(USER_DASHBOARD_PATH):
+        return send_file(USER_DASHBOARD_PATH)
     return Response(
         "<h2 style='font-family:monospace;color:#00e5a0;background:#0b0e14;margin:0;padding:40px'>"
-        "⚠️ performance_dashboard.html not found.<br><br>"
-        "Place it in <code>app/</code> or the project root, then redeploy.</h2>",
+        "⚠️ user_dashboard.html not found.</h2>",
+        mimetype="text/html",
+    )
+
+@app.route("/admin")
+def admin_index():
+    """Serve the admin dashboard HTML."""
+    if ADMIN_DASHBOARD_PATH and os.path.exists(ADMIN_DASHBOARD_PATH):
+        return send_file(ADMIN_DASHBOARD_PATH)
+    return Response(
+        "<h2 style='font-family:monospace;color:#00e5a0;background:#0b0e14;margin:0;padding:40px'>"
+        "⚠️ admin_dashboard.html not found.</h2>",
         mimetype="text/html",
     )
 
@@ -237,7 +251,8 @@ def start_dashboard_server():
     # If PORT is missing the default 8080 is used, but Railway will always set it.
     port = int(os.getenv("PORT", 8080))
     logger.info(f"🌐 Dashboard server starting on port {port}")
-    logger.info(f"🌐 Serving dashboard HTML from: {DASHBOARD_HTML_PATH or 'NOT FOUND'}")
+    logger.info(f"🌐 Serving User HTML from: {USER_DASHBOARD_PATH or 'NOT FOUND'}")
+    logger.info(f"🌐 Serving Admin HTML from: {ADMIN_DASHBOARD_PATH or 'NOT FOUND'}")
     logger.info(f"🌐 Performance JSON path: {PERF_JSON_PATH}")
     # use_reloader=False is critical — Flask reloader forks the process and
     # breaks Railway's single-process model and our threading setup.
