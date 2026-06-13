@@ -523,8 +523,7 @@ const fmtDetailTime = ts => {
 };
 
 // ── LOAD DATA
-async 
-  function openChart(symbol) {
+function openChart(symbol) {
     document.getElementById('tvModal').style.display = 'flex';
     document.getElementById('tv-container').innerHTML = '';
     new TradingView.widget({
