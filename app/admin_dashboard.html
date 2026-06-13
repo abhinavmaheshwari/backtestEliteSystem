@@ -346,11 +346,11 @@
 
     <!-- PORTFOLIO SIMULATOR -->
     <div style="display:flex; justify-content:flex-end; gap:12px; margin-bottom:16px; align-items:center;">
-      <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px;">Portfolio Settings:</span>
+      <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px;">Portfolio Simulator:</span>
       <span style="font-size:11px; color:var(--muted);">Capital (₹)</span>
-      <input id="simCapital" type="number" value="100000" style="width:100px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
-      <span style="font-size:11px; color:var(--muted);">Risk %</span>
-      <input id="simRisk" type="number" value="2" step="0.5" style="width:70px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
+      <input id="simCapital" type="number" value="500000" style="width:100px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
+      
+      
       <div id="simResult" style="margin-left:16px; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text); padding:6px 12px; background:var(--card2); border-radius:6px; border:1px solid var(--border);">Est. P&amp;L: —</div>
     </div>
 
@@ -367,7 +367,7 @@
     </div>
 
     <!-- EQUITY CURVE -->
-    <div class="section-label" style="margin-top:20px;">Equity Curve (Simulated)</div>
+    <div class="section-label" style="margin-top:20px;">Equity Curve (Simulator)</div>
     <div class="card" style="margin-bottom:28px;">
       <canvas id="equityChart" height="70"></canvas>
     </div>
@@ -954,7 +954,7 @@ function renderCategoryStats() {
 }
 
 function updateSim() {
-  const cap = parseFloat(document.getElementById('simCapital').value) || 100000;
+  const cap = parseFloat(document.getElementById('simCapital').value) || 500000;
   
   let closedTrades = ALL_TRADES.filter(t => ['WIN','LOSS'].includes(t.status));
   closedTrades.sort((a,b) => {
@@ -966,7 +966,10 @@ function updateSim() {
   let currentEquity = cap;
   
   closedTrades.forEach(t => {
-    currentEquity += (t.pnl_rs || 0);
+    let allocPct = (t.score >= 90) ? 0.15 : 0.10;
+    let capitalForTrade = currentEquity * allocPct;
+    let simulatedProfit = capitalForTrade * ((t.pnl_pct || 0) / 100);
+    currentEquity += simulatedProfit;
   });
 
   let totalNet = currentEquity - cap;
@@ -974,20 +977,22 @@ function updateSim() {
   let totalFloating = 0;
   let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
   openTrades.forEach(t => {
-    if (t.shares_bought) {
-      totalFloating += (t.current_price - t.entry_price) * t.shares_bought;
-    }
+    let allocPct = (t.score >= 90) ? 0.15 : 0.10;
+    let capitalForTrade = currentEquity * allocPct;
+    let floatingPct = ((t.current_price - t.entry_price) / t.entry_price);
+    let simulatedFloating = capitalForTrade * floatingPct;
+    totalFloating += simulatedFloating;
   });
 
   const resEl = document.getElementById('simResult');
   const resEl2 = document.getElementById('simNetPnl');
   const netText = (totalNet>=0?'+':'') + '₹' + Math.round(totalNet).toLocaleString('en-IN');
   if(resEl) {
-    resEl.textContent = 'Net P&L: ' + netText;
+    resEl.textContent = 'Sim P&L: ' + netText;
     resEl.style.color = totalNet >= 0 ? 'var(--accent)' : 'var(--warn)';
   }
   if(resEl2) {
-    resEl2.textContent = 'Net Realized: ' + netText;
+    resEl2.textContent = 'Est. Net P&L: ' + netText;
     resEl2.style.color = totalNet >= 0 ? 'var(--accent)' : 'var(--warn)';
   }
   const floatEl = document.getElementById('simFloating');
@@ -1009,7 +1014,7 @@ function renderEquityCurve() {
     return da.localeCompare(db);
   });
   
-  let cap = parseFloat(document.getElementById('simCapital').value) || 100000;
+      let cap = parseFloat(document.getElementById('simCapital').value) || 500000;
   let equity = cap;
   let peakEquity = cap;
   
@@ -1017,21 +1022,25 @@ function renderEquityCurve() {
   let dataPoints = [equity];
   
   closedTrades.forEach(t => {
-    equity += (t.pnl_rs || 0);
+    let allocPct = (t.score >= 90) ? 0.15 : 0.10;
+    let capitalForTrade = equity * allocPct;
+    let simulatedProfit = capitalForTrade * ((t.pnl_pct || 0) / 100);
+    equity += simulatedProfit;
+    
     if (equity > peakEquity) peakEquity = equity;
     labels.push((t.closed_at || t.entry_date).split('T')[0]);
     dataPoints.push(equity);
   });
 
-  // Calculate live floating PnL on top of closed equity
   let totalFloating = 0;
   let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
   openTrades.forEach(t => {
-    if (t.shares_bought) {
-      totalFloating += (t.current_price - t.entry_price) * t.shares_bought;
-    }
+    let allocPct = (t.score >= 90) ? 0.15 : 0.10;
+    let capitalForTrade = equity * allocPct;
+    let floatingPct = ((t.current_price - t.entry_price) / t.entry_price);
+    let simulatedFloating = capitalForTrade * floatingPct;
+    totalFloating += simulatedFloating;
   });
-
   let finalEquity = equity + totalFloating;
   if (finalEquity > peakEquity) peakEquity = finalEquity;
   
