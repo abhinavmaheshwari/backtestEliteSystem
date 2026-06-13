@@ -1387,26 +1387,25 @@ async function generateAIModal() {
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    const tableRows = document.querySelectorAll('tbody tr');
-    const symbols = new Set();
-    tableRows.forEach(row => {
-        const sym = row.querySelector('.symbol-col');
-        if(sym) symbols.add(sym.innerText.trim());
-    });
-    
-    const datalist = document.createElement('datalist');
-    datalist.id = 'tickerList';
-    symbols.forEach(sym => {
-        const option = document.createElement('option');
-        option.value = sym;
-        datalist.appendChild(option);
-    });
-    document.body.appendChild(datalist);
-    
-    const searchBox = document.getElementById('searchBox');
-    if(searchBox) searchBox.setAttribute('list', 'tickerList');
-    
-    const aiInput = document.getElementById('aiModalTicker');
-    if(aiInput) aiInput.setAttribute('list', 'tickerList');
+    // Fetch all NSE tickers for autocomplete
+    fetch('/api/all_tickers')
+        .then(res => res.json())
+        .then(symbols => {
+            const datalist = document.createElement('datalist');
+            datalist.id = 'tickerList';
+            symbols.forEach(sym => {
+                const option = document.createElement('option');
+                option.value = sym;
+                datalist.appendChild(option);
+            });
+            document.body.appendChild(datalist);
+            
+            const searchBox = document.getElementById('searchBox');
+            if(searchBox) searchBox.setAttribute('list', 'tickerList');
+            
+            const aiInput = document.getElementById('aiModalTicker');
+            if(aiInput) aiInput.setAttribute('list', 'tickerList');
+        })
+        .catch(err => console.error("Failed to load ticker list", err));
 });
 </script>

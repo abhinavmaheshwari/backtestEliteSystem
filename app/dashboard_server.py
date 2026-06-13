@@ -336,7 +336,20 @@ def api_notices(symbol):
         logger.error(f"Failed to fetch notices for {symbol}: {e}")
         return jsonify([])
 
-@app.route("/api/concall_ai/<symbol>")
+@app.route('/api/all_tickers', methods=['GET'])
+def api_all_tickers():
+    """Returns a list of all active NSE symbols for frontend autocomplete."""
+    try:
+        from app.watchlist_cache import get_watchlist
+        df = get_watchlist()
+        if 'SYMBOL' in df.columns:
+            return jsonify(df['SYMBOL'].dropna().unique().tolist())
+        return jsonify([])
+    except Exception as e:
+        logger.error(f"Failed to fetch tickers: {e}")
+        return jsonify([])
+
+@app.route('/api/concall_ai/<symbol>', methods=['GET'])
 def api_concall_ai(symbol):
     """Fetches the latest Concall transcript from NSE, parses the PDF, and uses AI to summarize it."""
     yf_symbol = symbol.replace('.NS', '')
