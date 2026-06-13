@@ -385,6 +385,17 @@ def api_concall_ai(symbol):
         if not target_pdf:
             return jsonify({"error": "No recent concall transcripts or investor presentations found on NSE."}), 404
             
+        # Check Cache
+        try:
+            from app.database import get_cached_concall_analysis, save_concall_analysis
+        except ImportError:
+            from database import get_cached_concall_analysis, save_concall_analysis
+            
+        cached_data = get_cached_concall_analysis(symbol, target_pdf)
+        if cached_data:
+            logger.info(f"Returning CACHED AI analysis for {symbol}")
+            return jsonify(cached_data)
+            
         # Parse the PDF
         import sys
         if os.path.dirname(__file__) not in sys.path:
@@ -411,6 +422,9 @@ def api_concall_ai(symbol):
         if "error" in ai_data:
             return jsonify(ai_data), 500
             
+        # Save to Cache
+        save_concall_analysis(symbol, target_pdf, ai_data)
+        
         return jsonify(ai_data)
         
     except Exception as e:

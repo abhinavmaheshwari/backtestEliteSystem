@@ -146,6 +146,17 @@ def init_db():
                     )
                 """)
 
+                # ── AI Concall Cache table ─────────────────────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ai_concall_cache (
+                        id            SERIAL PRIMARY KEY,
+                        symbol        TEXT NOT NULL,
+                        pdf_url       TEXT UNIQUE NOT NULL,
+                        analysis_data JSONB NOT NULL,
+                        created_at    TEXT NOT NULL DEFAULT (now()::TEXT)
+                    )
+                """)
+
                 # ── Trade analytics view mapping JSONB context to columns ───────────
                 cur.execute("""
                     CREATE OR REPLACE VIEW v_trade_analytics AS
@@ -433,3 +444,37 @@ def get_system_state(key: str) -> Optional[str]:
             except Exception:
                 logger.exception(f"❌ get_system_state failed for key={key}")
                 return None
+
+# ── AI CONCALL CACHE ────────────────────────────────────────────────────────
+def get_cached_concall_analysis(symbol: str, pdf_url: str):
+    """Retrieves cached AI analysis for a specific PDF url."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT analysis_data
+                FROM ai_concall_cache
+                WHERE symbol = %s AND pdf_url = %s
+            """, (symbol, pdf_url))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            return None
+
+def save_concall_analysis(symbol: str, pdf_url: str, analysis_data: dict):
+    """Saves AI analysis to the cache for a specific PDF url."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                import json
+                cur.execute("""
+                    INSERT INTO ai_concall_cache (symbol, pdf_url, analysis_data)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (pdf_url) DO UPDATE
+                    SET analysis_data = EXCLUDED.analysis_data,
+                        created_at = now()::TEXT
+                """, (symbol, pdf_url, json.dumps(analysis_data)))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to save concall cache for {symbol}: {e}")
