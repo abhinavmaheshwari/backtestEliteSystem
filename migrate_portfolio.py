@@ -4,11 +4,14 @@ import sys
 # Ensure app path is loaded
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import get_connection
+from app.database import get_connection, init_db
 from app.portfolio_engine import BASE_CAPITAL
 
 def run_migration():
     print("Starting Portfolio Migration...")
+    
+    # Ensure database columns exist before migrating
+    init_db()
     
     with get_connection() as conn:
         with conn.cursor() as cur:
