@@ -561,7 +561,7 @@ function openChart(symbol) {
         if (data.length === 0) {
           html = '<div style="font-size:11px;color:var(--muted);margin-top:4px;">No recent news found.</div>';
         } else {
-          html = '<div style="display:flex; flex-direction:column; gap:12px;">';
+          html = '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:24px;">';
           data.forEach(item => {
             const date = new Date(item.date).toLocaleDateString('en-IN');
             html += `<div>
@@ -896,7 +896,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
               <a href="https://in.tradingview.com/chart/?symbol=NSE:${t.symbol}" target="_blank" style="color:var(--muted);text-decoration:none;font-size:10px;font-weight:600;">Browser Chart ↗</a>
             </div>
           </div>
-                    <div class="detail-item" style="grid-column: span 3; min-width: 300px; padding-right:20px;">
+                    <div class="detail-item" style="grid-column: 1 / -1; padding-top: 16px; border-top: 1px dashed rgba(0,212,161,.15);">
             <div class="detail-label" style="color:var(--accent);">Live Catalysts</div>
             <div class="detail-val" style="margin-top:4px; max-height:150px; overflow-y:auto; padding-right:8px;">
               ${(window.NEWS_CACHE && window.NEWS_CACHE[t.symbol]) ? window.NEWS_CACHE[t.symbol] : `
