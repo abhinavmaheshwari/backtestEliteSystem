@@ -456,6 +456,36 @@
     <div class="section-label">Scanner Health</div>
     <div class="scanner-grid" id="scannerGrid" style="margin-bottom:28px"></div>
     
+    <!-- FUNDAMENTAL WATCHLIST -->
+    <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>Elite Fundamental Watchlist (Long-Term Wealth)</span>
+        <button class="filter-btn" style="background:var(--accent); color:#fff; border:none; margin-bottom:8px;" onclick="window.location.href='/api/download_shortlist'">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download CSV
+        </button>
+    </div>
+    <div class="card" style="margin-bottom:28px">
+      <div class="filter-bar">
+        <input type="text" id="wlSearch" class="search-input" placeholder="Search symbol or sector..." oninput="renderWatchlist()">
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="cursor:pointer;" onclick="sortWatchlist('Stock')">Stock <span id="wl-sort-Stock"></span></th>
+              <th style="cursor:pointer;" onclick="sortWatchlist('Sector')">Sector <span id="wl-sort-Sector"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('CMP')">CMP <span id="wl-sort-CMP"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Market Cap Cr')">Market Cap (Cr) <span id="wl-sort-Market_Cap_Cr"></span></th>
+              <th style="cursor:pointer;" onclick="sortWatchlist('Category')">Category <span id="wl-sort-Category"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Total Points')">Pts <span id="wl-sort-Total_Points"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Alpha Score')">Alpha <span id="wl-sort-Alpha_Score"></span></th>
+            </tr>
+          </thead>
+          <tbody id="watchlistBody"></tbody>
+        </table>
+      </div>
+    </div>
+    
     <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid var(--border); padding-bottom:8px; margin-bottom:16px;">
       <h2 style="font-size:16px; font-weight:600; letter-spacing:-0.2px; color:var(--text); margin:0;">Database Exports</h2>
       <div style="font-size:13px; color:var(--muted)">Raw CSV extracts</div>
@@ -1590,6 +1620,8 @@ async function initDashboard() {
 
   document.getElementById('loading').style.display = 'none';
   document.getElementById('main').style.display = 'block';
+
+  loadWatchlist();
   document.getElementById('gen-time').textContent = 'Generated: ' + (data.generated_at
     ? new Date(data.generated_at).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}) : '—');
 
@@ -1626,6 +1658,89 @@ async function initDashboard() {
 // Trigger check
 if (checkViewerName()) {
   initDashboard();
+}
+
+let WATCHLIST_DATA = [];
+let wlSortCol = 'Alpha Score';
+let wlSortAsc = false;
+
+async function loadWatchlist() {
+    try {
+        const r = await fetch('/api/shortlist');
+        if (r.ok) {
+            WATCHLIST_DATA = await r.json();
+            renderWatchlist();
+        }
+    } catch(e) { console.error('Failed to load watchlist', e); }
+}
+
+function sortWatchlist(col) {
+    if (wlSortCol === col) {
+        wlSortAsc = !wlSortAsc;
+    } else {
+        wlSortCol = col;
+        wlSortAsc = false;
+    }
+    document.querySelectorAll('[id^="wl-sort-"]').forEach(el => el.textContent = '');
+    const ind = document.getElementById('wl-sort-' + col.replace(/ /g, '_'));
+    if (ind) ind.textContent = wlSortAsc ? '↑' : '↓';
+    
+    renderWatchlist();
+}
+
+function renderWatchlist() {
+    const q = document.getElementById('wlSearch').value.toUpperCase();
+    let data = WATCHLIST_DATA.filter(d => 
+        (d.Stock && d.Stock.toUpperCase().includes(q)) || 
+        (d.Sector && d.Sector.toUpperCase().includes(q)) ||
+        (d.Category && d.Category.toUpperCase().includes(q))
+    );
+    
+    data.sort((a,b) => {
+        let va = a[wlSortCol];
+        let vb = b[wlSortCol];
+        if (va == null) va = wlSortAsc ? Infinity : -Infinity;
+        if (vb == null) vb = wlSortAsc ? Infinity : -Infinity;
+        
+        if (typeof va === 'string' && typeof vb === 'string') {
+            return wlSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        return wlSortAsc ? (va - vb) : (vb - va);
+    });
+    
+    const tbody = document.getElementById('watchlistBody');
+    if(!data.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted)">No data available or no match found</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = data.map(d => {
+        let catsHtml = '';
+        if (d.Category) {
+            catsHtml = d.Category.split('+').map(c => {
+                c = c.trim();
+                let col = 'var(--muted)';
+                if(c==='Mega-Cap Safety') col='#3b82f6';
+                if(c.includes('Growth')) col='var(--accent)';
+                if(c.includes('Turnaround')) col='#f59e0b';
+                if(c.includes('Value')) col='#8b5cf6';
+                return `<span style="font-size:10px; padding:2px 6px; border-radius:4px; border:1px solid ${col}; color:${col}; margin-right:4px;">${c}</span>`;
+            }).join('');
+        }
+        return `<tr>
+          <td>
+            <a href="https://in.tradingview.com/chart/?symbol=NSE:${d.Stock}" target="_blank" style="color:var(--text); text-decoration:none; font-weight:600;">
+                ${d.Stock}
+            </a>
+          </td>
+          <td style="color:var(--muted)">${d.Sector || '-'}</td>
+          <td style="text-align:right">₹${d.CMP ? d.CMP.toLocaleString('en-IN') : '-'}</td>
+          <td style="text-align:right">${d['Market Cap Cr'] ? d['Market Cap Cr'].toLocaleString('en-IN') : '-'}</td>
+          <td>${catsHtml}</td>
+          <td style="text-align:right; font-weight:600;">${d['Total Points'] || 0}</td>
+          <td style="text-align:right; color:var(--accent); font-weight:700;">${d['Alpha Score'] || 0}</td>
+        </tr>`;
+    }).join('');
 }
 
       // Fetch indices

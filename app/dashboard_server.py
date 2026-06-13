@@ -247,6 +247,45 @@ def api_summary():
     return jsonify({"error": "No data yet"}), 404
 
 
+@app.route("/api/shortlist")
+def api_shortlist():
+    """Returns the elite fundamental watchlist data as JSON."""
+    from config import WATCHLIST_PATH
+    import pandas as pd
+    try:
+        if not os.path.exists(WATCHLIST_PATH):
+            return jsonify([])
+        df = pd.read_parquet(WATCHLIST_PATH)
+        df = df.replace([pd.NA, float('inf'), float('-inf')], None)
+        df = df.where(pd.notnull(df), None)
+        return jsonify(df.to_dict(orient="records"))
+    except Exception as e:
+        logger.error(f"Failed to load shortlist JSON: {e}")
+        return jsonify([])
+
+@app.route("/api/download_shortlist")
+def api_download_shortlist():
+    """Serves the elite fundamental watchlist as a CSV file."""
+    from config import WATCHLIST_PATH
+    import pandas as pd
+    try:
+        if not os.path.exists(WATCHLIST_PATH):
+            return "No watchlist generated yet", 404
+            
+        csv_path = WATCHLIST_PATH.replace(".parquet", ".csv")
+        df = pd.read_parquet(WATCHLIST_PATH)
+        df.to_csv(csv_path, index=False)
+        
+        return send_file(
+            csv_path,
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name=f"Elite_Watchlist_{datetime.now().strftime('%Y%m%d')}.csv"
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate shortlist CSV: {e}")
+        return "Server Error", 500
+
 @app.route("/api/scanner_status")
 def api_scanner_status():
     """
