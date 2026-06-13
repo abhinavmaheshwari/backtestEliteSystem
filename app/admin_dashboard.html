@@ -846,7 +846,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
       <td>${fmt(t.capital_allocated)}</td>
       <td>${t.shares_bought||'\u2014'}</td>
       <td><div class="pnl-wrap"><div class="pnl-bar-track"><div class="pnl-bar-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="pnl-text ${pctClass(t.pnl_pct)}">${pct(t.pnl_pct)}</span></div></td>
-      <td class="${pctClass(t.status === 'OPEN' && t.shares_bought ? (t.current_price - t.entry_price) * t.shares_bought : t.pnl_rs)}">${t.status === 'OPEN' && t.shares_bought ? fmt((t.current_price - t.entry_price) * t.shares_bought) : (t.pnl_rs != null ? fmt(t.pnl_rs) : '\u2014')}</td>
+      <td class="${pctClass(t.status === 'OPEN' && t.shares_bought && t.current_price ? (t.current_price - t.entry_price) * t.shares_bought : t.pnl_rs)}">${t.status === 'OPEN' && t.shares_bought && t.current_price ? fmt((t.current_price - t.entry_price) * t.shares_bought) : (t.pnl_rs != null ? fmt(t.pnl_rs) : '\u2014')}</td>
       <td>${sc}</td>
       <td style="color:var(--muted)">${t.days_held!=null?t.days_held+'d':'—'}</td>
       <td>${badgeHtml(t.status)}</td>
@@ -1279,6 +1279,7 @@ function updateSim() {
   let totalFloating = 0;
   let openTrades = ALL_TRADES.filter(t => t.status === 'OPEN');
   openTrades.forEach(t => {
+    if (t.current_price == null || t.current_price === 0) return;
     let allocPct = (t.score >= 90) ? 0.15 : 0.10;
     let capitalForTrade = currentEquity * allocPct;
     let floatingPct = ((t.current_price - t.entry_price) / t.entry_price);
