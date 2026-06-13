@@ -93,33 +93,41 @@ def analyze_concall_text(text: str) -> dict:
         text = text[:80000]
 
     errors = []
-    gemini_key = os.getenv("GEMINI_API_KEY")
+    gemini_key_str = os.getenv("GEMINI_API_KEY", "")
     openai_key = os.getenv("OPENAI_API_KEY")
 
-    if not gemini_key and not openai_key:
+    if not gemini_key_str and not openai_key:
         return {"error": "No LLM API keys found. Please set GEMINI_API_KEY or OPENAI_API_KEY."}
 
     # Fallback Chain 1: Gemini Models
-    if gemini_key:
+    if gemini_key_str:
+        gemini_keys = [k.strip() for k in gemini_key_str.split(",") if k.strip()]
         gemini_models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        
         for model in gemini_models:
-            try:
-                logger.info(f"Attempting AI analysis with {model}...")
-                return _try_gemini_model(model, gemini_key, text)
-            except Exception as e:
-                import time
-                err_str = str(e)
-                if "429" in err_str or "Quota" in err_str:
-                    logger.warning(f"{model} hit rate limit (429). Sleeping for 45s and retrying...")
-                    time.sleep(45)
-                    try:
-                        return _try_gemini_model(model, gemini_key, text)
-                    except Exception as e2:
-                        logger.warning(f"{model} failed after retry: {e2}")
-                        errors.append(f"{model} (Retry): {str(e2)}")
-                else:
-                    logger.warning(f"{model} failed: {e}")
-                    errors.append(f"{model}: {err_str}")
+            success = False
+            for i, gemini_key in enumerate(gemini_keys):
+                try:
+                    key_display = f"...{gemini_key[-4:]}" if len(gemini_key) > 4 else "UNKNOWN"
+                    logger.info(f"Attempting AI analysis with {model} (Key {i+1}/{len(gemini_keys)} ending in {key_display})...")
+                    return _try_gemini_model(model, gemini_key, text)
+                except Exception as e:
+                    import time
+                    err_str = str(e)
+                    if "429" in err_str or "Quota" in err_str:
+                        logger.warning(f"{model} hit rate limit on Key {i+1}.")
+                        if i == len(gemini_keys) - 1:
+                            logger.warning("All Gemini keys exhausted. Sleeping 45s and retrying last key...")
+                            time.sleep(45)
+                            try:
+                                return _try_gemini_model(model, gemini_key, text)
+                            except Exception as e2:
+                                logger.warning(f"{model} failed after retry: {e2}")
+                                errors.append(f"{model} (Retry): {str(e2)}")
+                    else:
+                        logger.warning(f"{model} failed: {e}")
+                        errors.append(f"{model}: {err_str}")
+                        break # Skip to next model if it's not a quota issue
 
     # Fallback Chain 2: OpenAI Models
     if openai_key:

@@ -250,10 +250,13 @@ def run_reversal_scanner():
 # =====================================================================================
 
 # Only intraday/live/performance get auto-restarted on crash
+from ai_worker import run_worker_loop
+
 RESTARTABLE_THREADS = {
     "IntradayScanner":    run_intraday_scanner,
     "LiveScanner":        run_live_scanner,
     "PerformanceTracker": run_performance_tracker,
+    "AIWorker":           run_worker_loop,
 }
 
 # EOD and Reversal are launched once and never restarted

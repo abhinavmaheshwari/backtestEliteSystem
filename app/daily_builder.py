@@ -656,7 +656,6 @@ def _main_impl():
     logger.info("🤖 Running AI Concall deep dives on Top 50 fundamental stocks...")
     try:
         from database import get_recent_concall_analysis
-        from dashboard_server import fetch_and_analyze_concall
         
         ai_scores = []
         for i, rrow in final_df.iterrows():
@@ -665,7 +664,7 @@ def _main_impl():
                 continue
                 
             sym = rrow["Stock"]
-            logger.info(f"[{i+1}/50] Checking AI Concall for {sym}")
+            logger.info(f"[{i+1}/50] Checking DB for cached AI Concall of {sym}")
             
             try:
                 # 1. Check recent cache (60 days)
@@ -674,8 +673,8 @@ def _main_impl():
                     logger.info(f"   -> Using cached AI report")
                     ai_data = cached
                 else:
-                    logger.info(f"   -> Fetching live AI report from NSE...")
-                    ai_data = fetch_and_analyze_concall(sym)
+                    logger.info(f"   -> No cache found for {sym}. Worker will pick this up later.")
+                    ai_data = None
                     
                 # 2. Apply Alpha Boost
                 score = 0
