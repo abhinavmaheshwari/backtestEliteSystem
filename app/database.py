@@ -475,6 +475,19 @@ def get_ai_cache_count() -> int:
     return 0
 
 
+def get_total_cached_concalls() -> int:
+    """Returns the total number of distinct stocks that have cached concall data."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT COUNT(DISTINCT symbol) FROM ai_concall_cache_v3")
+                row = cur.fetchone()
+                return row[0] if row else 0
+            except Exception as e:
+                logger.error(f"Error getting total cached concalls: {e}")
+                return 0
+
 def get_recent_concall_analysis(symbol: str, max_age_days: int = 60):
     """Retrieves cached AI analysis for a symbol if it is less than max_age_days old."""
     init_db()

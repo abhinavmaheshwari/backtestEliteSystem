@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 def run_worker_loop():
     """Infinite loop that scans the watchlist CSV and fetches AI concall reports."""
     from config import WATCHLIST_PATH
-    from database import get_recent_concall_analysis, upsert_scanner_health
+    from database import get_recent_concall_analysis, upsert_scanner_health, get_total_cached_concalls
     from dashboard_server import fetch_and_analyze_concall
     
     logger.info("🤖 AI Worker Thread Started. Monitoring watchlist for missing caches...")
@@ -34,8 +34,8 @@ def run_worker_loop():
             pending_stocks = df["Stock"].tolist()
             total_stocks = len(pending_stocks)
             
-            processed_count = 0
-            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: None | Total: {total_stocks}")
+            db_processed_count = get_total_cached_concalls()
+            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: None | Total: {total_stocks}")
 
             max_retries = 3
             for attempt in range(max_retries):
@@ -46,8 +46,8 @@ def run_worker_loop():
                         cached = get_recent_concall_analysis(sym, max_age_days=60)
                         if cached:
                             # Already cached, skip
-                            processed_count += 1
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
+                            db_processed_count = get_total_cached_concalls()
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                             continue
                             
                         # 2. No cache. Fetch it.
@@ -58,12 +58,13 @@ def run_worker_loop():
                             conf = result.get("management_confidence", "N/A")
                             key_used = result.get("key_used", "Key 1")
                             logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
-                            processed_count += 1
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
+                            db_processed_count = get_total_cached_concalls()
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                         else:
                             error_msg = result.get('error', 'Unknown Error')
                             logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {error_msg}")
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=error_msg)
+                            db_processed_count = get_total_cached_concalls()
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                             
                             # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
                             if "No recent concall transcripts" not in error_msg:
@@ -93,8 +94,9 @@ def run_worker_loop():
             upsert_scanner_health("AI Worker", "DOWN", error_msg=str(e))
             
         # Once we've checked the whole list, sleep for 30 minutes before checking again
+        db_processed_count = get_total_cached_concalls()
         logger.info(f"🤖 [AI WORKER] Finished scanning entire universe ({total_stocks} stocks). Sleeping for 30 minutes.")
-        upsert_scanner_health("AI Worker", "IDLE", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=f"Last: Finished | Total: {total_stocks}")
+        upsert_scanner_health("AI Worker", "IDLE", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: Finished | Total: {total_stocks}")
         time.sleep(1800)
 
 def start_worker():
