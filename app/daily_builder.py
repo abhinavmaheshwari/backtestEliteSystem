@@ -14,6 +14,11 @@ from datetime import datetime
 from tradingview_screener import Query, col
 from config import WATCHLIST_PATH
 
+# Globals for accumulation data
+_DELIVERY_DATA = {}
+_INST_BUYS = {}
+
+
 # ── SEND GUARD — persisted in Postgres so restarts never re-send ────────────────────
 
 def _already_sent_today() -> bool:
@@ -63,6 +68,10 @@ def _mark_sent_today():
 
 logger = logging.getLogger(__name__)
 
+# Globals for accumulation data
+_DELIVERY_DATA = {}
+_INST_BUYS = {}
+
 # =====================================================================================
 # OUTPUT FILES
 # =====================================================================================
@@ -96,6 +105,7 @@ CAT_DESCRIPTIONS = {
     "Undervalued Growth":       "Growing fast (>15% YoY) but trading at a deep discount (PEG < 1.0).",
     "Capital Efficient":        "Asset-light business model with exceptional ROE (≥25%).",
     "Dividend Aristocrat":      "High dividend yield (≥3.0%) with strong ROE and stability.",
+    "Inst Accumulation":        "Massive institutional bulk/block buying + high delivery absorption.",
     # Financial (PATH B)
     "Fast Growing Financial":   "Explosive recent NII & profit momentum in banking/NBFC.",
     "Top Bank/NBFC":            "High ROE & ROA with strong consistent loan book growth.",
@@ -202,7 +212,7 @@ def fetch_universe() -> pd.DataFrame:
 # SHARED UTILITIES
 # =====================================================================================
 
-def _fval(row: pd.Series, col_name: str) -> float | None:
+def _fval(row: pd.Series, col_name: str) -> float:
     v = row.get(col_name)
     try:
         f = float(v)
@@ -213,7 +223,7 @@ def _fval(row: pd.Series, col_name: str) -> float | None:
 def _is_financial(sector: str) -> bool:
     return sector in FINANCIAL_SECTORS
 
-def _anomaly_check(symbol: str, yoy_rev: float, yoy_profit: float) -> str | None:
+def _anomaly_check(symbol: str, yoy_rev: float, yoy_profit: float) -> str:
     if yoy_rev < MIN_YOY or yoy_profit < MIN_YOY:
         return f"Structural collapse: YoY Revenue={yoy_rev:.1f}%, YoY Profit={yoy_profit:.1f}%"
     if yoy_rev > MAX_YOY or yoy_profit > MAX_YOY:
@@ -224,7 +234,7 @@ def _anomaly_check(symbol: str, yoy_rev: float, yoy_profit: float) -> str | None
 # PATH A — NON-FINANCIAL CLASSIFICATION
 # =====================================================================================
 
-def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
+def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     def fv(c): return _fval(row, c)
     def skip(r): return log_exclusion(symbol, r) or None
 
@@ -306,6 +316,11 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     div_val = div_yield if div_yield is not None else 0.0
     dividend_aristocrat = (div_val >= 3.0 and roe >= 15.0 and low_debt and market_cap >= 50_000_000_000)
 
+    # NEW: Institutional Accumulation
+    deliv_per = _DELIVERY_DATA.get(symbol, 0.0)
+    inst_buyers = _INST_BUYS.get(symbol, [])
+    inst_accumulation = (deliv_per >= 60.0 and len(inst_buyers) > 0 and opm >= 10.0 and yoy_profit > 0.0)
+
     # ── DIAMOND HOLD (LONG TERM) LOGIC ──
     diamond_hold = False
     if rev_5y is not None and eps_5y is not None and peg is not None:
@@ -313,12 +328,14 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
         if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5 and fcf_ok:
             diamond_hold = True
 
-    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold, debt_free_cash, undervalued_growth, capital_efficient, dividend_aristocrat]):
+    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold, debt_free_cash, undervalued_growth, capital_efficient, dividend_aristocrat, inst_accumulation]):
         return skip(f"No category — YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
     if diamond_hold:       cats.append("Long Term Compounder")
     if dividend_aristocrat:cats.append("Dividend Aristocrat")
+    if inst_accumulation:  cats.append("Inst Accumulation")
+    if inst_accumulation:  cats.append("Inst Accumulation")
     if debt_free_cash:     cats.append("Debt-Free Cash Generator")
     if undervalued_growth: cats.append("Undervalued Growth")
     if capital_efficient:  cats.append("Capital Efficient")
@@ -329,6 +346,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
     if steady_compounder:  cats.append("Consistent Performer")
 
     score = _score_nonfin(yoy_sales, yoy_profit, qoq_sales, qoq_profit, roe, opm, debt_equity, yoy_margin_expanding, qoq_margin_expanding, mature_quality, elite_compounder, turnaround)
+    if inst_accumulation: score += 15
 
     return _build_row(
         symbol=symbol, cats=cats, path="Non-Financial", row=row, close_price=close_price,
@@ -340,7 +358,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict | None:
 # PATH B — FINANCIAL CLASSIFICATION 
 # =====================================================================================
 
-def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
+def _classify_fin(row: pd.Series, symbol: str) -> dict:
     def fv(c): return _fval(row, c)
     def skip(r): return log_exclusion(symbol, r) or None
 
@@ -405,17 +423,24 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     div_val = div_yield if div_yield is not None else 0.0
     dividend_aristocrat = (div_val >= 3.0 and roe >= 15.0 and market_cap >= 50_000_000_000)
 
+    # NEW: Institutional Accumulation
+    deliv_per = _DELIVERY_DATA.get(symbol, 0.0)
+    inst_buyers = _INST_BUYS.get(symbol, [])
+    inst_accumulation = (deliv_per >= 60.0 and len(inst_buyers) > 0 and roa >= 1.0)
+
     diamond_hold = False
     if rev_5y is not None and eps_5y is not None and peg is not None:
         if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5:
             diamond_hold = True
 
-    if not any([fin_high_growth, fin_compounder, fin_mature_quality, fin_turnaround, diamond_hold, efficient_lender, dividend_aristocrat]):
+    if not any([fin_high_growth, fin_compounder, fin_mature_quality, fin_turnaround, diamond_hold, efficient_lender, dividend_aristocrat, inst_accumulation]):
         return skip(f"No financial category — YoY NII={yoy_rev:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
     if diamond_hold:       cats.append("Long Term Compounder")
     if dividend_aristocrat:cats.append("Dividend Aristocrat")
+    if inst_accumulation:  cats.append("Inst Accumulation")
+    if inst_accumulation:  cats.append("Inst Accumulation")
     if efficient_lender:   cats.append("Efficient Lender")
     if fin_high_growth:    cats.append("Fast Growing Financial")
     if fin_compounder:     cats.append("Top Bank/NBFC")
@@ -423,6 +448,7 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict | None:
     if fin_turnaround:     cats.append("Financial Recovery")
 
     score = _score_fin(yoy_rev, yoy_profit, qoq_rev, qoq_profit, roe, roa, yoy_margin_expanding, fin_mature_quality, fin_compounder)
+    if inst_accumulation: score += 15
 
     return _build_row(
         symbol=symbol, cats=cats, path="Financial", row=row, close_price=close_price,
@@ -518,7 +544,7 @@ def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, de
 # DISPATCHER
 # =====================================================================================
 
-def classify_stock(row: pd.Series) -> dict | None:
+def classify_stock(row: pd.Series) -> dict:
     symbol = str(row.get("name", "UNKNOWN"))
     sector = str(row.get("sector", ""))
     try:
@@ -539,6 +565,8 @@ def main():
     from datetime import datetime, time as dt_time
     from zoneinfo import ZoneInfo
     from config import WATCHLIST_PATH
+    
+    global _DELIVERY_DATA, _INST_BUYS
     
     ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
     market_open = dt_time(9, 15) <= ist_now.time() <= dt_time(15, 30)
@@ -579,6 +607,17 @@ def _main_impl():
         EXCLUSION_LOG.clear()  
         
     logger.info("🚀 ELITE FUNDAMENTAL SCAN STARTED")
+
+    # Fetch institutional and delivery data
+    global _DELIVERY_DATA, _INST_BUYS
+    try:
+        from delivery_data import fetch_previous_day_delivery
+        _DELIVERY_DATA = fetch_previous_day_delivery()
+        
+        from institutional_data import get_institutional_buys
+        _INST_BUYS = get_institutional_buys()
+    except Exception as e:
+        logger.warning(f"⚠️ Could not fetch accumulation data: {e}")
 
     os.makedirs(os.path.dirname(OUTPUT_PARQUET), exist_ok=True)
 
