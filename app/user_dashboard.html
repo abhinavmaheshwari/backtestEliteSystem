@@ -1330,22 +1330,6 @@ async function initDashboard() {
   // Start viewer ping
   pingViewer();
   setInterval(pingViewer, 30000);
-
-  // Poll API Summary for AI Cache Count
-  async function updateAiCount() {
-    try {
-      const r = await fetch('/api/summary');
-      if (r.ok) {
-        const d = await r.json();
-        if (d.ai_cache_count !== undefined) {
-          const btn = document.getElementById('aiDeepDiveBtn');
-          if (btn) btn.innerHTML = `🤖 AI Deep Dive (${d.ai_cache_count} Cached)`;
-        }
-      }
-    } catch (e) {}
-  }
-  updateAiCount();
-  setInterval(updateAiCount, 60000);
 }
 
 // Trigger check
