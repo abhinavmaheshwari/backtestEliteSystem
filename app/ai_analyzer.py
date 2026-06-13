@@ -94,7 +94,7 @@ def analyze_concall_text(text: str) -> dict:
 
     # Fallback Chain 1: Gemini Models
     if gemini_key:
-        gemini_models = ["gemini-1.5-pro-latest", "gemini-2.5-flash", "gemini-1.5-flash-latest"]
+        gemini_models = ["gemini-2.5-flash", "gemini-1.5-flash"]
         for model in gemini_models:
             try:
                 logger.info(f"Attempting AI analysis with {model}...")
