@@ -275,13 +275,14 @@ def api_news(symbol):
         ticker = yf.Ticker(yf_symbol)
         raw_news = ticker.news[:3]
         news = []
-        for n in raw_news:
+        for item in raw_news:
+            n = item.get("content", item)
             news.append({
                 "title": n.get("title", ""),
                 "summary": n.get("summary", ""),
-                "link": n.get("link") or n.get("clickThroughUrl", {}).get("url", ""),
+                "link": n.get("link") or n.get("clickThroughUrl", {}).get("url", "") or n.get("canonicalUrl", {}).get("url", ""),
                 "provider": n.get("provider", {}).get("displayName", ""),
-                "date": n.get("pubDate", "")
+                "date": n.get("pubDate", "") or n.get("providerPublishTime", "")
             })
             
         with _news_lock:
