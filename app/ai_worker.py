@@ -31,43 +31,62 @@ def run_worker_loop():
             df = pd.read_csv(csv_path)
             
             # We want to analyze all stocks in the fundamental watchlist
-            top_stocks = df["Stock"].tolist()
-            total_stocks = len(top_stocks)
+            pending_stocks = df["Stock"].tolist()
+            total_stocks = len(pending_stocks)
             
             processed_count = 0
             upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
 
-            for i, sym in enumerate(top_stocks):
-                try:
-                    # 1. Check if we already have a cache for this stock
-                    cached = get_recent_concall_analysis(sym, max_age_days=60)
-                    if cached:
-                        # Already cached, skip
-                        processed_count += 1
-                        upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
-                        continue
+            max_retries = 3
+            for attempt in range(max_retries):
+                failed_stocks = []
+                for i, sym in enumerate(pending_stocks):
+                    try:
+                        # 1. Check if we already have a cache for this stock
+                        cached = get_recent_concall_analysis(sym, max_age_days=60)
+                        if cached:
+                            # Already cached, skip
+                            processed_count += 1
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
+                            continue
+                            
+                        # 2. No cache. Fetch it.
+                        logger.info(f"🤖 [AI WORKER] Missing cache for {sym} ({i+1}/{len(pending_stocks)} in batch). Fetching live...")
+                        result = fetch_and_analyze_concall(sym)
                         
-                    # 2. No cache. Fetch it.
-                    logger.info(f"🤖 [AI WORKER] Missing cache for {sym} ({i+1}/{total_stocks}). Fetching live...")
-                    result = fetch_and_analyze_concall(sym)
-                    
-                    if result and "error" not in result:
-                        conf = result.get("management_confidence", "N/A")
-                        key_used = result.get("key_used", "Key 1")
-                        logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
-                        processed_count += 1
-                        upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
-                    else:
-                        logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {result.get('error', 'Unknown Error')}")
-                        upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=result.get('error', 'Unknown Error'))
+                        if result and "error" not in result:
+                            conf = result.get("management_confidence", "N/A")
+                            key_used = result.get("key_used", "Key 1")
+                            logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
+                            processed_count += 1
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count)
+                        else:
+                            error_msg = result.get('error', 'Unknown Error')
+                            logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {error_msg}")
+                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=processed_count, error_msg=error_msg)
+                            
+                            # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
+                            if "No recent concall transcripts" not in error_msg:
+                                failed_stocks.append(sym)
+                            
+                        # Sleep 5 seconds between successful fetches to gently pace the API
+                        time.sleep(5)
                         
-                    # Sleep 5 seconds between successful fetches to gently pace the API
-                    time.sleep(5)
-                    
-                except Exception as e:
-                    logger.error(f"❌ [AI WORKER] Error processing {sym}: {e}")
-                    upsert_scanner_health("AI Worker", "DOWN", error_msg=str(e))
-                    time.sleep(10) # Sleep a bit longer on error
+                    except Exception as e:
+                        logger.error(f"❌ [AI WORKER] Error processing {sym}: {e}")
+                        upsert_scanner_health("AI Worker", "DOWN", error_msg=str(e))
+                        failed_stocks.append(sym)
+                        time.sleep(10) # Sleep a bit longer on error
+                
+                if not failed_stocks:
+                    break
+                
+                pending_stocks = failed_stocks
+                if attempt < max_retries - 1:
+                    logger.info(f"🤖 [AI WORKER] {len(failed_stocks)} stocks failed. Retrying in 60s (Attempt {attempt+2}/{max_retries})...")
+                    time.sleep(60)
+                else:
+                    logger.error(f"❌ [AI WORKER] Giving up on {len(failed_stocks)} stocks after {max_retries} attempts.")
                     
         except Exception as e:
             logger.error(f"❌ [AI WORKER] Main loop crashed: {e}")
