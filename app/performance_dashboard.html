@@ -8,32 +8,32 @@
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
   :root {
-    --bg:       #0d0f14;
-    --surface:  #141720;
-    --card:     #1a1d26;
-    --card2:    #1f2330;
-    --border:   rgba(255,255,255,.07);
-    --border2:  rgba(255,255,255,.12);
-    --accent:   #00d4a1;
-    --accent-dim:rgba(0,212,161,.12);
-    --accent2:  #4d7cfe;
-    --warn:     #ff4d6d;
-    --warn-dim: rgba(255,77,109,.12);
-    --amber:    #f59e0b;
-    --amber-dim:rgba(245,158,11,.12);
-    --text:     #e8eaf0;
-    --muted:    #6b7280;
-    --muted2:   #4b5563;
-    --win:      #00d4a1;
-    --loss:     #ff4d6d;
-    --open:     #4d7cfe;
-    --neutral:  #6b7280;
-    --down:     #ff4d6d;
+    --bg:       #f8fafc;
+    --surface:  #ffffff;
+    --card:     #ffffff;
+    --card2:    #f1f5f9;
+    --border:   rgba(0,0,0,.08);
+    --border2:  rgba(0,0,0,.15);
+    --accent:   #059669;
+    --accent-dim:rgba(5,150,105,.12);
+    --accent2:  #2563eb;
+    --warn:     #e11d48;
+    --warn-dim: rgba(225,29,72,.12);
+    --amber:    #d97706;
+    --amber-dim:rgba(217,119,6,.12);
+    --text:     #0f172a;
+    --muted:    #64748b;
+    --muted2:   #94a3b8;
+    --win:      #059669;
+    --loss:     #e11d48;
+    --open:     #2563eb;
+    --neutral:  #64748b;
+    --down:     #e11d48;
     --font-mono:'JetBrains Mono','Fira Code',monospace;
     --font-body:'Inter',system-ui,sans-serif;
     --radius:   10px;
-    --shadow:   0 4px 24px rgba(0,0,0,.4);
-    --glow:     0 0 20px rgba(0,212,161,.15);
+    --shadow:   0 4px 20px rgba(0,0,0,.06);
+    --glow:     0 0 15px rgba(5,150,105,.2);
   }
 
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -41,7 +41,7 @@
 
   /* ── HEADER ── */
   .header {
-    background:linear-gradient(135deg,#141720 0%,#1a1d26 100%);
+    background:linear-gradient(135deg,#ffffff 0%,#f8fafc 100%);
     border-bottom:1px solid var(--border);
     padding:16px 28px;
     display:flex; align-items:center; justify-content:space-between;
@@ -77,7 +77,7 @@
     background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
     padding:16px; cursor:pointer; transition:all .2s; position:relative; overflow:hidden;
   }
-  .kpi::before { content:''; position:absolute; inset:0; background:linear-gradient(135deg,transparent,rgba(255,255,255,.02)); }
+  .kpi::before { content:''; position:absolute; inset:0; background:linear-gradient(135deg,transparent,rgba(0,0,0,.02)); }
   .kpi:hover { border-color:var(--border2); transform:translateY(-1px); box-shadow:var(--shadow); }
   .kpi.active { border-color:var(--accent); background:linear-gradient(135deg,var(--card),var(--accent-dim)); box-shadow:var(--glow); }
   .kpi-label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; font-weight:600; margin-bottom:8px; }
@@ -185,7 +185,7 @@
     outline:none; transition:.15s;
   }
   .filter-bar select:focus, .filter-bar input:focus { border-color:var(--accent); }
-  .filter-bar select option { background:#1a1d26; }
+  .filter-bar select option { background:#ffffff; color:#0f172a; }
 
   .tbl-wrap { overflow-x:auto; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -216,7 +216,7 @@
 
   /* ── PNL BAR ── */
   .pnl-wrap { display:flex; align-items:center; gap:8px; }
-  .pnl-bar-track { width:52px; height:4px; background:rgba(255,255,255,.08); border-radius:2px; overflow:hidden; flex-shrink:0; }
+  .pnl-bar-track { width:52px; height:4px; background:rgba(0,0,0,.08); border-radius:2px; overflow:hidden; flex-shrink:0; }
   .pnl-bar-fill  { height:100%; border-radius:2px; transition:width .3s; }
   .pnl-text      { font-family:var(--font-mono); font-size:12px; font-weight:700; min-width:56px; }
 
@@ -302,6 +302,16 @@
 
   <div class="container">
 
+    <!-- PORTFOLIO SIMULATOR -->
+    <div style="display:flex; justify-content:flex-end; gap:12px; margin-bottom:16px; align-items:center;">
+      <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px;">Portfolio Settings:</span>
+      <span style="font-size:11px; color:var(--muted);">Capital (₹)</span>
+      <input id="simCapital" type="number" value="100000" style="width:100px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
+      <span style="font-size:11px; color:var(--muted);">Risk %</span>
+      <input id="simRisk" type="number" value="2" step="0.5" style="width:70px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
+      <div id="simResult" style="margin-left:16px; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text); padding:6px 12px; background:var(--card2); border-radius:6px; border:1px solid var(--border);">Est. P&amp;L: —</div>
+    </div>
+
     <!-- KPI ROW -->
     <div class="kpi-row" id="kpis"></div>
 
@@ -314,10 +324,20 @@
       <div class="drill-body" id="drill-body"></div>
     </div>
 
+    <!-- CATEGORY WIN RATES -->
+    <div class="section-label">Category Performance</div>
+    <div class="kpi-row" id="catGrid" style="margin-bottom:28px"></div>
+
     <!-- TRADES TABLE -->
     <div class="section-label">All Trades</div>
     <div class="card" style="margin-bottom:28px">
       <div class="filter-bar">
+        <select id="filterDate">
+          <option value="ALL">All Time</option>
+          <option value="30D">Last 30 Days</option>
+          <option value="90D">Last 90 Days</option>
+          <option value="YTD">YTD</option>
+        </select>
         <select id="filterScanner"><option value="">All scanners</option></select>
         <select id="filterStatus">
           <option value="">All status</option>
@@ -328,6 +348,7 @@
         </select>
         <select id="filterCategory"><option value="">All categories</option></select>
         <input id="filterSymbol" type="text" placeholder="Search symbol…" style="width:130px">
+        <button class="refresh-btn" onclick="exportCSV()" style="margin-left:8px;padding:6px 12px;">📥 Export CSV</button>
         <span id="tradeCount" style="margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--muted)"></span>
       </div>
       <div class="tbl-wrap">
@@ -731,6 +752,12 @@ function buildTradeRows(trades, maxAbs, prefix) {
             <div class="detail-label">Alert Time</div>
             <div class="detail-val" style="font-size:11px;color:var(--muted)">${fmtDetailTime(t.alert_time || t.entry_date)}</div>
           </div>
+          <div class="detail-item">
+            <div class="detail-label">Actions</div>
+            <div class="detail-val" style="margin-top:6px;">
+              <a href="https://in.tradingview.com/chart/?symbol=NSE:${t.symbol}" target="_blank" style="color:var(--accent2);text-decoration:none;font-size:11px;font-weight:700;">View Chart ↗</a>
+            </div>
+          </div>
           ${t.signals ? `<div class="detail-signals">⚡ ${t.signals}</div>` : ''}
         </div>
       </td>
@@ -771,8 +798,26 @@ function renderTradeTable() {
   const st  = document.getElementById('filterStatus').value;
   const cat = document.getElementById('filterCategory').value;
   const sym = document.getElementById('filterSymbol').value.trim().toUpperCase();
-  let filtered = ALL_TRADES.filter(t =>
-    (!sc||t.scanner===sc)&&(!st||t.status===st)&&(!cat||t.category===cat)&&(!sym||t.symbol.includes(sym)));
+  const dateFilt = document.getElementById('filterDate') ? document.getElementById('filterDate').value : 'ALL';
+  const now = new Date();
+  const ytd = new Date(now.getFullYear(), 0, 1);
+  const d30 = new Date(now); d30.setDate(d30.getDate()-30);
+  const d90 = new Date(now); d90.setDate(d90.getDate()-90);
+
+  let filtered = ALL_TRADES.filter(t => {
+    if (sc && t.scanner !== sc) return false;
+    if (st && t.status !== st) return false;
+    if (cat && t.category !== cat) return false;
+    if (sym && !t.symbol.includes(sym)) return false;
+    if (dateFilt !== 'ALL') {
+      const d = new Date((t.entry_date || '').replace(' ','T'));
+      if (dateFilt === 'YTD' && d < ytd) return false;
+      if (dateFilt === '30D' && d < d30) return false;
+      if (dateFilt === '90D' && d < d90) return false;
+    }
+    return true;
+  });
+  window._currentFilteredTrades = filtered;
   filtered = [...filtered].sort((a,b) => {
     if (sortCol === 'status') {
       const p = { 'OPEN': 0, 'WIN': 1, 'LOSS': 2, 'NEUTRAL': 3 };
@@ -809,9 +854,11 @@ document.addEventListener('click', e => {
   if(sortCol===col) sortDir*=-1; else {sortCol=col; sortDir=-1;}
   renderTradeTable();
 });
-['filterScanner','filterStatus','filterCategory','filterSymbol'].forEach(id => {
-  document.getElementById(id).addEventListener('input', renderTradeTable);
-  document.getElementById(id).addEventListener('change', renderTradeTable);
+['filterScanner','filterStatus','filterCategory','filterSymbol','filterDate'].forEach(id => {
+  if (document.getElementById(id)) {
+    document.getElementById(id).addEventListener('input', renderTradeTable);
+    document.getElementById(id).addEventListener('change', renderTradeTable);
+  }
 });
 
 function populateFilters(trades) {
@@ -823,6 +870,75 @@ function populateFilters(trades) {
   cats.forEach(c     => { const o=document.createElement('option'); o.value=c; o.textContent=c; cEl.appendChild(o); });
 }
 
+function renderCategoryStats() {
+  const cats = [...new Set(ALL_TRADES.map(t=>t.category).filter(Boolean))].sort();
+  let html = '';
+  cats.forEach(c => {
+    const trades = ALL_TRADES.filter(t => t.category === c && ['WIN','LOSS'].includes(t.status));
+    if(!trades.length) return;
+    const wins = trades.filter(t => t.status === 'WIN').length;
+    const total = trades.length;
+    const wr = ((wins/total)*100).toFixed(1);
+    const pnlAvg = (trades.reduce((sum,t)=>sum+(t.pnl_pct||0),0)/total).toFixed(2);
+    html += `
+    <div class="kpi">
+      <div class="kpi-label" style="font-size:10px;">${c}</div>
+      <div class="kpi-value ${wr>=55?'green':wr>=45?'amber':'red'}">${wr}%</div>
+      <div class="kpi-sub">${wins}W / ${total-wins}L · Avg P&amp;L: <span class="${pnlAvg>=0?'pos':'neg'}">${pct(parseFloat(pnlAvg))}</span></div>
+    </div>`;
+  });
+  const cg = document.getElementById('catGrid');
+  if (cg) cg.innerHTML = html || '<div style="color:var(--muted);font-size:12px;">No categorized trades yet.</div>';
+}
+
+function updateSim() {
+  const cap = parseFloat(document.getElementById('simCapital').value) || 100000;
+  const risk = parseFloat(document.getElementById('simRisk').value) || 2;
+  let totalNet = 0;
+  const riskRs = cap * (risk/100);
+  ALL_TRADES.forEach(t => {
+    if (t.status === 'WIN' || t.status === 'LOSS') {
+      const riskPerShare = Math.abs((t.entry_price || 0) - (t.stop_loss || 0));
+      if (riskPerShare > 0) {
+        const shares = riskRs / riskPerShare;
+        const profit = shares * ((t.exit_price || t.current_price) - t.entry_price);
+        totalNet += profit;
+      }
+    }
+  });
+  const resEl = document.getElementById('simResult');
+  if(resEl) {
+    resEl.textContent = 'Est. Net P&L: ' + (totalNet>=0?'+':'') + '₹' + Math.round(totalNet).toLocaleString('en-IN');
+    resEl.style.color = totalNet >= 0 ? 'var(--win)' : 'var(--loss)';
+  }
+}
+
+function exportCSV() {
+  if (!window._currentFilteredTrades) return;
+  const rows = [['Symbol', 'Date', 'Scanner', 'Category', 'Entry Price', 'Exit Price', 'P&L %', 'Status', 'Days Held', 'Score']];
+  window._currentFilteredTrades.forEach(t => {
+    rows.push([
+      t.symbol,
+      (t.alert_time||t.entry_date||'').slice(0,16),
+      t.scanner || '',
+      t.category || '',
+      t.entry_price || '',
+      t.exit_price || '',
+      t.pnl_pct || '',
+      t.status || '',
+      t.days_held || '',
+      t.score || ''
+    ]);
+  });
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'elite_breakout_trades.csv';
+  a.click();
+}
+
 // ── REFRESH
 async function doRefresh() {
   const btn = document.getElementById('refreshBtn');
@@ -832,6 +948,10 @@ async function doRefresh() {
   if (scannerStatus) data.scanner_stats = {...(data.scanner_stats||{}), ...scannerStatus};
   window._scannerStats = data.scanner_stats || {};
   renderScannerGrid(data.scanner_stats);
+  ALL_TRADES = data.trades || [];
+  renderTradeTable();
+  renderCategoryStats();
+  updateSim();
   document.getElementById('gen-time').textContent = 'Updated: ' + new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata'});
   btn.classList.remove('spinning');
 }
@@ -862,6 +982,8 @@ async function doRefresh() {
   populateFilters(data.trades);
   renderTradeTable();
   renderScannerGrid(data.scanner_stats);
+  renderCategoryStats();
+  updateSim();
 
   // Auto-refresh scanner status every 60s
   setInterval(async () => {
