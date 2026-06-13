@@ -171,6 +171,43 @@ def health():
         "performance_age_h": perf_age,
     })
 
+@app.route("/admin/export/<table>")
+def export_csv_data(table):
+    """Exports the requested database table as a CSV file."""
+    # Prevent SQL injection by strictly whitelisting allowed tables
+    valid_tables = ["alerts", "scanner_health", "system_state", "ai_concall_cache_v3"]
+    if table not in valid_tables:
+        return jsonify({"error": "Invalid table requested."}), 400
+        
+    try:
+        from database import get_connection
+        import io
+        import csv
+        from flask import Response
+        
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT * FROM {table}")
+                rows = cur.fetchall()
+                col_names = [desc[0] for desc in cur.description]
+                
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(col_names)
+                for row in rows:
+                    writer.writerow(row)
+                    
+                csv_data = output.getvalue()
+                
+        return Response(
+            csv_data,
+            mimetype="text/csv",
+            headers={"Content-disposition": f"attachment; filename={table}_export.csv"}
+        )
+    except Exception as e:
+        logger.error(f"Error exporting CSV for table {table}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/summary")
 def api_summary():
@@ -197,14 +234,12 @@ def api_scanner_status():
     alerts table is queried live for today's trades per scanner.
     """
     try:
-        from database import get_all_scanner_health, get_scanner_today_trades, get_ai_cache_count
+        from database import get_all_scanner_health, get_scanner_today_trades
         from datetime import date as _date
         today_str = _date.today().isoformat()
 
         health_rows = get_all_scanner_health()
-        result = {
-            "_ai_cache_count": get_ai_cache_count()
-        }
+        result = {}
         for row in health_rows:
             sc = row["scanner_name"]
             today_trades = get_scanner_today_trades(sc, today_str)

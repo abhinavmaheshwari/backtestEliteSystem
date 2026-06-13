@@ -455,6 +455,17 @@
     <!-- SCANNER STATUS -->
     <div class="section-label">Scanner Health</div>
     <div class="scanner-grid" id="scannerGrid" style="margin-bottom:28px"></div>
+    
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid var(--border); padding-bottom:8px; margin-bottom:16px;">
+      <h2 style="font-size:16px; font-weight:600; letter-spacing:-0.2px; color:var(--text); margin:0;">Database Exports</h2>
+      <div style="font-size:13px; color:var(--muted)">Raw CSV extracts</div>
+    </div>
+    <div style="display:flex; gap:12px; margin-bottom: 28px; flex-wrap: wrap;">
+      <button class="btn btn-outline" onclick="window.open('/admin/export/alerts', '_blank')">📥 Alerts & Trades</button>
+      <button class="btn btn-outline" onclick="window.open('/admin/export/ai_concall_cache_v3', '_blank')">📥 AI Concall Cache</button>
+      <button class="btn btn-outline" onclick="window.open('/admin/export/scanner_health', '_blank')">📥 Scanner Health</button>
+      <button class="btn btn-outline" onclick="window.open('/admin/export/system_state', '_blank')">📥 System State</button>
+    </div>
 
   </div>
 </div>
@@ -728,6 +739,7 @@ const SCANNER_META = {
   '1H':            {label:'Live (1H)',       desc:'Trend confirmation · 10:17–15:30'},
   'EOD':           {label:'EOD',             desc:'Daily breakout · runs at 18:30'},
   'REVERSAL':      {label:'Reversal',        desc:'Mean reversion · runs at 18:30'},
+  'AI Worker':     {label:'Ai Worker',       desc:'Concall caching background worker'},
 };
 
 function renderScannerGrid(scanner_stats) {
@@ -773,8 +785,29 @@ function renderScannerGrid(scanner_stats) {
         <div class="sat-empty">No alerts generated today</div>
       </div>`;
 
+    const isAiWorker = sc === 'AI Worker';
+    const cardStyle = isAiWorker ? 'background:rgba(99,102,241,0.05); border-color:rgba(99,102,241,0.2)' : '';
+
+    let alertLabel = "Today's Alerts";
+    let alertHtml = `
+      <div class="scanner-alert-count ${data.today_alerts===0?'zero':''}">
+        ${data.today_alerts}
+        ${data.today_alerts > 0 ? `<span style="font-size:11px;color:var(--muted);font-weight:400"> alerts</span>` : ''}
+      </div>`;
+    let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
+
+    if (isAiWorker) {
+      alertLabel = "Processed";
+      alertHtml = `
+      <div class="scanner-alert-count" style="color: #6366f1;">
+        ${data.today_alerts} <span style="font-size:13px;color:var(--muted);font-weight:400">/ Total</span>
+      </div>`;
+      alertSub = "Stocks cached";
+      tooltipHtml = '';
+    }
+
     el.innerHTML += `
-      <div class="scanner-card ${statusClass}">
+      <div class="scanner-card ${statusClass}" style="${cardStyle}">
         <div class="scanner-header">
           <div>
             <div class="scanner-name">${meta.label}</div>
@@ -783,13 +816,10 @@ function renderScannerGrid(scanner_stats) {
           <span class="scanner-badge ${badgeClass}">${badgeText}</span>
         </div>
         <div class="scanner-stats">
-          <button class="scanner-alert-btn" style="position:relative" onclick="showScannerDrill('${sc}')">
-            <div class="scanner-stat-label">Today's Alerts</div>
-            <div class="scanner-alert-count ${data.today_alerts===0?'zero':''}">
-              ${data.today_alerts}
-              ${data.today_alerts > 0 ? `<span style="font-size:11px;color:var(--muted);font-weight:400"> alerts</span>` : ''}
-            </div>
-            <div class="scanner-stat-sub">${data.today_alerts>0?'hover to preview · click to expand':'no new alerts today'}</div>
+          <button class="scanner-alert-btn" style="position:relative; ${isAiWorker ? 'pointer-events:none; cursor:default' : ''}" ${!isAiWorker ? `onclick="showScannerDrill('${sc}')"` : ''}>
+            <div class="scanner-stat-label">${alertLabel}</div>
+            ${alertHtml}
+            <div class="scanner-stat-sub">${alertSub}</div>
             ${tooltipHtml}
           </button>
           <div class="scanner-stat-item">
@@ -1534,10 +1564,6 @@ async function initDashboard() {
   const liveStatus = await loadScannerStatus();
   if (liveStatus) {
     data.scanner_stats = {...(data.scanner_stats||{}), ...liveStatus};
-    if (liveStatus._ai_cache_count !== undefined) {
-      const btn = document.getElementById('aiDeepDiveBtn');
-      if (btn) btn.innerHTML = `🤖 AI Deep Dive (${liveStatus._ai_cache_count} Cached)`;
-    }
   }
   window._scannerStats = data.scanner_stats || {};
 
@@ -1568,10 +1594,6 @@ async function initDashboard() {
     if (live) {
       window._scannerStats = {...(window._scannerStats||{}), ...live};
       renderScannerGrid(window._scannerStats);
-      if (live._ai_cache_count !== undefined) {
-        const btn = document.getElementById('aiDeepDiveBtn');
-        if (btn) btn.innerHTML = `🤖 AI Deep Dive (${live._ai_cache_count} Cached)`;
-      }
     }
   }, 60000);
 
