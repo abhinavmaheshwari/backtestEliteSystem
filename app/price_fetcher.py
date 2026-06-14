@@ -70,6 +70,7 @@ def _write_cache_file(df: pd.DataFrame, path: str) -> None:
 
 
 def _symbol_to_yf(symbol: str) -> str:
+    symbol = symbol.replace("_", "-")
     return symbol + ".NS" if not symbol.endswith(".NS") else symbol
 
 

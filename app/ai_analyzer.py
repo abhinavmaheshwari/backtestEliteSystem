@@ -75,7 +75,7 @@ def analyze_concall_text(text: str) -> dict:
     # Fallback Chain 1: Gemini Models
     if gemini_key_str:
         gemini_keys = [k.strip() for k in gemini_key_str.split(",") if k.strip()]
-        gemini_models = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-2.0-flash"]
+        gemini_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
         
         for model in gemini_models:
             success = False
