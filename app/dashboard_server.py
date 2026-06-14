@@ -454,6 +454,37 @@ def api_scanner_status():
         for row in health_rows:
             sc = row["scanner_name"]
             today_trades = get_scanner_today_trades(sc, today_str)
+            
+            # Special case for Wealth Engine: It doesn't write to the alerts table.
+            # We must parse its parquet file to get today's trades for the tooltip to work!
+            if sc == "Wealth Engine":
+                try:
+                    import os, pandas as pd
+                    from config import DATA_DIR
+                    wealth_path = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+                    if os.path.exists(wealth_path):
+                        wdf = pd.read_parquet(wealth_path)
+                        # Filter for BUY signals
+                        buy_df = wdf[wdf["Signal"].str.contains("BUY", na=False)]
+                        today_trades = []
+                        for _, wrow in buy_df.iterrows():
+                            today_trades.append({
+                                "symbol": wrow.get("Stock", ""),
+                                "category": wrow.get("Portfolio_Bucket", ""),
+                                "signals": wrow.get("Signal", ""),
+                                "entry_price": wrow.get("cmp", 0),
+                                "alert_time": today_str,
+                                "stop_loss": None,
+                                "target_price": None,
+                                "exit_price": None,
+                                "closed_at": None,
+                                "pnl_pct": None,
+                                "status": "OPEN",
+                                "score": wrow.get("FM_Score", 0)
+                            })
+                except Exception as e:
+                    pass
+
             result[sc] = {
                 "status":        row["status"],
                 "last_success":  row["last_success"],
