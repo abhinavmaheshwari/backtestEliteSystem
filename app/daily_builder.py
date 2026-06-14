@@ -416,7 +416,6 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     if diamond_hold:       cats.append("Long Term Compounder")
     if dividend_aristocrat:cats.append("Dividend Aristocrat")
     if inst_accumulation:  cats.append("Inst Accumulation")
-    if inst_accumulation:  cats.append("Inst Accumulation")
     if debt_free_cash:     cats.append("Debt-Free Cash Generator")
     if undervalued_growth: cats.append("Undervalued Growth")
     if capital_efficient:  cats.append("Capital Efficient")
@@ -533,7 +532,6 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict:
     cats = []
     if diamond_hold:       cats.append("Long Term Compounder")
     if dividend_aristocrat:cats.append("Dividend Aristocrat")
-    if inst_accumulation:  cats.append("Inst Accumulation")
     if inst_accumulation:  cats.append("Inst Accumulation")
     if efficient_lender:   cats.append("Efficient Lender")
     if fin_high_growth:    cats.append("Fast Growing Financial")
@@ -792,10 +790,8 @@ def _main_impl():
                 logger.error(f"Failed AI check for {sym}: {e}")
                 ai_scores.append(0)
                 
-        final_df["AI Confidence Boost"] = ai_scores
         
         # Re-apply boosts to the final Fundamental Score
-        final_df["Fundamental Score"] = final_df["Fundamental Score"] + final_df["AI Confidence Boost"]
         
         # Resort based on new scores
         final_df = final_df.sort_values(by=["Fundamental Score", "ROE %"], ascending=False).reset_index(drop=True)
@@ -822,7 +818,7 @@ def _main_impl():
         from email_engine import send_html_email
         logger.info("📧 Attempting to email fundamental watchlist...")
         
-        email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'AI Confidence Boost', 'Fundamental Score']]
+        email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'Fundamental Score']]
         table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
         
         html_content = f"""

@@ -21,25 +21,46 @@ logger = logging.getLogger(__name__)
 # CONSTANTS — Sector Concentration Limits
 # =====================================================================================
 MAX_SECTOR_PCT  = 0.25   # Max 25% of portfolio from one sector
+
+# =====================================================================================
+# MACRO GATES & LIMITS
+# =====================================================================================
+MIN_LIQUIDITY_CR = 10000000  # 1 Crore daily volume prevents slippage and institutional trapping
+MAX_PROMOTER_PLEDGE = 20     # >20% pledge introduces margin call liquidation risk
+
 MAX_PER_INDUSTRY = 2     # Max 2 stocks per specific industry
 
 # =====================================================================================
 # NIFTY BENCHMARK
 # =====================================================================================
 
-def fetch_nifty_6m_return() -> float:
-    """Fetch 6-month return of Nifty 50 as the benchmark for RS calculation."""
+_nifty_cache = (0.0, 0.0) # (ret_6m, dist_52w)
+def fetch_nifty_macro_state() -> tuple[float, float]:
+    """Fetch 6-month return and 52W distance of Nifty 50 for RS and Macro Regime Gate."""
+    global _nifty_cache
     try:
-        ticker = yf.Ticker("^NSEI")
-        hist = ticker.history(period="6mo")
-        if hist.empty or len(hist) < 2:
-            return 0.0
-        start_price = hist['Close'].iloc[0]
-        end_price = hist['Close'].iloc[-1]
-        return ((end_price - start_price) / start_price) * 100.0
+        from price_fetcher import _fetch_history_with_retry
+        hist = _fetch_history_with_retry("^NSEI", period="1y")
+        if hist is None or hist.empty or len(hist) < 2:
+            return _nifty_cache
+        
+        hist_6m = hist.tail(126) # Approx 6 months
+        if len(hist_6m) >= 2:
+            start_price = hist_6m['Close'].iloc[0]
+            end_price = hist_6m['Close'].iloc[-1]
+            ret_6m = ((end_price - start_price) / start_price) * 100.0
+        else:
+            ret_6m = _nifty_cache[0]
+            
+        high_52w = hist['High'].max()
+        end_price_1y = hist['Close'].iloc[-1]
+        dist_52w = ((high_52w - end_price_1y) / high_52w) * 100.0
+        
+        _nifty_cache = (ret_6m, dist_52w)
+        return _nifty_cache
     except Exception as e:
-        logger.error(f"Failed to fetch Nifty: {e}")
-        return 0.0
+        logger.error(f"Failed to fetch Nifty Macro State: {e}")
+        return _nifty_cache
 
 # =====================================================================================
 # PER-STOCK TECHNICAL OVERLAY
@@ -160,7 +181,9 @@ def calculate_100_point_score(r) -> int:
             score += 10   # OCF comfortably covers profits
         elif fcf_margin > 0:
             score += 5    # Positive but thin
-        # else: 0 — negative FCF is a red flag
+        else:
+            score += 0    # Negative FCF is a red flag
+    else:
         # FCF data unavailable (common for financials) — neutral, no penalty
         score += 3
 
@@ -180,7 +203,7 @@ def calculate_100_point_score(r) -> int:
 # PORTFOLIO BUCKETING — with Sector Concentration Cap
 # =====================================================================================
 
-def determine_portfolio_bucket(r):
+def determine_portfolio_bucket(r, nifty_dist_52w: float):
     """Assign stocks to Core / Growth / Opportunistic buckets based on hard filters."""
     score      = r.get("FM_Score", 0)
     mcap       = r.get("Market Cap Cr", 0) or 0
@@ -198,33 +221,35 @@ def determine_portfolio_bucket(r):
     buckets = []
 
     # Instant Kill Gates
-    if pledge > 20:
+    if pledge > MAX_PROMOTER_PLEDGE:
         return None
-    if liquidity < 10000000: # Needs at least 1 Crore daily liquidity
+    if liquidity < MIN_LIQUIDITY_CR:
         return None
 
     # Core Compounder — ₹10,000 Cr+ mega-quality
-    if score >= 80 and mcap >= 10000 and roce >= 20 and roe >= 15 and de <= 0.5 and pledge <= 20:
+    if score >= 80 and mcap >= 10000 and roce >= 20 and roe >= 15 and de <= 0.5:
         buckets.append("Core")
 
-    # Growth Multiplier — ₹2,000 Cr+ emerging leaders (lowered from 10k to catch future monsters)
-    if score >= 75 and mcap >= 2000 and yoy_sales >= 20 and yoy_profit >= 20 and rs_6m > 0 and dist_52w <= 15 and pledge <= 20:
+    # Growth Multiplier — ₹2,000 Cr+ emerging leaders
+    if score >= 75 and mcap >= 2000 and yoy_sales >= 20 and yoy_profit >= 20 and rs_6m > 0 and dist_52w <= 15:
         buckets.append("Growth")
 
-    # Opportunistic Momentum — Any size, massive acceleration
-    if score >= 65 and yoy_profit >= 40 and rs_6m >= 15 and cats != "SME" and pledge <= 20:
+    # Opportunistic Momentum — massive acceleration
+    if score >= 65 and yoy_profit >= 40 and rs_6m >= 15 and cats != "SME":
         buckets.append("Opportunistic")
 
-    # Quality-On-Sale — Temporarily out of favor but high quality (PEG proxy or PE proxy logic)
-    # Using PEG < 1.0 proxy for "PE below 5Y median" since 5Y median is not available.
-    # Also 10-30% below 52W high (dist_52w between 10 and 30)
+    # Quality-On-Sale — Temporarily out of favor but high quality
     peg = r.get("PEG Ratio", 1.0)
-    if peg is None:
-        peg = 1.0
-    cmp = r.get("cmp") or 0
-    sma = r.get("sma_200")
-    if score >= 60 and mcap >= 500 and de <= 1.0 and cats != "SME" and pledge <= 20:
-        if dist_52w > 10 and dist_52w <= 30 and peg < 1.0 and rs_6m > 0:
+    if peg is None: peg = 1.0
+    
+    if score >= 60 and mcap >= 500 and de <= 1.0 and cats != "SME":
+        is_qos = (dist_52w > 10 and dist_52w <= 30 and peg < 1.0 and rs_6m > 0)
+        
+        # MACRO REGIME GATE: If Nifty is >15% below 52W high, loosen QOS criteria
+        if nifty_dist_52w > 15:
+            is_qos = is_qos or (dist_52w > 10 and dist_52w <= 45 and peg < 1.5 and rs_6m > -15)
+            
+        if is_qos:
             buckets.append("Quality-On-Sale")
 
     return ", ".join(buckets) if buckets else None
@@ -240,20 +265,29 @@ def apply_sector_cap(df: pd.DataFrame, bucket_col: str, bucket_name: str, max_st
     bucket_df = df[df[bucket_col].str.contains(bucket_name, na=False)].copy()
     bucket_df = bucket_df.sort_values(by="FM_Score", ascending=False)
 
-    sector_limit = max(1, int(max_stocks * MAX_SECTOR_PCT))
+    import math
+    sector_limit = max(1, math.ceil(max_stocks * MAX_SECTOR_PCT))
     sector_counts = defaultdict(int)
+    industry_counts = defaultdict(int)
     selected = []
 
     for _, row in bucket_df.iterrows():
         sector = row.get("Sector", "Unknown")
+        industry = row.get("Industry", "Unknown")
+        
         if sector_counts[sector] >= sector_limit:
             continue
+        if industry_counts[industry] >= MAX_PER_INDUSTRY:
+            continue
+            
         sector_counts[sector] += 1
+        industry_counts[industry] += 1
         selected.append(row)
+        
         if len(selected) >= max_stocks:
             break
 
-    return pd.DataFrame(selected) if selected else pd.DataFrame()
+    return pd.DataFrame(selected).reset_index(drop=True) if selected else pd.DataFrame()
 
 
 # =====================================================================================
@@ -287,7 +321,7 @@ def run_wealth_loop():
 
             logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
 
-            nifty_6m_ret = fetch_nifty_6m_return()
+            nifty_6m_ret, nifty_dist_52w = fetch_nifty_macro_state()
             logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
 
             clear_price_cache()
@@ -334,7 +368,7 @@ def run_wealth_loop():
 
             # Apply 100-point score
             wealth_df["FM_Score"] = wealth_df.apply(calculate_100_point_score, axis=1)
-            wealth_df["Portfolio_Bucket"] = wealth_df.apply(determine_portfolio_bucket, axis=1)
+            wealth_df["Portfolio_Bucket"] = wealth_df.apply(lambda r: determine_portfolio_bucket(r, nifty_dist_52w), axis=1)
 
             # Buy/Sell Signals
             def get_signal(r):
@@ -345,11 +379,18 @@ def run_wealth_loop():
                 
                 # Strict Buy rules
                 if score >= 85 and cmp > sma and sma > 0:
-                    return f"BUY (Score: {score})"
+                    if nifty_dist_52w > 15:
+                        pass # MACRO GATE: Suppress breakouts in severe bear markets
+                    else:
+                        return f"BUY (Score: {score})"
+                        
+                bucket = r.get("Portfolio_Bucket", "") or ""
+                if "Quality-On-Sale" in bucket and nifty_dist_52w > 15:
+                    return f"BUY (Deep Value / Bear Market)"
                     
                 # Sell Rules (Softened 200 SMA rule to prevent whipsaws, adding RS collapse)
                 if score < 60:
-                    return f"SELL (Fundemental Decay)"
+                    return f"SELL (Fundamental Decay)"
                 if rs < -10:
                     return f"SELL (RS Collapse)"
                 if sma > 0 and cmp < (0.9 * sma):
