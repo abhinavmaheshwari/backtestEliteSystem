@@ -108,25 +108,6 @@
     <div style="width:10%; background: #f59e0b;">Cash Flow 10</div>
   </div>
 
-  <!-- API Health Scanner -->
-  <div id="api-health-container" style="display:none; margin-bottom:32px; background:rgba(239,68,68,0.1); border:1px solid var(--red); border-radius:12px; padding:16px;">
-    <div style="font-family:var(--font-head); font-size:18px; color:var(--red); margin-bottom:12px; display:flex; align-items:center; gap:8px;">
-      ⚠️ API Connection Failures Detected
-    </div>
-    <div style="overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse; text-align:left;">
-        <thead>
-          <tr>
-            <th style="color:var(--red); border-bottom:1px solid rgba(239,68,68,0.3);">API Source</th>
-            <th style="color:var(--red); border-bottom:1px solid rgba(239,68,68,0.3);">Error Message</th>
-            <th style="color:var(--red); border-bottom:1px solid rgba(239,68,68,0.3);">Last Failed</th>
-          </tr>
-        </thead>
-        <tbody id="api-health-body"></tbody>
-      </table>
-    </div>
-  </div>
-
   <div class="kpi-grid">
     <div class="kpi-card">
       <div class="kpi-value" id="kpi-total">-</div>
@@ -167,7 +148,8 @@
   <!-- MY PORTFOLIO TAB -->
   <div id="panel-myport" class="tab-panel">
     <div style="margin-bottom: 24px; display: flex; gap: 12px; background: var(--card2); padding: 16px; border-radius: 12px; border: 1px solid var(--border); flex-wrap: wrap;">
-      <input type="text" id="add-sym" placeholder="Symbol (e.g. TCS)" style="background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; outline:none; text-transform:uppercase; flex:1; min-width: 120px;">
+      <input type="text" id="add-sym" list="nse-tickers" placeholder="Symbol (e.g. TCS)" style="background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; outline:none; text-transform:uppercase; flex:1; min-width: 120px;">
+      <datalist id="nse-tickers"></datalist>
       <input type="date" id="add-date" style="background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; outline:none; color-scheme:dark;">
       <input type="number" step="0.01" id="add-price" placeholder="Entry Price" style="background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; outline:none; width: 120px;">
       <input type="number" id="add-qty" placeholder="Quantity" style="background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; outline:none; width: 100px;">
@@ -342,10 +324,19 @@
           totalCap += currentVal;
 
           let bucket = r.Bucket || "";
-          if (bucket.includes("Core")) coreCap += currentVal;
-          else if (bucket.includes("Growth")) growthCap += currentVal;
-          else if (bucket.includes("Opportunistic") || bucket.includes("Quality-On-Sale")) oppCap += currentVal;
-          else otherCap += currentVal;
+          let matched_buckets = [];
+          if (bucket.includes("Core")) matched_buckets.push("Core");
+          if (bucket.includes("Growth")) matched_buckets.push("Growth");
+          if (bucket.includes("Opportunistic") || bucket.includes("Quality-On-Sale")) matched_buckets.push("Opp");
+
+          if (matched_buckets.length === 0) {
+            otherCap += currentVal;
+          } else {
+            let splitVal = currentVal / matched_buckets.length;
+            if (matched_buckets.includes("Core")) coreCap += splitVal;
+            if (matched_buckets.includes("Growth")) growthCap += splitVal;
+            if (matched_buckets.includes("Opp")) oppCap += splitVal;
+          }
           
           let bClass = "border";
           if (bucket.includes("Core")) bClass = "green";
@@ -455,44 +446,7 @@
     };
     const sectorTag = (s) => `<span class="sector-tag">${s || 'Unknown'}</span>`;
 
-    async function fetchApiHealth() {
-      try {
-        const res = await fetch('/api/data_fetch_health');
-        if (!res.ok) return;
-        const rows = await res.json();
-        
-        const container = document.getElementById('api-health-container');
-        const tbody = document.getElementById('api-health-body');
-        tbody.innerHTML = '';
-        
-        // Filter rows that have consecutive_failures > 0 just in case
-        const failures = rows.filter(r => r.consecutive_failures > 0);
-        
-        if (failures.length > 0) {
-          container.style.display = 'block';
-          failures.forEach(r => {
-            const tr = document.createElement('tr');
-            const source = r.source_name || 'Unknown';
-            const error = r.error_msg || 'Timeout/Unknown Error';
-            const time = r.last_failure ? new Date(r.last_failure).toLocaleString() : 'N/A';
-            
-            tr.innerHTML = `
-              <td class="mono">${source}</td>
-              <td style="color:var(--muted); font-size:12px;">${error}</td>
-              <td class="mono" style="font-size:12px;">${time}</td>
-            `;
-            tbody.appendChild(tr);
-          });
-        } else {
-          container.style.display = 'none';
-        }
-      } catch (e) {
-        console.error("Failed to load API health", e);
-      }
-    }
-
     async function loadData() {
-      fetchApiHealth();
       try {
         const res = await fetch('/api/wealth');
         if (!res.ok) throw new Error('API Error');
@@ -650,7 +604,20 @@
       // Load portfolio data asynchronously alongside the main dashboard data
       loadPortfolio();
     }
+    async function loadTickers() {
+      try {
+        const res = await fetch('/api/all_tickers');
+        if (!res.ok) return;
+        const tickers = await res.json();
+        const dl = document.getElementById('nse-tickers');
+        if (dl && tickers.length > 0) {
+          dl.innerHTML = tickers.map(t => `<option value="${t}">`).join('');
+        }
+      } catch (e) {}
+    }
+
     loadData();
+    loadTickers();
     setInterval(loadData, 60000);
   </script>
 </body>
