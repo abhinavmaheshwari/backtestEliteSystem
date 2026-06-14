@@ -11,7 +11,7 @@ from app.pledge_scraper import fetch_promoter_pledge
 from app.price_fetcher import fetch_historical_data, clear_price_cache
 
 # Concurrency and retry tuning
-WORKER_COUNT = min(12, max(4, (os.cpu_count() or 2) * 2))
+WORKER_COUNT = 3  # Hardcoded to 3 to prevent OOM kills on Railway (500MB RAM limit)
 RETRY_ATTEMPTS = 3
 
 logger = logging.getLogger(__name__)
