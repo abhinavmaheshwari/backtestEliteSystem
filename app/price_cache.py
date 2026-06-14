@@ -7,7 +7,7 @@ import threading
 import time
 import pandas as pd
 import yfinance as yf
-from app.data_fetch_status import mark_success, mark_failure
+from data_fetch_status import mark_success, mark_failure
 from datetime import datetime
 from zoneinfo import ZoneInfo
 try:

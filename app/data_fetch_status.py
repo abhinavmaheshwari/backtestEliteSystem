@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional, Union
 import logging
 
-from app.database import upsert_data_fetch_health
+from database import upsert_data_fetch_health
 
 logger = logging.getLogger(__name__)
 

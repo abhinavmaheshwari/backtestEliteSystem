@@ -263,7 +263,7 @@ def save_alert_if_new(
     context_str = json.dumps(context) if context is not None else None
     
     # Calculate portfolio allocation dynamically if not provided
-    from app.portfolio_engine import calculate_trade_allocation
+    from portfolio_engine import calculate_trade_allocation
     capital_allocated = kwargs.get('capital_allocated')
     shares_bought = kwargs.get('shares_bought')
     

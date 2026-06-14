@@ -14,7 +14,7 @@ import io
 from datetime import date, timedelta
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from app.data_fetch_status import mark_success, mark_failure
+from data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
 

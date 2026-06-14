@@ -1,7 +1,7 @@
 import logging
 from typing import Tuple
 from math import floor
-from app.database import get_connection
+from database import get_connection
 
 logger = logging.getLogger(__name__)
 

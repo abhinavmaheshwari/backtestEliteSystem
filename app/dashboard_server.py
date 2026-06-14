@@ -14,7 +14,7 @@ import time
 import threading
 from flask import Flask, jsonify, send_file, Response, request, make_response
 import yfinance as yf
-from app.data_fetch_status import mark_success, mark_failure
+from data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -596,7 +596,7 @@ def fetch_and_analyze_concall(symbol):
             
         # Check Cache
         try:
-            from app.database import get_cached_concall_analysis, save_concall_analysis
+            from database import get_cached_concall_analysis, save_concall_analysis
         except ImportError:
             from database import get_cached_concall_analysis, save_concall_analysis
             
@@ -611,7 +611,7 @@ def fetch_and_analyze_concall(symbol):
             sys.path.insert(0, os.path.dirname(__file__))
             
         try:
-            from app.pdf_parser import extract_text_from_nse_pdf
+            from pdf_parser import extract_text_from_nse_pdf
         except ImportError:
             from pdf_parser import extract_text_from_nse_pdf
             
@@ -628,7 +628,7 @@ def fetch_and_analyze_concall(symbol):
             
         # Analyze with AI
         try:
-            from app.ai_analyzer import analyze_concall_text
+            from ai_analyzer import analyze_concall_text
         except ImportError:
             from ai_analyzer import analyze_concall_text
             

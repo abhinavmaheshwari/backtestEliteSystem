@@ -46,7 +46,7 @@
 
 import logging
 import yfinance as yf
-from app.data_fetch_status import mark_success, mark_failure
+from data_fetch_status import mark_success, mark_failure
 import pandas as pd
 
 from dataclasses import dataclass, field

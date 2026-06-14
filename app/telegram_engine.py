@@ -32,7 +32,7 @@ import logging
 import time
 import requests
 import os
-from app.data_fetch_status import mark_success, mark_failure
+from data_fetch_status import mark_success, mark_failure
 
 from config import BOT_TOKEN, CHAT_ID
 
