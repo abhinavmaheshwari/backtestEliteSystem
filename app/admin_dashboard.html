@@ -896,13 +896,14 @@ function renderScannerGrid(scanner_stats) {
       alertSub = lastStock ? lastStock : "Stocks cached";
       tooltipHtml = '';
     } else if (isApi) {
+      const fails = data.today_alerts;
       alertLabel = "Failures";
       alertHtml = `
-      <div class="scanner-alert-count ${data.today_alerts===0?'zero':''}" style="${data.today_alerts > 0 ? 'color: #ff4d6d;' : ''}">
-        ${data.today_alerts}
+      <div class="scanner-alert-count ${fails===0?'zero':''}" style="${fails > 0 ? 'color: #ff4d6d;' : ''}">
+        ${fails > 0 ? '1' : '0'}
       </div>`;
-      alertSub = data.today_alerts > 0 ? 'hover to view error' : 'system healthy';
-      tooltipHtml = data.today_alerts > 0 && data.error ? `
+      alertSub = fails > 0 ? `Failed ${fails} time${fails!==1?'s':''} · click to view` : 'system healthy';
+      tooltipHtml = fails > 0 && data.error ? `
       <div class="scanner-alert-tooltip">
         <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
         <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
