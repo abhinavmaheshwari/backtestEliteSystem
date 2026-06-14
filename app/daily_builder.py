@@ -17,6 +17,7 @@ from config import WATCHLIST_PATH
 # Globals for accumulation data
 _DELIVERY_DATA = {}
 _INST_BUYS = {}
+_BLACKLIST_SYMBOLS = set()
 
 
 # ── SEND GUARD — persisted in Postgres so restarts never re-send ────────────────────
@@ -215,8 +216,58 @@ def fetch_universe() -> pd.DataFrame:
     return df
 
 # =====================================================================================
-# SHARED UTILITIES
+# SHARED UTILITIES & SURVEILLANCE DATA
 # =====================================================================================
+
+def _load_blacklist():
+    """Loads CSV promoter blacklist + daily live NSE ASM/GSM surveillance lists."""
+    global _BLACKLIST_SYMBOLS
+    _BLACKLIST_SYMBOLS.clear()
+    
+    # 1. Load Hardcoded Promoter CSV
+    csv_path = os.path.join(os.path.dirname(WATCHLIST_PATH), "promoter_blacklist.csv")
+    if os.path.exists(csv_path):
+        try:
+            df_csv = pd.read_csv(csv_path)
+            for sym in df_csv["symbol"].dropna():
+                _BLACKLIST_SYMBOLS.add(str(sym).strip().upper())
+            logger.info(f"🛡️ Loaded {len(df_csv)} blacklisted promoters from CSV.")
+        except Exception as e:
+            logger.error(f"Failed to load promoter blacklist: {e}")
+
+    # 2. Fetch Live NSE ASM/GSM (Surveillance measures)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "application/json"
+    }
+    
+    try:
+        # Initial call to get cookies
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        
+        # Fetch ASM (Additional Surveillance Measure)
+        asm_res = session.get("https://www.nseindia.com/api/reportASM", headers=headers, timeout=10)
+        if asm_res.status_code == 200:
+            data = asm_res.json()
+            for key in ["longterm", "shortterm"]:
+                if key in data and "data" in data[key]:
+                    for item in data[key]["data"]:
+                        if "symbol" in item:
+                            _BLACKLIST_SYMBOLS.add(item["symbol"].strip().upper())
+                            
+        # Fetch GSM (Graded Surveillance Measure - usually shells / bankruptcy)
+        gsm_res = session.get("https://www.nseindia.com/api/reportGSM", headers=headers, timeout=10)
+        if gsm_res.status_code == 200:
+            data = gsm_res.json()
+            if isinstance(data, list):
+                for item in data:
+                    if "symbol" in item:
+                        _BLACKLIST_SYMBOLS.add(item["symbol"].strip().upper())
+                        
+        logger.info(f"🛡️ Total surveillance + blacklist guard loaded: {len(_BLACKLIST_SYMBOLS)} toxic stocks blocked.")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to fetch NSE surveillance lists: {e}")
 
 def _fval(row: pd.Series, col_name: str) -> float:
     v = row.get(col_name)
@@ -295,6 +346,9 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
         return skip(anomaly)
 
     # ── JUNK-KILL GATE — Non-negotiable hard blocks ──────────────────────────────────
+    if symbol in _BLACKLIST_SYMBOLS:
+        return skip(f"JUNK BLOCKED: Promoter Blacklist / NSE Surveillance (ASM/GSM)")
+    
     # High debt: D/E > 2.0 is dangerously leveraged (DHFL, IL&FS, Vodafone Idea type)
     if not debt_missing and debt_equity > MAX_DEBT_EQUITY:
         return skip(f"JUNK BLOCKED: D/E={debt_equity:.1f} exceeds max {MAX_DEBT_EQUITY}")
@@ -433,6 +487,9 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict:
         return skip(anomaly)
 
     # ── JUNK-KILL GATE (Financial) — Non-negotiable hard blocks ─────────────────────
+    if symbol in _BLACKLIST_SYMBOLS:
+        return skip(f"JUNK BLOCKED (FIN): Promoter Blacklist / NSE Surveillance (ASM/GSM)")
+        
     # Both revenue AND profits collapsing = structural failure (Yes Bank, DHFL type)
     if yoy_rev < -20 and yoy_profit < -20:
         return skip(f"JUNK BLOCKED (FIN): Structural collapse Rev={yoy_rev:.1f}% Profit={yoy_profit:.1f}%")
@@ -654,6 +711,9 @@ def _main_impl():
         _INST_BUYS = get_institutional_buys()
     except Exception as e:
         logger.warning(f"⚠️ Could not fetch accumulation data: {e}")
+
+    # Load Surveillance Blacklist
+    _load_blacklist()
 
     os.makedirs(os.path.dirname(OUTPUT_PARQUET), exist_ok=True)
 

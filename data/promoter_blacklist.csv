@@ -1,0 +1,18 @@
+symbol,promoter_group,reason,source
+YESBANK,Rana Kapoor,Fraud & money laundering - ED/CBI case. Forced RBI takeover 2020.,ED/CBI/RBI
+PCJEWELLER,Balram Garg,SFIO investigation for financial fraud. Stock crashed 95%+.,SFIO
+VAKRANGEE,Dinesh Nandwana,SEBI ban for market manipulation. Auditor resignations.,SEBI
+UNITECH,Sanjay Chandra,Arrested for fraud. Company under NCLT insolvency.,CBI/NCLT
+JPASSOCIAT,Jaiprakash Gaur,Massive debt default. Homebuyer fraud cases. NCLT proceedings.,NCLT
+JPPOWER,Jaiprakash Gaur,Jaypee Group - same promoter as JPASSOCIAT.,NCLT
+RCOM,Anil Ambani,Contempt of court. Massive debt default. NCLT insolvency.,SC/NCLT
+RPOWER,Anil Ambani,Reliance Power - same Anil Ambani group. Debt default.,NCLT
+COFFEEDAY,VG Siddhartha Estate,Founder suicide after ₹7000Cr financial irregularities discovered.,ED/IT
+HDIL,Rakesh Wadhawan,PMC Bank scam. Arrested by EOW. ₹4355Cr fraud.,EOW/ED
+EDUCOMP,Shantanu Prakash,₹5800Cr accounting fraud. SFIO investigation. NCLT.,SFIO/NCLT
+IBREALEST,Sameer Gehlaut,Allegations of siphoning funds. Multiple regulatory investigations.,SEBI/ED
+SUZLON,Tulsi Tanti Estate,Massive debt restructuring. Multiple default events. High risk.,Rating Agencies
+ADANIPOWER,Adani Group,Hindenburg allegations - include only if user confirms. REMOVE IF DISPUTED.,Hindenburg
+RELIGARE,Malvinder Singh,Singh brothers arrested for ₹740Cr fraud. Embezzlement from Religare.,ED/SEBI
+RTNPOWER,RT Group,Shell company characteristics. Exchange surveillance.,NSE
+NETWORK18,Reliance Group,Not fraud - but controlled entity. REMOVE if disputed.,N/A
