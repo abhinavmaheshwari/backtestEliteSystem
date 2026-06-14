@@ -244,6 +244,16 @@ def init_db():
                     )
                 """)
 
+                # ── Parquet Binary Cache ──────────────────────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS parquet_cache (
+                        name TEXT,
+                        date TEXT,
+                        data BYTEA,
+                        PRIMARY KEY (name, date)
+                    )
+                """)
+
                 conn.commit()
 
         _DB_INITIALIZED = True
@@ -687,3 +697,47 @@ def remove_portfolio_entry(entry_id: int):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM manual_portfolio WHERE id = %s", (entry_id,))
         conn.commit()
+
+# ── Parquet Binary Cache ──────────────────────────────────────────────────────
+
+def upload_parquet_to_db(name: str, file_path: str):
+    """Upload a binary parquet file to the database for today."""
+    if not os.path.exists(file_path):
+        return
+    today = datetime.now().strftime("%Y-%m-%d")
+    init_db()
+    try:
+        with open(file_path, "rb") as f:
+            binary_data = f.read()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO parquet_cache (name, date, data)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (name, date) DO UPDATE SET data = EXCLUDED.data
+                """, (name, today, binary_data))
+            conn.commit()
+        logger.info(f"💾 Uploaded {name} to DB parquet_cache for {today}")
+    except Exception as e:
+        logger.error(f"❌ Failed to upload {name} to DB: {e}")
+
+def download_parquet_from_db(name: str, file_path: str) -> bool:
+    """Download today's binary parquet file from the database."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM parquet_cache WHERE name = %s AND date = %s", (name, today))
+                row = cur.fetchone()
+                if row and row[0]:
+                    import os
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, "wb") as f:
+                        f.write(row[0])
+                    logger.info(f"⚡ Downloaded {name} from DB parquet_cache for {today}")
+                    return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Failed to download {name} from DB: {e}")
+        return False

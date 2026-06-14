@@ -276,6 +276,13 @@ def run_wealth_loop():
                 time.sleep(300)
                 continue
 
+
+            from database import download_parquet_from_db, upload_parquet_to_db
+            
+            # If cold boot (no local file), try to restore from DB instantly so dashboard isn't blank
+            if not os.path.exists(WEALTH_PATH):
+                download_parquet_from_db("wealth_engine", WEALTH_PATH)
+
             df = pd.read_parquet(WATCHLIST_PATH)
 
             logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
@@ -357,7 +364,9 @@ def run_wealth_loop():
             core_symbols = set(core_capped["Stock"].tolist()) if not core_capped.empty else set()
             wealth_df["Core_Selected"] = wealth_df["Stock"].apply(lambda s: s in core_symbols)
 
+
             wealth_df.to_parquet(WEALTH_PATH, index=False)
+            upload_parquet_to_db("wealth_engine", WEALTH_PATH)
 
             buy_count = len(wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)])
             core_count = len(core_capped)
