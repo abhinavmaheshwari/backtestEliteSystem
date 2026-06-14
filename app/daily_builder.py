@@ -124,6 +124,11 @@ MIN_MARKET_CAP    = 10_000_000_000   # ₹1,000 Cr — exclude micro-caps
 MIN_TRADED_VALUE  = 150_000_000      # ₹15 Cr/day — reliable fills on breakout entries
 MIN_ROE           = 8                # 8% ROE gate — let Wealth Engine v2 scoring handle quality filtering
 
+# ── JUNK-KILL GATES — These are NON-NEGOTIABLE hard blocks ──────────────────────────
+# Any stock violating these is permanently excluded regardless of momentum or growth.
+MAX_DEBT_EQUITY   = 2.0              # D/E > 2.0 = dangerously leveraged (blocks DHFL-type)
+MIN_PROMOTER_MCAP = 5_000_000_000    # ₹500 Cr — blocks shell companies with inflated ROE
+
 # PATH A only
 MIN_OPM_NONFIN    = 10               # 10% OPM — excludes commodity-level margins
 
@@ -289,6 +294,17 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     if anomaly:
         return skip(anomaly)
 
+    # ── JUNK-KILL GATE — Non-negotiable hard blocks ──────────────────────────────────
+    # High debt: D/E > 2.0 is dangerously leveraged (DHFL, IL&FS, Vodafone Idea type)
+    if not debt_missing and debt_equity > MAX_DEBT_EQUITY:
+        return skip(f"JUNK BLOCKED: D/E={debt_equity:.1f} exceeds max {MAX_DEBT_EQUITY}")
+    # Negative operating margins = business is burning cash at the operating level
+    if opm < 0:
+        return skip(f"JUNK BLOCKED: Negative OPM={opm:.1f}%")
+    # Falling off a cliff: both sales AND profits collapsing simultaneously
+    if yoy_sales < -20 and yoy_profit < -20:
+        return skip(f"JUNK BLOCKED: Structural collapse Sales={yoy_sales:.1f}% Profit={yoy_profit:.1f}%")
+
     # ── PEG RATIO CALCULATION ──
     peg = None
     if pe is not None and pe > 0 and yoy_profit > 0:
@@ -333,8 +349,8 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
 
     # MOMENTUM-QUALITY catch-all: allows stocks with decent fundamentals + strong momentum
     # to reach the Wealth Engine even if they don't fit any classic category.
-    # Without this, a stock with ROE 10%, ROCE 22%, YoY Sales 9% would be silently killed.
-    momentum_quality = (roe >= 10 and opm >= 8 and yoy_profit > 0 and market_cap >= 20_000_000_000)
+    # SAFETY: Requires low_debt (D/E <= 1.0) to prevent junk from sneaking in.
+    momentum_quality = (roe >= 10 and opm >= 8 and yoy_profit > 0 and low_debt and market_cap >= 20_000_000_000)
 
     if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold, debt_free_cash, undervalued_growth, capital_efficient, dividend_aristocrat, inst_accumulation, momentum_quality]):
         return skip(f"No category — YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%")
@@ -415,7 +431,14 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict:
     anomaly = _anomaly_check(symbol, yoy_rev, yoy_profit)
     if anomaly:
         return skip(anomaly)
-        
+
+    # ── JUNK-KILL GATE (Financial) — Non-negotiable hard blocks ─────────────────────
+    # Both revenue AND profits collapsing = structural failure (Yes Bank, DHFL type)
+    if yoy_rev < -20 and yoy_profit < -20:
+        return skip(f"JUNK BLOCKED (FIN): Structural collapse Rev={yoy_rev:.1f}% Profit={yoy_profit:.1f}%")
+    # ROA below 0.3 for a financial = the lending book is toxic
+    if roa < 0.3:
+        return skip(f"JUNK BLOCKED (FIN): Toxic ROA={roa:.2f}%")
     peg = None
     if pe is not None and pe > 0 and yoy_profit > 0:
         peg = pe / yoy_profit
