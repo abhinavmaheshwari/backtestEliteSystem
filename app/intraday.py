@@ -515,12 +515,15 @@ def start(run_once=False):
 
                     # Extract wealth signal for this stock
                     w_signal = None
+                    w_bucket = None
                     if not wealth_df.empty and symbol in wealth_df.index:
                         w_signal = wealth_df.loc[symbol, "Signal"]
+                        w_bucket = wealth_df.loc[symbol, "Portfolio_Bucket"]
 
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
                         "wealth_signal":    w_signal,
+                        "wealth_bucket":    w_bucket,
                         "category":         category,
                         "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
                         "price":            round(candle_close, 2),

@@ -145,9 +145,12 @@ def format_alert(a, scanner="1H"):
     
     # ── WEALTH SIGNAL TAG ───────────────────────────────────────────────────
     wealth_signal = a.get("wealth_signal")
+    wealth_bucket = a.get("wealth_bucket")
     wealth_tag = ""
     if wealth_signal == "BUY":
-        wealth_tag = "🛡️ <b>[SAFE TO HOLD - CORE COMPOUNDER]</b>\n"
+        wealth_tag = f"🛡️ <b>[SAFE TO HOLD - CORE COMPOUNDER]</b>\n"
+        if wealth_bucket:
+            wealth_tag += f"📂 <b>Bucket:</b> {wealth_bucket}\n"
     elif wealth_signal == "SELL":
         wealth_tag = "⚠️ <b>[HOLD FOR DAY ONLY - WEAK FUNDAMENTALS]</b>\n"
 
