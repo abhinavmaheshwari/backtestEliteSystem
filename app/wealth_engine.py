@@ -135,7 +135,7 @@ def determine_portfolio_bucket(r):
 def run_wealth_loop():
     from config import WATCHLIST_PATH, DATA_DIR
     from database import upsert_scanner_health
-    from app.telegram_utils import send_telegram_alert
+    from telegram_utils import send_telegram_alert
     
     WEALTH_PATH = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
     logger.info("💰 Fund Manager Wealth Engine Started.")

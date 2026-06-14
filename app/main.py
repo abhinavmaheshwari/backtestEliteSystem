@@ -72,6 +72,16 @@ WINDOWS = {
 # HELPERS
 # =====================================================================================
 
+def _cleanup_old_scanner_names():
+    from database import get_connection
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM scanner_health WHERE scanner_name IN ('WealthEngine', 'AIWorker');")
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to cleanup old scanner names: {e}")
+
 def wait_for_window(name: str):
     """Block until the scan window opens (weekday only)."""
     start_time, end_time = WINDOWS[name]
@@ -257,8 +267,8 @@ RESTARTABLE_THREADS = {
     "IntradayScanner":    run_intraday_scanner,
     "LiveScanner":        run_live_scanner,
     "PerformanceTracker": run_performance_tracker,
-    "AIWorker":           run_worker_loop,
-    "WealthEngine":       run_wealth_loop,
+    "Ai Worker":          run_worker_loop,
+    "Wealth Engine":      run_wealth_loop,
 }
 
 # EOD and Reversal are launched once and never restarted
@@ -363,6 +373,7 @@ def run_watchdog():
 # =====================================================================================
 
 if __name__ == "__main__":
+    _cleanup_old_scanner_names()
     def handle_sigterm(*args):
         logger.info("🛑 SIGTERM received — container shutting down. Closing gracefuly...")
         _telegram_notify("🛑 System shutting down (Railway container restart/stop).")
