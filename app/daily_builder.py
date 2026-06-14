@@ -703,40 +703,92 @@ def main():
             pass
         raise
 
+CHECKPOINT_FILE = "data/build_state.json"
+
+def load_checkpoint() -> dict:
+    import json, os
+    from datetime import date
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            with open(CHECKPOINT_FILE) as f:
+                state = json.load(f)
+                if state.get("date") != str(date.today()):
+                    return {}
+                return state
+        except:
+            return {}
+    return {}
+
+def save_checkpoint(state: dict):
+    import json, os
+    from datetime import date
+    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
+    state["date"] = str(date.today())
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
 def _main_impl():
+    state = load_checkpoint()
+
     with _exclusion_lock:
         EXCLUSION_LOG.clear()  
         
     logger.info("🚀 ELITE FUNDAMENTAL SCAN STARTED")
 
-    # Fetch institutional and delivery data
-    global _DELIVERY_DATA, _INST_BUYS
-    try:
-        from delivery_data import fetch_previous_day_delivery
-        _DELIVERY_DATA = fetch_previous_day_delivery()
-        
-        from institutional_data import get_institutional_buys
-        _INST_BUYS = get_institutional_buys()
-    except Exception as e:
-        logger.warning(f"⚠️ Could not fetch accumulation data: {e}")
+    if not state.get("universe_fetched"):
+        # Fetch institutional and delivery data
+        try:
+            from delivery_data import fetch_previous_day_delivery
+            _DELIVERY_DATA = fetch_previous_day_delivery()
+            
+            from institutional_data import get_institutional_buys
+            _INST_BUYS = get_institutional_buys()
+            
+            from block_deal_detector import run_fii_detector
+            run_fii_detector()
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch accumulation/block data: {e}")
 
-    # Load Surveillance Blacklist
-    _load_blacklist()
+        # Load Surveillance Blacklist
+        _load_blacklist()
 
-    os.makedirs(os.path.dirname(OUTPUT_PARQUET), exist_ok=True)
+        os.makedirs(os.path.dirname(OUTPUT_PARQUET), exist_ok=True)
 
-    universe_df = fetch_universe()
+        universe_df = fetch_universe()
 
-    if universe_df.empty:
-        logger.error("❌ No stocks returned from TradingView")
-        return
+        if universe_df.empty:
+            logger.error("❌ No stocks returned from TradingView")
+            return
+            
+        universe_df.to_parquet("data/temp_universe.parquet")
+        save_checkpoint({**state, "universe_fetched": True})
+        state = load_checkpoint()
+    else:
+        logger.info("⏭️ Universe already fetched today. Loading from temp cache...")
+        universe_df = pd.read_parquet("data/temp_universe.parquet")
+        _load_blacklist()
+        try:
+            from delivery_data import fetch_previous_day_delivery
+            _DELIVERY_DATA = fetch_previous_day_delivery()
+            from institutional_data import get_institutional_buys
+            _INST_BUYS = get_institutional_buys()
+            from block_deal_detector import run_fii_detector
+            run_fii_detector()
+        except:
+            pass
 
-    fin_mask = universe_df["sector"].isin(FINANCIAL_SECTORS)
-    logger.info(f"📊 Classifying {len(universe_df)} stocks... (Path A: {(~fin_mask).sum()} | Path B: {fin_mask.sum()})")
+    if not state.get("fundamentals_refreshed"):
+        from fundamentals_cache import refresh_fundamentals_tiered
+        refresh_fundamentals_tiered(universe_df)
+        save_checkpoint({**state, "fundamentals_refreshed": True})
+        state = load_checkpoint()
 
-    results = [classify_stock(row) for _, row in universe_df.iterrows()]
-    winners = [r for r in results if r is not None]
+    if not state.get("fundamentals_scored"):
+        fin_mask = universe_df["sector"].isin(FINANCIAL_SECTORS)
+        logger.info(f"📊 Classifying {len(universe_df)} stocks... (Path A: {(~fin_mask).sum()} | Path B: {fin_mask.sum()})")
+
+        results = [classify_stock(row) for _, row in universe_df.iterrows()]
+        winners = [r for r in results if r is not None]
 
     if EXCLUSION_LOG:
         with _exclusion_lock:
@@ -761,8 +813,14 @@ def _main_impl():
     # Moved entirely to wealth_engine.py to prevent split-brain scoring.
     # daily_builder now only exports pure, unweighted fundamentals.
 
-    final_df.to_csv(OUTPUT_CSV, index=False)
-    final_df.to_parquet(OUTPUT_PARQUET, index=False)
+        final_df.to_csv(OUTPUT_CSV, index=False)
+        final_df.to_parquet(OUTPUT_PARQUET, index=False)
+        
+        save_checkpoint({**state, "fundamentals_scored": True})
+        state = load_checkpoint()
+    else:
+        logger.info("⏭️ Fundamentals already scored today. Loading final watchlist...")
+        final_df = pd.read_parquet(OUTPUT_PARQUET)
 
     logger.info(f"✅ FINAL WATCHLIST SAVED: {len(final_df)} stocks")
 
@@ -846,6 +904,15 @@ def _main_impl():
     # Mark as sent AFTER successful dispatch so a crash mid-send doesn't suppress the next attempt
     _mark_sent_today()
     logger.info("✅ Send guard updated — will not re-send today on restart")
+    
+    # Clean up checkpoint on full success
+    try:
+        import os
+        if os.path.exists(CHECKPOINT_FILE):
+            os.remove(CHECKPOINT_FILE)
+            logger.info("✅ Build complete. Checkpoint file removed.")
+    except Exception as e:
+        logger.warning(f"Could not remove checkpoint file: {e}")
 
 # =====================================================================================
 # ALIAS

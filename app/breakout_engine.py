@@ -133,12 +133,21 @@ def _is_volume_confirmed(df: pd.DataFrame, min_ratio: float = None) -> bool:
         return True  # no data to check — don't block
 
     vol_now = float(df["Volume"].iloc[-1])
-    vol_avg = float(df["Volume"].iloc[-21:-1].mean())
+    vol_series = df["Volume"].iloc[-21:-1]
+    vol_avg = float(vol_series.mean())
+    vol_std = float(vol_series.std())
 
-    if vol_avg <= 0:
-        return True  # avoid division by zero
+    if vol_avg <= 0 or pd.isna(vol_std) or vol_std == 0:
+        return True  # avoid division by zero / std errors
 
-    return vol_now >= min_ratio * vol_avg
+    # Calculate Z-score
+    vol_z_score = (vol_now - vol_avg) / vol_std
+
+    # Treat min_ratio as the required Z-score since config may still export MIN_BREAKOUT_VOLUME_RATIO
+    # Assuming min_ratio ~ 2.5 for Z-score equivalent
+    required_z = min_ratio if min_ratio is not None else 2.5
+
+    return vol_z_score >= required_z
 
 
 def _has_tight_base(df: pd.DataFrame, threshold: float = None) -> bool:
@@ -153,10 +162,12 @@ def _has_tight_base(df: pd.DataFrame, threshold: float = None) -> bool:
         return False
 
     base_width = df["BASE_WIDTH"].iloc[-1]
+    vcp_tightening = df.get("VCP_TIGHTENING", pd.Series([False])).iloc[-1]
+    
     if pd.isna(base_width):
         return False
 
-    return float(base_width) < threshold
+    return float(base_width) < threshold and bool(vcp_tightening)
 
 
 def _get_obv_trend(df: pd.DataFrame) -> int:
@@ -303,18 +314,20 @@ def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> dict[str, floa
                 signals["BB Breakout"] = round(bb_strength * weight * quality_multiplier, 3)
 
     # ── VOLUME SURGE ──────────────────────────────────────────────────────────────
-    # Current bar volume >= 3x 20-bar average AND price is up.
+    # Current bar volume >= 3.0 Z-score AND price is up.
     if "Volume" in df.columns and n >= 21:
         vol_now = float(df["Volume"].iloc[-1])
-        # GAP 1 FIX: exclude the current bar from the baseline to avoid the breakout
-        # candle inflating its own average and understating the surge multiple.
-        vol_avg = float(df["Volume"].iloc[-21:-1].mean())
+        vol_series = df["Volume"].iloc[-21:-1]
+        vol_avg = float(vol_series.mean())
+        vol_std = float(vol_series.std())
 
-        if vol_avg > 0 and vol_now >= 3.0 * vol_avg and close > float(df["Open"].iloc[-1]):
-            # Strength = how much above volume average (as multiple)
-            vol_strength = (vol_now / vol_avg - 1.0) * 100  # Convert to %
-            weight = BREAKOUT_WEIGHTS.get("Volume Surge", 1.3)
-            signals["Volume Surge"] = round(vol_strength * weight * quality_multiplier, 3)
+        if vol_avg > 0 and not pd.isna(vol_std) and vol_std > 0 and close > float(df["Open"].iloc[-1]):
+            vol_z_score = (vol_now - vol_avg) / vol_std
+            if vol_z_score >= 3.0:
+                # Strength = how much above average (as multiple of std)
+                vol_strength = vol_z_score * 10  # Scale Z-score to 0-100 roughly
+                weight = BREAKOUT_WEIGHTS.get("Volume Surge", 1.3)
+                signals["Volume Surge"] = round(vol_strength * weight * quality_multiplier, 3)
 
     # ── HIERARCHY PRUNING: Remove redundant lower-level signals ────────────────
     # A 52W breakout already implies monthly+weekly+daily — don't clutter the alert.

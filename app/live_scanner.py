@@ -60,8 +60,8 @@ MAX_SINGLE_CANDLE_MOVE_PCT  = 6.0
 MAX_GAP_FROM_PRIOR_HIGH_PCT = 3.0   
 GAP_LOOKBACK_BARS           = 10    
 
-# ✅ NOTE: No macro regime check in this scanner — alerts fire irrespective of market trend.
-
+# ✅ NOTE: Intraday Regime check added to suppress alerts on heavy down days (-1.5%).
+MIN_VOLUME_Z_SCORE = 2.5
 def start(run_once=False):
     init_db()
     
@@ -143,6 +143,28 @@ def start(run_once=False):
                 "duplicate", "stale_data",
                 "prior_red_candles", "obv_divergence"
             ]}
+
+            nifty_intraday_down = False
+            try:
+                from price_fetcher import _fetch_history_with_retry
+                nifty_1d = _fetch_history_with_retry("^NSEI", period="5d", interval="15m")
+                if nifty_1d is not None and not nifty_1d.empty:
+                    # Get today's open
+                    today_str = datetime.now(IST).strftime('%Y-%m-%d')
+                    today_data = nifty_1d.loc[today_str] if today_str in nifty_1d.index else nifty_1d
+                    if not today_data.empty:
+                        nifty_open = float(today_data['Open'].iloc[0])
+                        nifty_current = float(today_data['Close'].iloc[-1])
+                        intraday_drop = ((nifty_open - nifty_current) / nifty_open) * 100
+                        if intraday_drop > 1.5:
+                            logger.warning(f"🚨 REGIME GATE: Nifty is down {intraday_drop:.2f}% today. Suppressing breakouts.")
+                            nifty_intraday_down = True
+            except Exception as e:
+                pass
+
+            if nifty_intraday_down:
+                time.sleep(300)
+                continue
 
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
                 symbol = "UNKNOWN"
@@ -237,12 +259,14 @@ def start(run_once=False):
                         continue
 
                     latest_volume = float(latest["Volume"])
-                    avg_volume    = float(ticker["Volume"].iloc[-21:-1].mean())
+                    vol_series    = ticker["Volume"].iloc[-21:-1]
+                    avg_volume    = float(vol_series.mean())
+                    vol_std       = float(vol_series.std())
 
-                    if avg_volume <= 0:
+                    if avg_volume <= 0 or pd.isna(vol_std) or vol_std == 0:
                         continue
 
-                    volume_ratio = latest_volume / avg_volume
+                    volume_z_score = (latest_volume - avg_volume) / vol_std
 
                     candle_high  = float(latest["High"])
                     candle_low   = float(latest["Low"])
@@ -272,7 +296,7 @@ def start(run_once=False):
                     if wick_ratio > MAX_UPPER_WICK_RATIO:
                         rejection_counts["upper_wick"] += 1
                         continue
-                    if volume_ratio < MIN_VOLUME_RATIO:
+                    if volume_z_score < MIN_VOLUME_Z_SCORE:
                         rejection_counts["low_volume"] += 1
                         continue
                     if avg_volume < MIN_AVG_VOLUME_SHARES:
@@ -378,7 +402,7 @@ def start(run_once=False):
                         category=category,
                         breakout_count=len(signals),
                         rsi=rsi_val,
-                        volume_ratio=volume_ratio,
+                        volume_ratio=volume_z_score,
                         breakout_signals=signals,
                         ticker=ticker,
                         latest=latest,
@@ -444,7 +468,7 @@ def start(run_once=False):
                             "body_ratio":       round(body_ratio, 2),
                             "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
                             "rsi":              round(rsi_val, 1),
-                            "volume_ratio":     round(volume_ratio, 2)
+                            "volume_ratio":     round(volume_z_score, 2)
                         },
                         "session": {
                             "open":             round(float(latest["Open"]), 2),
@@ -474,7 +498,7 @@ def start(run_once=False):
                         signals=signal_str,
                         score=score,
                         rsi=round(float(latest["RSI"]), 1),
-                        volume_ratio=round(volume_ratio, 2),
+                        volume_ratio=round(volume_z_score, 2),
                         stop_loss=suggested_stop,
                         target_price=target_price,
                         context=context,
@@ -501,7 +525,7 @@ def start(run_once=False):
                         "day_high":         round(float(latest["High"]), 2),
                         "day_low":          round(float(latest["Low"]), 2),
                         "rsi":              round(float(latest["RSI"]), 1),
-                        "volume_ratio":     round(volume_ratio, 2),
+                        "volume_ratio":     round(volume_z_score, 2),
                         "body_ratio":       round(body_ratio, 1),
                         "score":            score,
                         "above_ema20":      above_ema20,

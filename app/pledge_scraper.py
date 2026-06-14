@@ -3,13 +3,16 @@ import requests
 import logging
 from bs4 import BeautifulSoup
 import time
+import random
 import re
+from functools import lru_cache
 from database import get_connection, init_db
 from data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
 
-def fetch_promoter_pledge(symbol: str) -> float:
+@lru_cache(maxsize=5000)
+def fetch_promoter_pledge(symbol: str):
     """
     Fetches the promoter pledge percentage for a given NSE symbol.
     Uses ScraperAPI to bypass Cloudflare and scrapes Trendlyne.com.
@@ -46,7 +49,10 @@ def fetch_promoter_pledge(symbol: str) -> float:
         'render': 'false'
     }
     
-    pledge_val = 0.0
+    # Rate limiting sleep
+    time.sleep(random.uniform(1.5, 3.0))
+    
+    pledge_val = None
     try:
         res = requests.get('https://api.scraperapi.com/', params=payload, timeout=45)
         if res.status_code == 200:
@@ -76,20 +82,21 @@ def fetch_promoter_pledge(symbol: str) -> float:
             mark_failure('scraperapi', e)
         except Exception:
             logger.exception('Failed to report scraperapi exception')
-        return 0.0
+        return None
 
     # 3. Save to Cache
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO promoter_pledge_cache (symbol, pledge_pct, updated_at)
-                    VALUES (%s, %s, NOW())
-                    ON CONFLICT (symbol) DO UPDATE 
-                    SET pledge_pct = EXCLUDED.pledge_pct, updated_at = NOW()
-                """, (symbol, pledge_val))
-                conn.commit()
-    except Exception as e:
-        logger.warning(f"Failed to save pledge cache for {symbol}: {e}")
+    if pledge_val is not None:
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO promoter_pledge_cache (symbol, pledge_pct, updated_at)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (symbol) DO UPDATE 
+                        SET pledge_pct = EXCLUDED.pledge_pct, updated_at = NOW()
+                    """, (symbol, pledge_val))
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to save pledge cache for {symbol}: {e}")
 
     return pledge_val

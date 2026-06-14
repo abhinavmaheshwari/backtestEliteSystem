@@ -267,4 +267,13 @@ def apply_indicators(df: pd.DataFrame, timeframe: str = "1d", daily_ohlc: pd.Dat
     else:
         df["BASE_WIDTH"] = float("nan")
 
+    # ── VCP VOLATILITY CONTRACTION VALIDATION ─────────────────────────────────
+    # Volatility should be decreasing for a true VCP (Volatility Contraction Pattern)
+    if len(df) >= 60 and "ATR_PCT" in df.columns:
+        vol_20d = df["ATR_PCT"].rolling(window=20).mean()
+        vol_60d = df["ATR_PCT"].rolling(window=60).mean()
+        df["VCP_TIGHTENING"] = vol_20d < vol_60d
+    else:
+        df["VCP_TIGHTENING"] = False
+
     return df

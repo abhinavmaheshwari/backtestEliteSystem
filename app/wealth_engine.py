@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import time
 import logging
@@ -69,8 +70,8 @@ def fetch_nifty_macro_state() -> tuple[float | None, float | None]:
 # =====================================================================================
 
 def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
-    """Fetch 200 SMA, 6-month RS vs Nifty, distance to 52W high, and Liquidity."""
-    defaults = {"sma_200": None, "cmp": None, "rs_6m": None, "dist_52w_high": None, "liquidity": 0.0}
+    """Fetch MAs, 6-month RS vs Nifty, distance to 52W high, and Liquidity."""
+    defaults = {"sma_200": None, "sma_50": None, "ema_20": None, "cmp": None, "rs_6m": None, "dist_52w_high": None, "liquidity": 0.0}
     for attempt in range(RETRY_ATTEMPTS):
         try:
             hist = fetch_historical_data(symbol, period="1y", resolution="1d", dataset_key="price_1d")
@@ -78,6 +79,8 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
                 return defaults
 
             hist['sma_200'] = hist['Close'].rolling(window=200).mean()
+            hist['sma_50']  = hist['Close'].rolling(window=50).mean()
+            hist['ema_20']  = hist['Close'].ewm(span=20, adjust=False).mean()
 
             last_row = hist.iloc[-1]
             cmp = float(last_row['Close'])
@@ -101,6 +104,8 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
 
             return {
                 "sma_200": float(last_row['sma_200']) if not pd.isna(last_row['sma_200']) else None,
+                "sma_50":  float(last_row['sma_50']) if not pd.isna(last_row['sma_50']) else None,
+                "ema_20":  float(last_row['ema_20']) if not pd.isna(last_row['ema_20']) else None,
                 "cmp": cmp,
                 "rs_6m": rs_6m,
                 "dist_52w_high": dist_52w_high,
@@ -158,17 +163,18 @@ def calculate_100_point_score(r) -> int:
 
     # ── MOMENTUM (30 pts) — Highest weight: price leadership matters most ────
     rs_6m     = r.get("rs_6m", 0) or 0
+    rs_rating = r.get("RS_Rating", 0) or 0
     dist_52w  = r.get("dist_52w_high", 100) or 100
-    cmp       = r.get("cmp", 0) or 0
+    cmp_price = r.get("cmp", 0) or 0
     sma_200   = r.get("sma_200", 0) or 0
 
-    if rs_6m > 20:     score += 12
-    elif rs_6m > 10:   score += 8
-    elif rs_6m > 0:    score += 4
+    if rs_rating > 90: score += 12
+    elif rs_rating > 80: score += 8
+    elif rs_rating > 60: score += 4
     if dist_52w <= 5:  score += 8
     elif dist_52w <= 10: score += 5
     elif dist_52w <= 15: score += 3
-    if cmp > sma_200 and sma_200 > 0: score += 10
+    if cmp_price > sma_200 and sma_200 > 0: score += 10
 
     # ── OWNERSHIP (10 pts) — Institutional accumulation ──────────────────────
     cats = str(r.get("Category", ""))
@@ -293,6 +299,84 @@ def apply_sector_cap(df: pd.DataFrame, bucket_col: str, bucket_name: str, max_st
 # MAIN LOOP
 # =====================================================================================
 
+# =====================================================================================
+# DAILY HOLD SCORE ENGINE (0-100)
+# =====================================================================================
+def calculate_hold_score(r: pd.Series) -> int:
+    """
+    Evaluates existing holdings based on a 100-point exit rubric.
+    Score < 45 = SELL REVIEW
+    """
+    score = 0
+    
+    # 1. Technical Health (40 pts)
+    cmp = r.get("cmp", 0) or 0
+    ema20 = r.get("ema_20", 0) or 0
+    sma50 = r.get("sma_50", 0) or 0
+    sma200 = r.get("sma_200", 0) or 0
+    rs_6m = r.get("rs_6m", 0) or 0
+    
+    if cmp > ema20 and ema20 > 0: score += 10
+    if cmp > sma50 and sma50 > 0: score += 10
+    if cmp > sma200 and sma200 > 0: score += 10
+    if rs_6m > 0: score += 10
+    
+    # 2. Fundamental Integrity (30 pts)
+    # Mapping Piotroski/Fundamentals to our existing FM_Score
+    fm_score = r.get("FM_Score", 0) or 0
+    if fm_score >= 70: score += 15
+    elif fm_score >= 50: score += 5
+    
+    pledge = r.get("Promoter_Pledge", 0)
+    if pledge is None or pledge == 0: score += 10
+    
+    yoy_profit = r.get("YOY Profit %", 0) or 0
+    if yoy_profit > 0: score += 5
+    
+    # 3. Sector & Momentum Regime (15 pts)
+    # Using 6-month RS Rating (Percentile)
+    rs_rating = r.get("RS_Rating", 0) or 0
+    if rs_rating > 80: score += 15
+    elif rs_rating > 50: score += 5
+    
+    # 4. Portfolio Context / Alpha Adjustments (15 pts)
+    ai_conf = r.get("AI_Confidence", 0) or 0
+    if ai_conf >= 7: score += 15
+    elif ai_conf >= 4: score += 5
+    
+    return min(100, max(0, score))
+
+
+from datetime import date, timedelta
+
+LTCG_THRESHOLD_DAYS = 365  # Indian LTCG: > 12 months
+LTCG_BONUS_WINDOW   = 30   # Apply bonus in final 30 days before 1-year mark
+
+def compute_tax_hold_bonus(entry_date: date, unrealized_pnl_pct: float) -> dict:
+    today = date.today()
+    holding_days = (today - entry_date).days
+    days_to_ltcg = LTCG_THRESHOLD_DAYS - holding_days
+
+    harvest_signal = False
+    if unrealized_pnl_pct < -10 and holding_days < LTCG_THRESHOLD_DAYS:
+        harvest_signal = True
+
+    if holding_days >= LTCG_THRESHOLD_DAYS:
+        return {"bonus": 0, "reason": "Already LTCG — no penalty for selling", "harvest_signal": harvest_signal}
+    
+    if 0 < days_to_ltcg <= LTCG_BONUS_WINDOW:
+        bonus = round(10 * (days_to_ltcg / LTCG_BONUS_WINDOW), 1)
+        return {
+            "bonus": bonus,
+            "reason": f"LTCG in {days_to_ltcg}d",
+            "ltcg_date": entry_date + timedelta(days=LTCG_THRESHOLD_DAYS),
+            "telegram_alert": days_to_ltcg in [30, 15, 7],
+            "harvest_signal": harvest_signal
+        }
+    
+    return {"bonus": 0, "reason": "Normal STCG zone", "harvest_signal": harvest_signal}
+
+
 def run_wealth_loop():
     from config import WATCHLIST_PATH, DATA_DIR, MIN_DAILY_LIQUIDITY_RUPEES_WEALTH
     from database import upsert_scanner_health
@@ -368,6 +452,11 @@ def run_wealth_loop():
             tech_df = pd.DataFrame(technicals)
             wealth_df = pd.merge(df, tech_df, on="Stock", how="left")
 
+            if "rs_6m" in wealth_df.columns:
+                wealth_df["RS_Rating"] = wealth_df["rs_6m"].rank(pct=True, ascending=True) * 100
+            else:
+                wealth_df["RS_Rating"] = 0
+
             # Apply 100-point score
             wealth_df["FM_Score"] = wealth_df.apply(calculate_100_point_score, axis=1)
             wealth_df["Portfolio_Bucket"] = wealth_df.apply(lambda r: determine_portfolio_bucket(r, nifty_dist_52w), axis=1)
@@ -375,12 +464,58 @@ def run_wealth_loop():
             if nifty_dist_52w is None:
                 logger.warning("Using NO Nifty benchmark — macro gates suppressed")
 
+            # Load manual portfolio to apply tax hold bonuses
+            from database import get_manual_portfolio
+            try:
+                portfolio = get_manual_portfolio()
+                portfolio_dict = {p['symbol']: p for p in portfolio}
+            except Exception as e:
+                logger.warning(f"Failed to load manual portfolio: {e}")
+                portfolio_dict = {}
+
+            def apply_hold_score_with_tax(r):
+                base_hold_score = calculate_hold_score(r)
+                sym = r.get("Stock")
+                if sym in portfolio_dict:
+                    p = portfolio_dict[sym]
+                    try:
+                        from datetime import datetime
+                        entry_date = datetime.strptime(p['entry_date'], "%Y-%m-%d").date()
+                        cmp_price = r.get("cmp", p['entry_price']) or p['entry_price']
+                        pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
+                        tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
+                        return min(100, base_hold_score + tax_info['bonus'])
+                    except:
+                        pass
+                return base_hold_score
+
+            # Apply Hold Score evaluation
+            wealth_df["Hold_Score"] = wealth_df.apply(apply_hold_score_with_tax, axis=1)
+
             # Buy/Sell Signals
             def get_signal(r):
                 score = r.get("FM_Score", 0)
+                hold_score = r.get("Hold_Score", 0)
                 cmp = r.get("cmp", 0) or 0
                 sma = r.get("sma_200", 0) or 0
                 rs = r.get("rs_6m", 0) or 0
+                sym = r.get("Stock")
+                
+                # Check for Tax-Loss Harvesting signal
+                if sym in portfolio_dict:
+                    p = portfolio_dict[sym]
+                    try:
+                        from datetime import datetime
+                        entry_date = datetime.strptime(p['entry_date'], "%Y-%m-%d").date()
+                        cmp_price = r.get("cmp", p['entry_price']) or p['entry_price']
+                        pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
+                        tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
+                        if tax_info.get("harvest_signal"):
+                            # Only flag if not already a hard sell
+                            if hold_score >= 45 and rs >= -40 and not (sma > 0 and cmp < (0.75 * sma)):
+                                return f"HOLD (Tax-Loss Harvest Opportunity: {pnl_pct:.1f}%)"
+                    except:
+                        pass
                 
                 # Strict Buy rules
                 if score >= 85 and cmp > sma and sma > 0:
@@ -393,9 +528,9 @@ def run_wealth_loop():
                 if "Quality-On-Sale" in bucket and nifty_dist_52w is not None and nifty_dist_52w > 15:
                     return f"BUY (Deep Value / Bear Market)"
                     
-                # Sell Rules
-                if score < 60:
-                    return f"SELL (Fundamental Decay)"
+                # Exit Logic (The Hold Score Engine)
+                if hold_score < 45:
+                    return f"SELL REVIEW (Hold Score: {hold_score}/100)"
                     
                 # Catastrophic Trend Breakdown (Only if it's really bad, else hold)
                 if rs < -40:

@@ -26,11 +26,29 @@ os.makedirs(CACHE_DIR, exist_ok=True)
     retry=retry_if_exception_type(Exception),
     reraise=True
 )
-def _fetch_history_with_retry(yf_symbol: str, period: str = "1y") -> pd.DataFrame:
+def _fetch_history_with_retry(yf_symbol: str, period: str = "1y", auto_adjust: bool = True) -> pd.DataFrame:
     ticker = yf.Ticker(yf_symbol)
-    hist = ticker.history(period=period)
+    hist = ticker.history(period=period, auto_adjust=auto_adjust)
     if hist is None or hist.empty:
         raise ValueError(f"Empty history returned for {yf_symbol}")
+        
+    # Validate with nsepython if auto_adjust is True
+    if auto_adjust:
+        try:
+            from nsepython import nse_eq
+            symbol_raw = yf_symbol.replace(".NS", "")
+            nse_data = nse_eq(symbol_raw)
+            if 'priceInfo' in nse_data and 'lastPrice' in nse_data['priceInfo']:
+                nse_ltp = float(nse_data['priceInfo']['lastPrice'])
+                yf_ltp = float(hist['Close'].iloc[-1])
+                
+                # If discrepancy > 2%, yfinance applied a bad corporate action adjustment
+                if nse_ltp > 0 and abs(yf_ltp - nse_ltp) / nse_ltp > 0.02:
+                    logger.warning(f"⚠️ {yf_symbol}: yfinance adjusted data is stale/corrupt. Discrepancy > 2%. Falling back to unadjusted.")
+                    return ticker.history(period=period, auto_adjust=False)
+        except Exception as e:
+            logger.debug(f"NSE Validation failed for {yf_symbol}: {e}")
+            
     return hist
 
 

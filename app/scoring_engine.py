@@ -646,6 +646,49 @@ def bonus_modifiers(
             )
             bonus -= 3
 
+    # ── BONUS: FII BLOCK DEAL FOOTPRINT (+8 pts) ─────────────────────────────────
+    # If a recognized FII bought this stock recently, it shows institutional sponsorship.
+    try:
+        from block_deal_detector import get_fii_buyers
+        buyers = get_fii_buyers(symbol)
+        if buyers:
+            logger.info(f"  +8 {tag}FII Footprint Detected ({', '.join(buyers)})")
+            bonus += 8
+    except Exception as e:
+        pass
+
+    # ── PENALTY: BASE MATURITY (LATE STAGE BREAKOUT) ─────────────────────────────
+    # Proxy to penalize Stage 3/4 breakouts without needing a pattern recognition engine.
+    if timeframe == "1d" and len(ticker) >= 252 and "SMA200" in ticker.columns:
+        price = float(latest["Close"])
+        sma200 = float(latest.get("SMA200", 0) or 0)
+        sma200_12m_ago = float(ticker["SMA200"].iloc[-252])
+        week52_low = float(ticker["Low"].iloc[-252:].min())
+        
+        maturity_penalty = 0
+        if week52_low > 0:
+            pct_above_low = (price - week52_low) / week52_low * 100
+            if pct_above_low > 150:
+                logger.warning(f"  -10 {tag}Late Stage Base (Price >150% above 52W low)")
+                maturity_penalty -= 10
+                
+        if sma200_12m_ago > 0:
+            sma200_slope = (sma200 - sma200_12m_ago) / sma200_12m_ago * 100
+            if sma200_slope < 0:
+                logger.warning(f"  -15 {tag}Stage 4 Base (Declining 200 SMA YoY)")
+                maturity_penalty -= 15
+                
+        # Proxy 3: Momentum Decay (RS decay proxy)
+        # If the stock has been flat or down over the last 3 months despite being up over 12 months
+        price_6m_ago = float(ticker["Close"].iloc[-126])
+        if price_6m_ago > 0:
+            recent_6m_ret = (price - price_6m_ago) / price_6m_ago * 100
+            if recent_6m_ret < 5 and pct_above_low > 50:
+                logger.warning(f"  -8 {tag}Momentum Decay (Flat/Down over last 6 months)")
+                maturity_penalty -= 8
+                
+        bonus += maturity_penalty
+
     return bonus
 
 
@@ -684,6 +727,26 @@ def calculate_score(
         )
         if disq:
             return 0
+            
+    # ── STEP 1.5: PIOTROSKI F-SCORE DISQUALIFIER & CAP ──────────────────────────────
+    f_score_pts = 0
+    max_score_cap = 100
+    if timeframe == "1d" and symbol is not None:
+        try:
+            from fundamentals_cache import get_piotroski_score
+            p_score = get_piotroski_score(symbol)
+            if p_score >= 0 and p_score <= 3:
+                logger.warning(f"🚫 {tag}DISQ: Piotroski F-Score {p_score} <= 3 (Fundamental weakness)")
+                return 0
+            elif p_score >= 7:
+                f_score_pts = 12
+                logger.debug(f"  +12 {tag}Piotroski F-Score {p_score} >= 7 bonus")
+            elif p_score < 0:
+                # Missing fundamental data
+                max_score_cap = 75
+                logger.debug(f"  ○ {tag}Missing fundamentals — capping max score at 75")
+        except:
+            pass
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────
     # FIX: Use exact category matching with split, not substring `in` operator.
@@ -691,8 +754,8 @@ def calculate_score(
     cats = [c.strip() for c in category.split("+")]
     category_pts = max((SCORE_CATEGORY.get(c, 0) for c in cats), default=0)
 
-    score += category_pts
-    logger.debug(f"  Score after category ({category}): {score} (+{category_pts})")
+    score += category_pts + f_score_pts
+    logger.debug(f"  Score after category and Piotroski ({category}): {score} (+{category_pts + f_score_pts})")
 
     # ── STEP 3: BREAKOUT SIGNALS (WEIGHTED STRENGTH) ─────────────────────────────────
     # v5: PER_SIGNAL_CAP raised to 12 — the new breakout weights (3.0× for 52W) mean
@@ -861,6 +924,11 @@ def calculate_score(
         score += bonuses
         logger.debug(f"  Score after bonuses: {score} ({'+' if bonuses >= 0 else ''}{bonuses})")
 
-    final_score = max(0, min(score, 100))
+    # Cap at configured max or 100
+    final_score = int(score)
+    if final_score > max_score_cap:
+        logger.debug(f"  {tag}Score capped at {max_score_cap} (was {final_score})")
+        return max_score_cap
+    final_score = min(final_score, 100)
     logger.info(f"  📊 Final score: {final_score}")
     return final_score
