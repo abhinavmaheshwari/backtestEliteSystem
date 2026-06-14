@@ -902,7 +902,7 @@ function renderScannerGrid(scanner_stats) {
       <div class="scanner-alert-count ${fails===0?'zero':''}" style="${fails > 0 ? 'color: #ff4d6d;' : ''}">
         ${fails > 0 ? '1' : '0'}
       </div>`;
-      alertSub = fails > 0 ? `Failed ${fails} time${fails!==1?'s':''} · click to view` : 'system healthy';
+      alertSub = fails > 0 ? 'click to view error trace' : 'system healthy';
       tooltipHtml = fails > 0 && data.error ? `
       <div class="scanner-alert-tooltip">
         <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
