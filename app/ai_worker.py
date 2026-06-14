@@ -38,6 +38,7 @@ def run_worker_loop():
             upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: None | Total: {total_stocks}")
 
             max_retries = 3
+            global_penalty_idx = 0
             for attempt in range(max_retries):
                 failed_stocks = []
                 for i, sym in enumerate(pending_stocks):
@@ -55,6 +56,7 @@ def run_worker_loop():
                         result = fetch_and_analyze_concall(sym)
                         
                         if result and "error" not in result:
+                            global_penalty_idx = 0
                             conf = result.get("management_confidence", "N/A")
                             key_used = result.get("key_used", "Key 1")
                             logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
@@ -69,6 +71,11 @@ def run_worker_loop():
                             # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
                             if "No recent concall transcripts" not in error_msg:
                                 failed_stocks.append(sym)
+                                if "All AI models" in error_msg or "429" in error_msg:
+                                    penalty = [300, 900, 1800][min(global_penalty_idx, 2)]
+                                    logger.warning(f"⚠️ [AI WORKER] Global API failure. Backing off for {penalty//60} minutes...")
+                                    time.sleep(penalty)
+                                    global_penalty_idx += 1
                             else:
                                 # Save negative cache so it doesn't infinitely retry on the next 30-min global loop
                                 from database import save_concall_analysis
