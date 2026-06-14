@@ -301,7 +301,7 @@ def api_macro_state():
         return jsonify({
             "nifty_6m_return": r_6m,
             "nifty_dist_52w": d_52w,
-            "bear_market_gate": bool(dist_52w > 15.0) if dist_52w is not None else False
+            "bear_market_gate": bool(d_52w > 15.0) if d_52w is not None else False
         })
     except Exception as e:
         logger.error(f"Failed to fetch macro state: {e}")
