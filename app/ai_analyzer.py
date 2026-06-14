@@ -76,12 +76,9 @@ def analyze_concall_text(text: str) -> dict:
     if gemini_key_str:
         gemini_keys = [k.strip() for k in gemini_key_str.split(",") if k.strip()]
         gemini_models = [
-            "gemini-1.5-flash-002", 
-            "gemini-1.5-pro-002", 
-            "gemini-1.5-flash-001", 
-            "gemini-1.5-pro-001", 
-            "gemini-1.5-flash-8b", 
-            "gemini-2.0-flash-exp"
+            "gemini-1.5-flash", 
+            "gemini-1.5-pro", 
+            "gemini-1.0-pro"
         ]
         
         for model in gemini_models:
