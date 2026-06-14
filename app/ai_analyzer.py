@@ -99,6 +99,11 @@ def analyze_concall_text(text: str) -> dict:
                     err_str = str(e).replace(gemini_key, "[REDACTED_KEY]")
                     if "429" in err_str or "Quota" in err_str:
                         logger.warning(f"{model} hit rate limit on Key {i+1}.")
+                        errors.append(f"{model} Rate Limited (Key {i+1})")
+                        
+                        from data_fetch_status import mark_failure
+                        mark_failure('gemini', f"{model} Rate Limited (Key {i+1})")
+                        
                         if i == len(gemini_keys) - 1:
                             logger.warning(f"All Gemini keys exhausted for {model}. Sleeping 30s before trying next model/retry...")
                             time.sleep(30)
@@ -106,8 +111,11 @@ def analyze_concall_text(text: str) -> dict:
                     else:
                         logger.warning(f"{model} failed: {err_str}")
                         errors.append(f"{model}: {err_str}")
+                        from data_fetch_status import mark_failure
+                        mark_failure('gemini', f"{model}: {err_str}")
                         break # Skip to next model if it's not a quota issue
 
     from data_fetch_status import mark_failure
-    mark_failure('gemini', errors[-1] if errors else "All AI models failed.")
+    final_error = errors[-1] if errors else "All AI models failed."
+    mark_failure('gemini', final_error)
     return {"error": "All AI models in the fallback chain failed.", "details": errors}
