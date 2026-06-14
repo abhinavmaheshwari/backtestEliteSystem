@@ -22,20 +22,32 @@ def run_worker_loop():
                 time.sleep(300) # Sleep 5 mins if watchlist doesn't exist yet
                 continue
                 
-            # Read the latest watchlist (ensure we read the .csv file, not the .parquet)
+            # Read the latest watchlist
             csv_path = WATCHLIST_PATH.replace(".parquet", ".csv")
             if not os.path.exists(csv_path):
                 time.sleep(300)
                 continue
                 
             df = pd.read_csv(csv_path)
-            
-            # We want to analyze all stocks in the fundamental watchlist
             pending_stocks = df["Stock"].tolist()
+            
+            # Read excluded stocks so they are pre-cached if they break out later
+            excluded_csv_path = WATCHLIST_PATH.replace(".parquet", "_excluded.csv")
+            if os.path.exists(excluded_csv_path):
+                try:
+                    df_ex = pd.read_csv(excluded_csv_path)
+                    if "Stock" in df_ex.columns:
+                        pending_stocks.extend(df_ex["Stock"].tolist())
+                except Exception as e:
+                    logger.error(f"Failed to load exclusion list for AI caching: {e}")
+                    
+            # Deduplicate and sort
+            pending_stocks = sorted(list(set(pending_stocks)))
             total_stocks = len(pending_stocks)
             
             db_processed_count = get_total_cached_concalls()
             upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: None | Total: {total_stocks}")
+
 
             max_retries = 3
             global_penalty_idx = 0
