@@ -9,6 +9,7 @@ from collections import defaultdict
 import concurrent.futures
 from pledge_scraper import fetch_promoter_pledge
 from price_fetcher import fetch_historical_data, clear_price_cache
+from database import get_recent_concall_analysis
 
 # Concurrency and retry tuning
 WORKER_COUNT = 3  # Hardcoded to 3 to prevent OOM kills on Railway (500MB RAM limit)
@@ -160,9 +161,17 @@ def calculate_100_point_score(r) -> int:
         elif fcf_margin > 0:
             score += 5    # Positive but thin
         # else: 0 — negative FCF is a red flag
-    else:
         # FCF data unavailable (common for financials) — neutral, no penalty
         score += 3
+
+    # ── AI SENTIMENT (+5 or -5 pts) — Based on management guidance ───────────
+    ai_conf = r.get("AI_Confidence", 0)
+    if ai_conf >= 8:
+        score += 5   # Upward guidance / Record margins
+    elif ai_conf == 7:
+        score += 2   # Solid / Consistent guidance
+    elif 1 <= ai_conf <= 4:
+        score -= 5   # Headwinds / Guidance cuts
 
     return min(100, score)
 
@@ -285,6 +294,18 @@ def run_wealth_loop():
                 except Exception as e:
                     logger.warning(f"Promoter pledge fetch failed for {sym}: {e}")
                     tech["Promoter_Pledge"] = 0
+                
+                # Extract AI Concall Confidence
+                try:
+                    concall = get_recent_concall_analysis(sym)
+                    if concall and isinstance(concall, dict) and "management_confidence" in concall:
+                        tech["AI_Confidence"] = int(concall["management_confidence"])
+                    else:
+                        tech["AI_Confidence"] = 0
+                except Exception as e:
+                    logger.warning(f"AI Concall fetch failed for {sym}: {e}")
+                    tech["AI_Confidence"] = 0
+
                 return tech
 
             technicals = []
