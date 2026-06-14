@@ -62,7 +62,7 @@ def fetch_nifty_macro_state() -> tuple[float | None, float | None]:
         return (ret_6m, dist_52w)
     except Exception as e:
         logger.error(f"Failed to fetch Nifty Macro State: {e}")
-        return _nifty_cache
+        return (_nifty_cache["ret_6m"], _nifty_cache["dist_52w"])
 
 # =====================================================================================
 # PER-STOCK TECHNICAL OVERLAY
@@ -87,7 +87,7 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
             if len(hist_6m) > 0:
                 start_6m = hist_6m['Close'].iloc[0]
                 stock_6m_ret = ((cmp - start_6m) / start_6m) * 100.0
-                rs_6m = stock_6m_ret - (nifty_6m_ret if nifty_6m_ret is not None else 0.0)
+                rs_6m = None if nifty_6m_ret is None else stock_6m_ret - nifty_6m_ret
             else:
                 rs_6m = 0.0
 
@@ -321,7 +321,10 @@ def run_wealth_loop():
             logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
 
             nifty_6m_ret, nifty_dist_52w = fetch_nifty_macro_state()
-            logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
+            if nifty_6m_ret is None:
+                logger.info("Nifty Macro: UNAVAILABLE — suppressing macro gates")
+            else:
+                logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
 
             clear_price_cache()
 
