@@ -333,7 +333,9 @@ def api_get_portfolio():
 
             # Recommendation Engine Logic
             rec = "HOLD"
-            if fm_score > 0 and fm_score < 65:
+            if cmp == 0:
+                rec = "NO DATA"
+            elif fm_score > 0 and fm_score < 65:
                 rec = "EXIT"
             elif signal and "SELL" in str(signal).upper():
                 rec = "EXIT"
