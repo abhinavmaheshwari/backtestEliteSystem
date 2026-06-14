@@ -309,40 +309,7 @@ def run_watchdog():
             _logged_ready = True
             
             # --- POST-DEPLOYMENT INSTANT VERIFICATION ---
-            logger.info("🧪 Triggering POST-DEPLOYMENT INSTANT VERIFICATION for all scanners...")
-            
-            try:
-                import daily_builder
-                logger.info("🧪 Testing daily_builder...")
-                daily_builder.build_watchlist()
-            except Exception as e:
-                logger.error(f"❌ Daily Builder verification failed: {e}")
-                
-            try:
-                import intraday
-                intraday.start(run_once=True)
-            except Exception as e:
-                logger.error(f"❌ Intraday verification failed: {e}")
-                
-            try:
-                import live_scanner
-                live_scanner.start(run_once=True)
-            except Exception as e:
-                logger.error(f"❌ Live verification failed: {e}")
-                
-            try:
-                import eod_scanner
-                eod_scanner.start()
-            except Exception as e:
-                logger.error(f"❌ EOD verification failed: {e}")
-                
-            try:
-                import reversal_scanner
-                reversal_scanner.start()
-            except Exception as e:
-                logger.error(f"❌ Reversal verification failed: {e}")
-                
-            logger.info("✅ VERIFICATION COMPLETE. Going to sleep until regular schedule.")
+            # Removed to prevent unnecessary API hits on every restart
             # --------------------------------------------
 
         for name, thread in list(active_threads.items()):

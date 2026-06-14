@@ -388,13 +388,15 @@ def run_wealth_loop():
                 if "Quality-On-Sale" in bucket and nifty_dist_52w > 15:
                     return f"BUY (Deep Value / Bear Market)"
                     
-                # Sell Rules (Softened 200 SMA rule to prevent whipsaws, adding RS collapse)
+                # Sell Rules
                 if score < 60:
                     return f"SELL (Fundamental Decay)"
-                if rs < -10:
-                    return f"SELL (RS Collapse)"
-                if sma > 0 and cmp < (0.9 * sma):
-                    return f"SELL (Deep below SMA)"
+                    
+                # Catastrophic Trend Breakdown (Only if it's really bad, else hold)
+                if rs < -40:
+                    return f"SELL (Catastrophic RS Collapse)"
+                if sma > 0 and cmp < (0.75 * sma):
+                    return f"SELL (Catastrophic Trend Breakdown)"
                     
                 return ""
 
@@ -419,17 +421,17 @@ def run_wealth_loop():
             current_week = now.isocalendar()[1]
             if now.weekday() == 6 and current_week != last_telegram_week:
                 try:
-                    from telegram_utils import send_telegram_alert
+                    from telegram_engine import send_telegram_message
                     top_20 = wealth_df.sort_values(by="FM_Score", ascending=False).head(20)
-                    msg = "🏆 *Top 20 Long-Term Compounders* 🏆\n\n"
+                    msg = "🏆 <b>Top 20 Long-Term Compounders</b> 🏆\n\n"
                     for idx, row in top_20.iterrows():
                         rs = row.get('rs_6m', 0) or 0
                         fcf = row.get('FCF Margin %')
                         fcf_str = f"{fcf:.0f}%" if fcf is not None else "N/A"
-                        msg += f"• *{row['Stock']}* | Score: {row['FM_Score']}\n"
+                        msg += f"• <b>{row['Stock']}</b> | Score: {row['FM_Score']}\n"
                         msg += f"  └ ROCE: {row.get('ROCE %', 0):.0f}% | RS: {rs:.0f}% | FCF: {fcf_str}\n"
 
-                    send_telegram_alert(msg, parse_mode="Markdown")
+                    send_telegram_message(msg, scan_type="EOD")
                     last_telegram_week = current_week
                     logger.info("📤 [WEALTH ENGINE] Weekly Telegram report sent.")
                 except Exception as tg_err:

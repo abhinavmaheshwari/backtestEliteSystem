@@ -756,18 +756,17 @@ def _main_impl():
         
         ai_scores = []
         total_len = len(final_df)
+        cached_count = 0
         for i, rrow in final_df.iterrows():
             sym = rrow["Stock"]
-            logger.info(f"[{i+1}/{total_len}] Checking DB for cached AI Concall of {sym}")
             
             try:
                 # 1. Check recent cache (60 days)
                 cached = get_recent_concall_analysis(sym, max_age_days=60)
                 if cached:
-                    logger.info(f"   -> Using cached AI report")
+                    cached_count += 1
                     ai_data = cached
                 else:
-                    logger.info(f"   -> No cache found for {sym}. Worker will pick this up later.")
                     ai_data = None
                     
                 # 2. Apply Alpha Boost
@@ -783,13 +782,12 @@ def _main_impl():
                         except Exception: pass
                         
                 ai_scores.append(score)
-                if score != 0:
-                    logger.info(f"   -> AI Boost: {score}")
-                    
+                
             except Exception as e:
                 logger.error(f"Failed AI check for {sym}: {e}")
                 ai_scores.append(0)
                 
+        logger.info(f"✅ Found {cached_count}/{total_len} AI reports in local database cache.")
         
         # Re-apply boosts to the final Fundamental Score
         
