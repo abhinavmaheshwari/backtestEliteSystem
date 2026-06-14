@@ -136,8 +136,7 @@
 
   <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="myport" style="color:var(--accent);">My Portfolio Tracker</button>
-    <button type="button" class="tab-btn tab-exit active" data-tab="exit">Exit / Sell Alerts</button>
-    <button type="button" class="tab-btn tab-buy" data-tab="buy">Buy Signals</button>
+    <button type="button" class="tab-btn tab-buy active" data-tab="buy">Buy Signals</button>
     <button type="button" class="tab-btn" data-tab="buckets">Portfolio Buckets</button>
   </div>
 
@@ -158,24 +157,8 @@
     </div>
   </div>
 
-  <!-- EXIT TAB -->
-  <div id="panel-exit" class="tab-panel active">
-    <div class="exit-banner">
-      <strong>When to sell holdings you bought earlier:</strong> If a stock you own appears here, consider exiting or trimming.
-      Triggers — score &lt; 60 (fundamental decay), 6M RS &lt; −10% (losing vs Nifty), or price &gt; 10% below 200 SMA (trend broken).
-      Updated hourly. <em>Not</em> the same as “Buy on Discount” below — that tab is for new entries in weak markets.
-    </div>
-    <div class="section-title">Exit / Sell Alerts <span id="exit-count" class="tag-red">0</span> <span>Review holdings · trim or exit</span></div>
-    <div class="table-container">
-      <table id="tbl-exit">
-        <thead><tr><th>Stock</th><th>Exit Reason</th><th>Score</th><th>RS (6M)</th><th>vs 200 SMA</th><th>Bucket</th><th>ROCE %</th><th>FCF</th><th>Sector</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
   <!-- BUY TAB -->
-  <div id="panel-buy" class="tab-panel">
+  <div id="panel-buy" class="tab-panel active">
     <div class="section-title">Active Buy Signals <span id="buy-count">0</span> <span>Score ≥ 85 · above 200 SMA</span></div>
     <div class="table-container">
       <table id="tbl-buy">
@@ -347,26 +330,9 @@
         const stocks = Array.isArray(data) ? data : (data.data || []);
         document.getElementById('kpi-total').textContent = stocks.length;
 
-        const sells = stocks.filter(s => (s.Signal || "").includes("SELL")).sort((a,b) => (a.FM_Score || 0) - (b.FM_Score || 0));
         const buys = stocks.filter(s => (s.Signal || "").includes("BUY")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
-        document.getElementById('kpi-sells').textContent = sells.length;
         document.getElementById('kpi-buys').textContent = buys.length;
-        document.getElementById('exit-count').textContent = sells.length;
         document.getElementById('buy-count').textContent = buys.length;
-
-        document.querySelector('#tbl-exit tbody').innerHTML = sells.length ? sells.map(r => `
-          <tr>
-            <td class="sym">${r.Stock}</td>
-            <td>${getSigHtml(r.Signal)}</td>
-            <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
-            <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
-            <td>${smaStatus(r)}</td>
-            <td>${bucketTag(r.Portfolio_Bucket)}</td>
-            <td class="mono">${fmt(r['ROCE %'])}%</td>
-            <td>${getFcfHtml(r['FCF Margin %'])}</td>
-            <td>${sectorTag(r.Sector)}</td>
-          </tr>
-        `).join('') : `<tr><td colspan="9" class="empty">No exit alerts right now — all scanned stocks pass hold criteria</td></tr>`;
 
         document.querySelector('#tbl-buy tbody').innerHTML = buys.length ? buys.map(r => `
           <tr>
