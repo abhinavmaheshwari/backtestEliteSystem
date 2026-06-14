@@ -263,6 +263,28 @@ def api_shortlist():
         logger.error(f"Failed to load shortlist JSON: {e}")
         return jsonify([])
 
+@app.route("/api/wealth")
+def api_wealth():
+    """Returns the elite wealth system data as JSON."""
+    from config import DATA_DIR
+    import pandas as pd
+    try:
+        WEALTH_PATH = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+        if not os.path.exists(WEALTH_PATH):
+            return jsonify([])
+        df = pd.read_parquet(WEALTH_PATH)
+        df = df.replace([pd.NA, float('inf'), float('-inf')], None)
+        df = df.where(pd.notnull(df), None)
+        return jsonify(df.to_dict(orient="records"))
+    except Exception as e:
+        logger.error(f"Failed to load wealth JSON: {e}")
+        return jsonify([])
+
+@app.route("/wealth")
+def route_wealth():
+    from config import BASE_DIR
+    return send_file(os.path.join(BASE_DIR, "app", "wealth_dashboard.html"))
+
 @app.route("/api/download_shortlist")
 def api_download_shortlist():
     """Serves the elite fundamental watchlist as a CSV file."""
