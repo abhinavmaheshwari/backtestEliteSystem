@@ -97,6 +97,10 @@
       <div class="kpi-label">Growth Multipliers</div>
     </div>
     <div class="kpi-card">
+      <div class="kpi-value" id="kpi-sale" style="color: var(--accent);">-</div>
+      <div class="kpi-label">Quality On Sale</div>
+    </div>
+    <div class="kpi-card">
       <div class="kpi-value" id="kpi-buys" style="color: var(--green);">-</div>
       <div class="kpi-label">Active Buy Signals</div>
     </div>
@@ -129,6 +133,15 @@
   <div class="table-container">
     <table id="tbl-growth">
       <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>YoY Revenue</th><th>YoY Profit</th><th>FCF</th><th>Signal</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- QUALITY ON SALE -->
+  <div class="section-title">🛍️ Quality On Sale <span id="sale-count">0</span> <span>Discounted Quality · PEG < 1</span></div>
+  <div class="table-container">
+    <table id="tbl-sale">
+      <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>PEG Ratio</th><th>FCF</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -166,12 +179,12 @@
         if (!res.ok) throw new Error('API Error');
         const data = await res.json();
 
-        if (data.status === "processing") {
+        if (data && data.status === "processing") {
           document.querySelector('.kpi-grid').innerHTML = `<div class="kpi-card" style="grid-column: 1/-1;"><div class="kpi-value" style="font-size:16px; color:var(--muted);">⏳ Wealth Engine is computing metrics for all stocks... (First run takes ~5 min)</div></div>`;
           return;
         }
 
-        const stocks = data.data || [];
+        const stocks = Array.isArray(data) ? data : (data.data || []);
         document.getElementById('kpi-total').textContent = stocks.length;
 
         // Top 20
@@ -227,6 +240,22 @@
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
         `).join('') : `<tr><td colspan="7" class="empty">No stocks met Growth criteria</td></tr>`;
+
+        // Quality On Sale
+        const sale = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Quality-On-Sale")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
+        document.getElementById('kpi-sale').textContent = sale.length;
+        document.getElementById('sale-count').textContent = sale.length;
+        document.querySelector('#tbl-sale tbody').innerHTML = sale.length ? sale.map(r => `
+          <tr>
+            <td class="sym">${r.Stock}</td>
+            <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
+            <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
+            <td class="mono">${fmt(r['ROCE %'])}%</td>
+            <td class="mono">${fmt(r['PEG Ratio'])}</td>
+            <td>${getFcfHtml(r['FCF Margin %'])}</td>
+            <td>${getSigHtml(r.Signal)}</td>
+          </tr>
+        `).join('') : `<tr><td colspan="7" class="empty">No stocks currently on sale</td></tr>`;
 
         // Opportunistic
         const opp = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Opportunistic")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));

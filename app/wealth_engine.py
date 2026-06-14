@@ -178,6 +178,17 @@ def determine_portfolio_bucket(r):
     if score >= 75 and mcap >= 2000 and yoy_sales >= 20 and yoy_profit >= 20 and rs_6m > 0 and dist_52w <= 15:
         buckets.append("Growth")
 
+    # Quality-On-Sale — Temporarily out of favor but high quality (PEG proxy or PE proxy logic)
+    # Using PEG < 1.0 proxy for "PE below 5Y median" since 5Y median is not available.
+    # Also 10-30% below 52W high (dist_52w between 10 and 30)
+    peg = r.get("PEG Ratio", 1.0)
+    if peg is None:
+        peg = 1.0
+    cmp = r.get("cmp") or 0
+    sma = r.get("sma_200") or 1e9
+    if score >= 75 and roce >= 20 and yoy_sales >= 15 and yoy_profit >= 15 and (10 <= dist_52w <= 30) and cmp > sma and peg < 1.0:
+        buckets.append("Quality-On-Sale")
+
     # Opportunistic / Turnaround
     if score >= 60 and ("Recovery Play" in cats or "Financial Recovery" in cats):
         buckets.append("Opportunistic")
@@ -260,10 +271,20 @@ def run_wealth_loop():
                 score = r.get("FM_Score", 0)
                 cmp = r.get("cmp", 0) or 0
                 sma = r.get("sma_200", 0) or 0
+                rs = r.get("rs_6m", 0) or 0
+                
+                # Strict Buy rules
                 if score >= 85 and cmp > sma and sma > 0:
                     return f"BUY (Score: {score})"
+                    
+                # Sell Rules (Softened 200 SMA rule to prevent whipsaws, adding RS collapse)
                 if score < 60:
-                    return f"SELL (Score: {score})"
+                    return f"SELL (Fundemental Decay)"
+                if rs < -10:
+                    return f"SELL (RS Collapse)"
+                if sma > 0 and cmp < (0.9 * sma):
+                    return f"SELL (Deep below SMA)"
+                    
                 return ""
 
             wealth_df["Signal"] = wealth_df.apply(get_signal, axis=1)

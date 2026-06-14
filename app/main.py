@@ -77,7 +77,7 @@ def _cleanup_old_scanner_names():
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM scanner_health WHERE scanner_name IN ('WealthEngine', 'AIWorker');")
+                cur.execute("DELETE FROM scanner_health WHERE scanner_name ILIKE '%worker%' OR scanner_name ILIKE '%wealthengine%';")
             conn.commit()
     except Exception as e:
         logger.warning(f"Failed to cleanup old scanner names: {e}")
@@ -267,7 +267,7 @@ RESTARTABLE_THREADS = {
     "IntradayScanner":    run_intraday_scanner,
     "LiveScanner":        run_live_scanner,
     "PerformanceTracker": run_performance_tracker,
-    "Ai Worker":          run_worker_loop,
+    "AI Worker":          run_worker_loop,
     "Wealth Engine":      run_wealth_loop,
 }
 

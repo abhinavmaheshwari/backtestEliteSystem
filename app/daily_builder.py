@@ -127,7 +127,7 @@ MIN_ROE           = 8                # 8% ROE gate — let Wealth Engine v2 scor
 
 # ── JUNK-KILL GATES — These are NON-NEGOTIABLE hard blocks ──────────────────────────
 # Any stock violating these is permanently excluded regardless of momentum or growth.
-MAX_DEBT_EQUITY   = 2.0              # D/E > 2.0 = dangerously leveraged (blocks DHFL-type)
+MAX_DEBT_EQUITY   = 1.0              # D/E > 1.0 = highly leveraged (exempt: Utilities/Banks/NBFCs)
 MIN_PROMOTER_MCAP = 5_000_000_000    # ₹500 Cr — blocks shell companies with inflated ROE
 
 # PATH A only
@@ -349,9 +349,12 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     if symbol in _BLACKLIST_SYMBOLS:
         return skip(f"JUNK BLOCKED: Promoter Blacklist / NSE Surveillance (ASM/GSM)")
     
-    # High debt: D/E > 2.0 is dangerously leveraged (DHFL, IL&FS, Vodafone Idea type)
-    if not debt_missing and debt_equity > MAX_DEBT_EQUITY:
-        return skip(f"JUNK BLOCKED: D/E={debt_equity:.1f} exceeds max {MAX_DEBT_EQUITY}")
+    sector = str(row.get("sector", ""))
+    # High debt: D/E > 1.0 is dangerously leveraged for most businesses.
+    # Exception: Utilities naturally carry higher leverage. Banks/NBFCs use PATH B.
+    allowed_de = 2.5 if "Utilities" in sector else MAX_DEBT_EQUITY
+    if not debt_missing and debt_equity > allowed_de:
+        return skip(f"JUNK BLOCKED: D/E={debt_equity:.1f} exceeds max {allowed_de}")
     # Negative operating margins = business is burning cash at the operating level
     if opm < 0:
         return skip(f"JUNK BLOCKED: Negative OPM={opm:.1f}%")

@@ -256,9 +256,9 @@ def api_shortlist():
         if not os.path.exists(WATCHLIST_PATH):
             return jsonify([])
         df = pd.read_parquet(WATCHLIST_PATH)
-        df = df.replace([pd.NA, float('inf'), float('-inf')], None)
-        df = df.where(pd.notnull(df), None)
-        return jsonify(df.to_dict(orient="records"))
+        import json
+        records = json.loads(df.to_json(orient="records"))
+        return jsonify(records)
     except Exception as e:
         logger.error(f"Failed to load shortlist JSON: {e}")
         return jsonify([])
@@ -273,9 +273,9 @@ def api_wealth():
         if not os.path.exists(WEALTH_PATH):
             return jsonify([])
         df = pd.read_parquet(WEALTH_PATH)
-        df = df.replace([pd.NA, float('inf'), float('-inf')], None)
-        df = df.where(pd.notnull(df), None)
-        return jsonify(df.to_dict(orient="records"))
+        import json
+        records = json.loads(df.to_json(orient="records"))
+        return jsonify(records)
     except Exception as e:
         logger.error(f"Failed to load wealth JSON: {e}")
         return jsonify([])
