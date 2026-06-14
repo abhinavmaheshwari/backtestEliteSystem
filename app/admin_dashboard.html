@@ -919,7 +919,7 @@ function renderScannerGrid(scanner_stats) {
           <span class="scanner-badge ${badgeClass}">${badgeText}</span>
         </div>
         <div class="scanner-stats">
-          <button class="scanner-alert-btn" style="position:relative; ${(isAiWorker || isApi) ? 'pointer-events:auto; cursor:default' : ''}" ${!(isAiWorker || isApi) ? `onclick="showScannerDrill('${sc}')"` : ''}>
+          <button class="scanner-alert-btn" style="position:relative; ${isAiWorker ? 'pointer-events:none; cursor:default' : ''}" ${!isAiWorker ? `onclick="showScannerDrill('${sc}')"` : ''}>
             <div class="scanner-stat-label">${alertLabel}</div>
             ${alertHtml}
             <div class="scanner-stat-sub">${alertSub}</div>
@@ -940,18 +940,26 @@ function renderScannerGrid(scanner_stats) {
 function showScannerDrill(sc) {
   const stats = window._scannerStats || {};
   const data = stats[sc];
-  if (!data || !data.today_trades) return;
-  const trades = data.today_trades.map(t => ({
-    ...t,
-    entry_date: (t.entry_time||'').slice(0,10),
-    current_price: t.entry_price,
-    days_held: 0,
-  }));
+  if (!data) return;
   const meta = SCANNER_META[sc] || {label:sc};
   document.querySelectorAll('.kpi').forEach(k => k.classList.remove('active'));
   activeKpi = null;
-  document.getElementById('drill-title').textContent = `${meta.label} — Today's ${data.today_alerts} alert${data.today_alerts!==1?'s':''}`;
-  document.getElementById('drill-body').innerHTML = renderMiniTable(trades);
+  
+  if (sc.startsWith('API_')) {
+    document.getElementById('drill-title').textContent = `${meta.label} — Error Trace`;
+    document.getElementById('drill-body').innerHTML = `<div style="background:var(--card2); border:1px solid rgba(255,77,109,0.3); border-radius:8px; padding:20px; font-family:var(--font-mono); font-size:13px; color:#ff4d6d; white-space:pre-wrap; max-height:500px; overflow-y:auto;">${data.error || 'No error details found.'}</div>`;
+  } else {
+    if (!data.today_trades) return;
+    const trades = data.today_trades.map(t => ({
+      ...t,
+      entry_date: (t.entry_time||'').slice(0,10),
+      current_price: t.entry_price,
+      days_held: 0,
+    }));
+    document.getElementById('drill-title').textContent = `${meta.label} — Today's ${data.today_alerts} alert${data.today_alerts!==1?'s':''}`;
+    document.getElementById('drill-body').innerHTML = renderMiniTable(trades);
+  }
+
   document.getElementById('drill-panel').classList.add('open');
   document.getElementById('drill-panel').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
