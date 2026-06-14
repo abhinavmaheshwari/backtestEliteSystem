@@ -69,6 +69,10 @@ def run_worker_loop():
                             # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
                             if "No recent concall transcripts" not in error_msg:
                                 failed_stocks.append(sym)
+                            else:
+                                # Save negative cache so it doesn't infinitely retry on the next 30-min global loop
+                                from database import save_concall_analysis
+                                save_concall_analysis(sym, f"NONE_{sym}", {"error": error_msg})
                             
                         # Sleep 5 seconds between successful fetches to gently pace the API
                         time.sleep(5)
