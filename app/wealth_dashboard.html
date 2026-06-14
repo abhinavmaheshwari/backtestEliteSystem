@@ -154,9 +154,28 @@
       <input type="number" id="add-qty" placeholder="Quantity" style="background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; outline:none; width: 100px;">
       <button onclick="addPortfolio()" style="background:var(--accent); color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">Add Position</button>
     </div>
+
+    <!-- ALLOCATION TRACKER -->
+    <div style="background: var(--card); padding: 16px; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 24px;">
+      <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Live Portfolio Allocation vs Targets</div>
+      <div id="alloc-rebalance-msg" style="font-size:12px; color:var(--muted); margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;"></div>
+      <div class="weight-bar" style="margin-bottom: 16px; border-radius: 4px; height: 16px;">
+        <div id="alloc-bar-core" style="width:0%; background: var(--green); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold;">Core</div>
+        <div id="alloc-bar-growth" style="width:0%; background: var(--blue); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold;">Growth</div>
+        <div id="alloc-bar-opp" style="width:0%; background: var(--accent); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold;">Opp.</div>
+        <div id="alloc-bar-other" style="width:0%; background: var(--border); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:bold;">Other</div>
+      </div>
+      <div style="display:flex; justify-content: space-between; font-size: 11px; color: var(--muted);">
+        <div><span style="color:var(--green)">●</span> Core (Target 50%): <strong id="alloc-pct-core" style="color:#fff">0%</strong></div>
+        <div><span style="color:var(--blue)">●</span> Growth (Target 30%): <strong id="alloc-pct-growth" style="color:#fff">0%</strong></div>
+        <div><span style="color:var(--accent)">●</span> Opp/Discount (Target 20%): <strong id="alloc-pct-opp" style="color:#fff">0%</strong></div>
+        <div><span style="color:var(--border)">●</span> Unclassified: <strong id="alloc-pct-other" style="color:#fff">0%</strong></div>
+      </div>
+    </div>
+
     <div class="table-container">
       <table id="tbl-myport">
-        <thead><tr><th>Stock</th><th>Entry Date</th><th>Entry Price</th><th>CMP</th><th>PnL %</th><th>FM Score</th><th>AI Conf</th><th>Action</th><th>Remove</th></tr></thead>
+        <thead><tr><th>Stock</th><th>Entry Date</th><th>Qty</th><th>Entry Price</th><th>CMP</th><th>Total Value</th><th>PnL %</th><th>Bucket</th><th>Action</th><th>Remove</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -279,27 +298,81 @@
         const data = await res.json();
         const tbody = document.querySelector('#tbl-myport tbody');
         if(!data || data.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="9" class="empty">No stocks in your portfolio</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="10" class="empty">No stocks in your portfolio</td></tr>';
           return;
         }
+
+        let totalCap = 0;
+        let coreCap = 0;
+        let growthCap = 0;
+        let oppCap = 0;
+        let otherCap = 0;
+
         tbody.innerHTML = data.map(r => {
           let recClass = '';
           if(r.Recommendation === 'EXIT') recClass = 'sig-sell';
           else if(r.Recommendation === 'AVERAGE') recClass = 'sig-buy';
           else recClass = 'score-med';
           
+          let qty = r.quantity || 0;
+          let entryP = parseFloat(r.entry_price) || 0;
+          let cmpP = parseFloat(r.cmp) || 0;
+          let currentPrice = cmpP > 0 ? cmpP : entryP;
+          let currentVal = qty * currentPrice;
+          
+          totalCap += currentVal;
+
+          let bucket = r.Bucket || "";
+          if (bucket.includes("Core")) coreCap += currentVal;
+          else if (bucket.includes("Growth")) growthCap += currentVal;
+          else if (bucket.includes("Opportunistic") || bucket.includes("Quality-On-Sale")) oppCap += currentVal;
+          else otherCap += currentVal;
+          
+          let bClass = "border";
+          if (bucket.includes("Core")) bClass = "green";
+          else if (bucket.includes("Growth")) bClass = "blue";
+          else if (bucket.includes("Opportunistic") || bucket.includes("Quality-On-Sale")) bClass = "accent";
+          
+          let bucketHtml = bucket ? `<span style="font-size:10px; padding:2px 6px; border-radius:4px; border:1px solid var(--${bClass}); color:var(--${bClass});">${bucket}</span>` : '-';
+          
           return `<tr>
             <td class="sym">${r.symbol}</td>
             <td class="mono" style="color:var(--muted);">${r.entry_date}</td>
-            <td class="mono">₹${parseFloat(r.entry_price).toFixed(2)}</td>
-            <td class="mono">₹${r.cmp > 0 ? parseFloat(r.cmp).toFixed(2) : '-'}</td>
+            <td class="mono">${qty}</td>
+            <td class="mono">₹${entryP.toFixed(2)}</td>
+            <td class="mono">₹${cmpP > 0 ? cmpP.toFixed(2) : '-'}</td>
+            <td class="mono">₹${currentVal.toFixed(2)}</td>
             <td class="mono ${getRsCls(r.pnl_pct)}">${fmt(r.pnl_pct)}%</td>
-            <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || '-'}</span></td>
-            <td>${r.AI_Confidence || '-'}</td>
+            <td>${bucketHtml}</td>
             <td><span class="signal ${recClass}">${r.Recommendation}</span></td>
             <td><button onclick="removePortfolio(${r.id})" style="background:transparent; border:none; color:var(--red); cursor:pointer;">✖</button></td>
           </tr>`;
         }).join('');
+
+        if (totalCap > 0) {
+          const corePct = (coreCap / totalCap) * 100;
+          const growthPct = (growthCap / totalCap) * 100;
+          const oppPct = (oppCap / totalCap) * 100;
+          const otherPct = (otherCap / totalCap) * 100;
+
+          document.getElementById('alloc-pct-core').textContent = `${corePct.toFixed(1)}%`;
+          document.getElementById('alloc-pct-growth').textContent = `${growthPct.toFixed(1)}%`;
+          document.getElementById('alloc-pct-opp').textContent = `${oppPct.toFixed(1)}%`;
+          document.getElementById('alloc-pct-other').textContent = `${otherPct.toFixed(1)}%`;
+
+          document.getElementById('alloc-bar-core').style.width = `${corePct}%`;
+          document.getElementById('alloc-bar-growth').style.width = `${growthPct}%`;
+          document.getElementById('alloc-bar-opp').style.width = `${oppPct}%`;
+          document.getElementById('alloc-bar-other').style.width = `${otherPct}%`;
+
+          let msg = "Portfolio is well balanced.";
+          if (corePct < 40) msg = `⚠️ Underweight Core (${corePct.toFixed(1)}% vs 50% target). Invest your next capital in safe Core stocks.`;
+          else if (corePct > 60) msg = `ℹ️ Overweight Core (${corePct.toFixed(1)}% vs 50% target). Consider allocating to Growth.`;
+          else if (growthPct < 20) msg = `⚠️ Underweight Growth (${growthPct.toFixed(1)}% vs 30% target). Look for emerging multi-baggers.`;
+          else if (oppPct > 30) msg = `⚠️ Overweight Opportunistic (${oppPct.toFixed(1)}% vs 20% max). High momentum risk, take profits if targets hit.`;
+          
+          document.getElementById('alloc-rebalance-msg').innerHTML = msg;
+        }
       } catch(e) { console.error(e); }
     }
 

@@ -373,7 +373,8 @@ def api_get_portfolio():
                 "Signal": signal,
                 "AI_Confidence": ai_conf,
                 "Category": category,
-                "Recommendation": rec
+                "Recommendation": rec,
+                "Bucket": live_data.get("Portfolio_Bucket", "")
             })
             enriched.append(p)
             
