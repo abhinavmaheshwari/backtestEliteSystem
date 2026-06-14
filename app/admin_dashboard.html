@@ -675,11 +675,11 @@ async function loadScannerStatus() {
     const r2 = await fetch('/api/data_fetch_health');
     if (r2.ok) {
       const health = await r2.json();
-      const failures = health.filter(h => h.consecutive_failures > 0);
-      failures.forEach(f => {
+      health.forEach(f => {
+        const isDown = f.consecutive_failures > 0;
         stats[`API_${f.source_name}`] = {
-          status: 'DOWN',
-          updated_at: f.last_failure,
+          status: isDown ? 'DOWN' : 'OK',
+          updated_at: isDown ? f.last_failure : f.last_success,
           error: f.error_msg,
           today_alerts: f.consecutive_failures,
           today_trades: []
@@ -949,8 +949,10 @@ function showScannerDrill(sc) {
   if (sc.startsWith('API_')) {
     const fails = data.today_alerts;
     const plural = fails !== 1 ? 's' : '';
-    document.getElementById('drill-title').textContent = `${meta.label} — Most Recent Error (${fails} consecutive failure${plural})`;
-    document.getElementById('drill-body').innerHTML = `<div style="background:var(--card2); border:1px solid rgba(255,77,109,0.3); border-radius:8px; padding:20px; font-family:var(--font-mono); font-size:13px; color:#ff4d6d; white-space:pre-wrap; max-height:500px; overflow-y:auto;">${data.error || 'No error details found.'}</div>`;
+    document.getElementById('drill-title').textContent = `${meta.label} — Error Trace`;
+    const trace = data.error || 'No error details found.';
+    const suffix = fails > 0 ? `\n\n[System tracked ${fails} consecutive failure${plural} of this exact exception]` : '';
+    document.getElementById('drill-body').innerHTML = `<div style="background:var(--card2); border:1px solid rgba(255,77,109,0.3); border-radius:8px; padding:20px; font-family:var(--font-mono); font-size:13px; color:#ff4d6d; white-space:pre-wrap; max-height:500px; overflow-y:auto;">${trace}${suffix}</div>`;
   } else {
     if (!data.today_trades) return;
     const trades = data.today_trades.map(t => ({
