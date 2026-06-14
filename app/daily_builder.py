@@ -112,6 +112,7 @@ CAT_DESCRIPTIONS = {
     "Blue Chip Financial":      "Large cap bank/NBFC with highly stable returns.",
     "Financial Recovery":       "Recovering financial with improving asset quality and profitability.",
     "Efficient Lender":         "Top-tier banking quality with exceptional ROA (≥2.0%).",
+    "Momentum Quality":         "Decent fundamentals (ROE≥10, OPM≥8) with strong price momentum — Wealth Engine candidate.",
 }
 
 # =====================================================================================
@@ -121,7 +122,7 @@ CAT_DESCRIPTIONS = {
 MIN_PRICE         = 100              # no penny stocks — ₹100 minimum for institutional interest
 MIN_MARKET_CAP    = 10_000_000_000   # ₹1,000 Cr — exclude micro-caps
 MIN_TRADED_VALUE  = 150_000_000      # ₹15 Cr/day — reliable fills on breakout entries
-MIN_ROE           = 12               # 12% ROE = above cost of equity, genuine moat
+MIN_ROE           = 8                # 8% ROE gate — let Wealth Engine v2 scoring handle quality filtering
 
 # PATH A only
 MIN_OPM_NONFIN    = 10               # 10% OPM — excludes commodity-level margins
@@ -330,7 +331,12 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
         if rev_5y >= 12.0 and eps_5y >= 15.0 and peg <= 1.5 and fcf_ok:
             diamond_hold = True
 
-    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold, debt_free_cash, undervalued_growth, capital_efficient, dividend_aristocrat, inst_accumulation]):
+    # MOMENTUM-QUALITY catch-all: allows stocks with decent fundamentals + strong momentum
+    # to reach the Wealth Engine even if they don't fit any classic category.
+    # Without this, a stock with ROE 10%, ROCE 22%, YoY Sales 9% would be silently killed.
+    momentum_quality = (roe >= 10 and opm >= 8 and yoy_profit > 0 and market_cap >= 20_000_000_000)
+
+    if not any([high_growth, elite_compounder, mature_quality, turnaround, steady_compounder, diamond_hold, debt_free_cash, undervalued_growth, capital_efficient, dividend_aristocrat, inst_accumulation, momentum_quality]):
         return skip(f"No category — YoY Sales={yoy_sales:.1f}%, YoY Profit={yoy_profit:.1f}%")
 
     cats = []
@@ -346,6 +352,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     if mature_quality:     cats.append("Blue Chip Stable")
     if turnaround:         cats.append("Recovery Play")
     if steady_compounder:  cats.append("Consistent Performer")
+    if momentum_quality and not cats:  cats.append("Momentum Quality")
 
     score = _score_nonfin(yoy_sales, yoy_profit, qoq_sales, qoq_profit, roe, opm, debt_equity, yoy_margin_expanding, qoq_margin_expanding, mature_quality, elite_compounder, turnaround)
     if inst_accumulation: score += 15
