@@ -290,6 +290,21 @@ def api_wealth():
         logger.error(f"Failed to load wealth JSON: {e}")
         return jsonify([])
 
+@app.route("/api/macro_state")
+def api_macro_state():
+    """Returns the current Macro Regime state (Nifty correction)."""
+    try:
+        from wealth_engine import fetch_nifty_macro_state
+        ret_6m, dist_52w = fetch_nifty_macro_state()
+        return jsonify({
+            "nifty_6m_return": round(ret_6m, 2),
+            "nifty_dist_52w": round(dist_52w, 2),
+            "bear_market_gate": dist_52w > 15.0
+        })
+    except Exception as e:
+        logger.error(f"Failed to fetch macro state: {e}")
+        return jsonify({"nifty_6m_return": 0, "nifty_dist_52w": 0, "bear_market_gate": False})
+
 
 # ── MANUAL PORTFOLIO TRACKER ──────────────────────────────────────────────────
 @app.route("/api/portfolio", methods=["GET"])

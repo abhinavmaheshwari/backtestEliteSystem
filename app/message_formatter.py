@@ -142,11 +142,20 @@ def format_alert(a, scanner="1H"):
 
     # ── TRAILING SL / EXIT NOTE ─────────────────────────────────────────────
     trail_note  = a.get("trail_note")
+    
+    # ── WEALTH SIGNAL TAG ───────────────────────────────────────────────────
+    wealth_signal = a.get("wealth_signal")
+    wealth_tag = ""
+    if wealth_signal == "BUY":
+        wealth_tag = "🛡️ <b>[SAFE TO HOLD - CORE COMPOUNDER]</b>\n"
+    elif wealth_signal == "SELL":
+        wealth_tag = "⚠️ <b>[HOLD FOR DAY ONLY - WEAK FUNDAMENTALS]</b>\n"
 
     # ── ASSEMBLE FINAL MESSAGE ──
+    score = a.get("score", 0)
     lines = [
         _DIV,
-        f"🚀 <b>{a['symbol']}</b> {peg_badge}",
+        f"{wealth_tag}🚀 <b>{a['symbol']}</b> {peg_badge}".strip(),
         _DIV,
         f"<b>Category:</b> {cat}",
         f"<b>Score:</b> {score_tier(score)}  {score_bar(score)}  ({score}/100)",

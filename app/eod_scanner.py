@@ -69,9 +69,28 @@ def start():
     try:
         try:
             watchlist = get_watchlist()
+            # ── DUAL MANDATE: Restrict EOD to Wealth Engine Intelligence ──
+            try:
+                import os
+                from config import DATA_DIR
+                from database import download_parquet_from_db
+                wealth_path = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+                download_parquet_from_db("elite_wealth_system", wealth_path)
+                if os.path.exists(wealth_path):
+                    wdf = pd.read_parquet(wealth_path)
+                    buy_symbols = wdf[wdf["Signal"].str.contains("BUY", na=False)]["Stock"].tolist()
+                    watchlist = watchlist[watchlist["Stock"].isin(buy_symbols)].copy()
+                    logger.info(f"🛡️ EOD Scanner Restricted to Wealth Engine Intelligence: {len(watchlist)} stocks")
+                else:
+                    logger.warning("⚠️ Wealth Engine data not found. EOD running on empty universe.")
+                    watchlist = watchlist.iloc[0:0].copy()
+            except Exception as e:
+                logger.error(f"❌ Failed to load Wealth Engine intelligence: {e}")
+                
         except Exception:
+            import time
             time.sleep(300)
-            continue
+            return 0
 
         delivery_map: dict[str, float] = {}
         all_ticker_data = {}

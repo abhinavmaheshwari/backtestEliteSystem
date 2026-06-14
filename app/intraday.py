@@ -99,6 +99,23 @@ def start(run_once=False):
                 time.sleep(300)
                 continue
             
+            # ── FETCH WEALTH ENGINE SIGNAL ──────────────────────────────────────────
+            try:
+                import os
+                from config import DATA_DIR
+                from database import download_parquet_from_db
+                wealth_path = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+                download_parquet_from_db("elite_wealth_system", wealth_path)
+                if os.path.exists(wealth_path):
+                    wealth_df = pd.read_parquet(wealth_path)
+                    if "Stock" in wealth_df.columns:
+                        wealth_df = wealth_df.set_index("Stock")
+                else:
+                    wealth_df = pd.DataFrame()
+            except Exception as e:
+                logger.error(f"❌ Failed to load Wealth Engine data: {e}")
+                wealth_df = pd.DataFrame()
+
             # ── BATCH DOWNLOAD: INTRADAY + DAILY CONTEXT (MTA) ──────────────────────
             all_ticker_data = {}
             daily_context_data = {}
@@ -496,8 +513,14 @@ def start(run_once=False):
                         rejection_counts["duplicate"] += 1
                         continue
 
+                    # Extract wealth signal for this stock
+                    w_signal = None
+                    if not wealth_df.empty and symbol in wealth_df.index:
+                        w_signal = wealth_df.loc[symbol, "Signal"]
+
                     alerts_by_category.setdefault(category, []).append({
                         "symbol":           symbol,
+                        "wealth_signal":    w_signal,
                         "category":         category,
                         "breakout_signals": list(signals.keys()) if isinstance(signals, dict) else signals,
                         "price":            round(candle_close, 2),
