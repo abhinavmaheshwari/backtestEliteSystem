@@ -83,6 +83,12 @@
     }
     .exit-banner strong { color: var(--red); }
     .tag-red { color: var(--red); border-color: rgba(239,68,68,0.3); }
+    
+  @keyframes pulseToast { 0% {box-shadow: 0 0 0 0 rgba(239,68,68,0.7);} 70% {box-shadow: 0 0 0 15px rgba(239,68,68,0);} 100% {box-shadow: 0 0 0 0 rgba(239,68,68,0);} }
+  .alert-toast { position:fixed; top:-100px; left:50%; transform:translateX(-50%); background:var(--warn, #ef4444); color:#fff; padding:16px 24px; border-radius:8px; font-weight:700; z-index:10000; display:flex; align-items:center; gap:12px; box-shadow:0 10px 25px rgba(239,68,68,0.5); transition:top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); cursor:pointer; }
+  .alert-toast.show { top: 24px; animation: pulseToast 2s infinite; }
+  .alert-toast-icon { font-size: 24px; animation:spin 2s linear infinite; }
+  @keyframes spin { 100% { transform:rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -143,6 +149,14 @@
     <button type="button" class="tab-btn" data-tab="myport" style="color:var(--accent);">My Portfolio Tracker</button>
     <button type="button" class="tab-btn tab-buy active" data-tab="buy">Buy Signals</button>
     <button type="button" class="tab-btn" data-tab="buckets">Portfolio Buckets</button>
+  </div>
+  
+  <div id="newAlertToast" class="alert-toast" onclick="dismissAlert()">
+    <span class="alert-toast-icon">🚨</span>
+    <div>
+      <div style="font-size:16px;">NEW ALERT DETECTED</div>
+      <div style="font-size:12px; font-weight:normal; opacity:0.9;">Click anywhere to dismiss</div>
+    </div>
   </div>
 
   <!-- MY PORTFOLIO TAB -->
@@ -273,6 +287,38 @@
   </div><!-- /panel-buckets -->
 
   <script>
+    let alertInterval = null;
+    let originalTitle = document.title;
+    let isAlertActive = false;
+    let ALL_WEALTH_STOCKS = [];
+    
+    function triggerAlertFlashing() {
+        if(isAlertActive) return;
+        isAlertActive = true;
+        const toast = document.getElementById('newAlertToast');
+        if(toast) toast.classList.add('show');
+        try {
+            const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+            audio.play().catch(e => console.log('Audio autoplay blocked'));
+        } catch(e) {}
+        let toggle = false;
+        alertInterval = setInterval(() => {
+            document.title = toggle ? '⚠️ NEW ALERT!' : 'Fund Manager System v2';
+            toggle = !toggle;
+        }, 1000);
+    }
+    
+    function dismissAlert() {
+        if(!isAlertActive) return;
+        isAlertActive = false;
+        clearInterval(alertInterval);
+        document.title = originalTitle;
+        const toast = document.getElementById('newAlertToast');
+        if(toast) toast.classList.remove('show');
+    }
+    
+    document.addEventListener('click', () => dismissAlert());
+
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => openTab(btn.dataset.tab));
     });
@@ -480,6 +526,25 @@
         }
 
         const stocks = Array.isArray(data) ? data : (data.data || []);
+        
+        // Alert Diffing Logic
+        if (ALL_WEALTH_STOCKS.length > 0) {
+            const oldKeys = new Set(ALL_WEALTH_STOCKS.filter(s => s.Signal).map(s => s.Stock + '|' + s.Signal));
+            let hasNew = false;
+            for (const s of stocks) {
+                if (s.Signal && (s.Signal.includes("BUY") || s.Signal.includes("SELL"))) {
+                    if (!oldKeys.has(s.Stock + '|' + s.Signal)) {
+                        hasNew = true;
+                        break;
+                    }
+                }
+            }
+            if (hasNew) {
+                triggerAlertFlashing();
+            }
+        }
+        ALL_WEALTH_STOCKS = stocks;
+
         document.getElementById('kpi-total').textContent = stocks.length;
 
         const buys = stocks.filter(s => (s.Signal || "").includes("BUY")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));

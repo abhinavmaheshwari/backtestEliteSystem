@@ -122,8 +122,22 @@ def init_db():
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS pnl_rs            REAL",
                     # Diagnostic parameters context JSONB
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS context      JSONB",
+                    # Bayesian Tracker Columns
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS model_version  TEXT DEFAULT 'v1'",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS data_partition TEXT DEFAULT 'TRAIN'",
                 ]:
                     cur.execute(col_sql)
+
+                # ── Score Weight Log (Bayesian Versioning) ─────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS score_weight_log (
+                        id SERIAL PRIMARY KEY,
+                        model_version TEXT NOT NULL,
+                        regime TEXT NOT NULL,
+                        weights JSONB NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT)
+                    )
+                """)
 
                 # ── Scanner health table — source of truth for dashboard ───────────
                 cur.execute("""
@@ -277,6 +291,8 @@ def save_alert_if_new(
     rsi: float = None,
     volume_ratio: float = None,
     context: dict = None,
+    model_version: str = "v1",
+    data_partition: str = "TRAIN",
     **kwargs
 ) -> tuple[bool, float, int]:
     """
@@ -302,12 +318,14 @@ def save_alert_if_new(
                     INSERT INTO alerts
                         (symbol, breakout_type, alert_time, scanner, category,
                          entry_price, stop_loss, target_price, signals, score,
-                         rsi, volume_ratio, status, context, capital_allocated, shares_bought)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s)
+                         rsi, volume_ratio, status, context, capital_allocated, shares_bought,
+                         model_version, data_partition)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
                 """, (symbol, breakout_type, alert_time, scanner, category,
                       entry_price, stop_loss, target_price, signals, score,
-                      rsi, volume_ratio, context_str, capital_allocated, shares_bought))
+                      rsi, volume_ratio, context_str, capital_allocated, shares_bought,
+                      model_version, data_partition))
                 conn.commit()
                 return cur.rowcount > 0, capital_allocated, shares_bought
             except Exception:
@@ -367,7 +385,8 @@ def get_all_alerts() -> list[dict]:
                     scanner, category, entry_price, stop_loss, target_price,
                     signals, score, rsi, volume_ratio,
                     status, exit_price, pnl_pct, closed_at,
-                    capital_allocated, shares_bought, pnl_rs, context
+                    capital_allocated, shares_bought, pnl_rs, context,
+                    model_version, data_partition
                 FROM alerts
                 ORDER BY alert_time DESC
             """)
@@ -592,6 +611,43 @@ def get_cache_metadata(key: str):
             except Exception:
                 logger.exception(f"❌ get_cache_metadata failed for key={key}")
                 return None
+
+
+def get_latest_weights(regime: str) -> dict:
+    """Get the latest JSON weights for a given regime."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT model_version, weights 
+                    FROM score_weight_log 
+                    WHERE regime = %s 
+                    ORDER BY id DESC LIMIT 1
+                """, (regime,))
+                row = cur.fetchone()
+                if row:
+                    return {"version": row[0], "weights": row[1]}
+                return None
+            except Exception:
+                logger.exception(f"❌ get_latest_weights failed for regime={regime}")
+                return None
+
+def save_new_weights(model_version: str, regime: str, weights: dict):
+    """Save a new version of weights for a given regime."""
+    init_db()
+    import json
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO score_weight_log (model_version, regime, weights)
+                    VALUES (%s, %s, %s)
+                """, (model_version, regime, json.dumps(weights)))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ save_new_weights failed for regime={regime}")
 
 
 def upsert_cache_metadata(key: str, last_fetched: str, cadence_seconds: int, rows: int = None, etag: str = None, source: str = None):

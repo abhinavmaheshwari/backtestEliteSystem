@@ -252,6 +252,22 @@ def run_reversal_scanner():
         raise exc
 
 
+def run_bayesian_loop():
+    """Runs the Bayesian Updater loop. Triggers immediately on boot, then waits 24h."""
+    from bayesian_updater import run_bayesian_updater
+    while True:
+        try:
+            logger.info("🧠 BAYESIAN UPDATER | Waking up to process trades...")
+            run_bayesian_updater()
+        except Exception as e:
+            logger.exception("❌ BAYESIAN UPDATER | Crashed")
+            _telegram_notify(f"🚨 BAYESIAN UPDATER CRASHED:\n{e}")
+        
+        # Run daily (86400 seconds)
+        logger.info("🧠 BAYESIAN UPDATER | Sleeping for 24h")
+        time.sleep(86400)
+
+
 # =====================================================================================
 # SELF-HEALING WATCHDOG  (runs in background thread)
 #
@@ -269,6 +285,7 @@ RESTARTABLE_THREADS = {
     "PerformanceTracker": run_performance_tracker,
     "AI Worker":          run_worker_loop,
     "Wealth Engine":      run_wealth_loop,
+    "BayesianUpdater":    run_bayesian_loop,
 }
 
 # EOD and Reversal are launched once and never restarted

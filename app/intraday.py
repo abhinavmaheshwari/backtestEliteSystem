@@ -404,7 +404,7 @@ def start(run_once=False):
                                     rejection_counts["gap_fill_risk"] += 1
                                     continue
 
-                    score = calculate_score(
+                    score, model_version = calculate_score(
                         category=category,
                         breakout_count=len(signals),
                         rsi=rsi_val,
@@ -508,6 +508,7 @@ def start(run_once=False):
                         stop_loss=suggested_stop,
                         target_price=target_price,
                         context=context,
+                        model_version=model_version,
                     )
                     if not saved:
                         rejection_counts["duplicate"] += 1

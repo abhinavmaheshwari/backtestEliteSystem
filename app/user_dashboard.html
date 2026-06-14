@@ -298,6 +298,10 @@
     .kpi-row { grid-template-columns:repeat(2,1fr); }
     .scanner-alert-tooltip { width:90vw; }
   }
+  @keyframes pulseToast { 0% {box-shadow: 0 0 0 0 rgba(239,68,68,0.7);} 70% {box-shadow: 0 0 0 15px rgba(239,68,68,0);} 100% {box-shadow: 0 0 0 0 rgba(239,68,68,0);} }
+  .alert-toast { position:fixed; top:-100px; left:50%; transform:translateX(-50%); background:var(--warn); color:#fff; padding:16px 24px; border-radius:8px; font-weight:700; z-index:10000; display:flex; align-items:center; gap:12px; box-shadow:0 10px 25px rgba(239,68,68,0.5); transition:top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); cursor:pointer; }
+  .alert-toast.show { top: 24px; animation: pulseToast 2s infinite; }
+  .alert-toast-icon { font-size: 24px; animation:spin 2s linear infinite; }
 </style>
 <script>
   const savedTheme = localStorage.getItem('theme') || 'light';
@@ -397,6 +401,14 @@
     <!-- CATEGORY WIN RATES -->
     <div class="section-label">Category Performance</div>
     <div class="kpi-row" id="catGrid" style="margin-bottom:28px"></div>
+  
+  <div id="newAlertToast" class="alert-toast" onclick="dismissAlert()">
+    <span class="alert-toast-icon">🚨</span>
+    <div>
+      <div style="font-size:16px;">NEW ALERT DETECTED</div>
+      <div style="font-size:12px; font-weight:normal; opacity:0.9;">Click anywhere to dismiss</div>
+    </div>
+  </div>
 
     <!-- TRADES TABLE -->
     <div class="section-label">All Trades</div>
@@ -1250,11 +1262,69 @@ function exportCSV() {
   a.click();
 }
 
-// ── REFRESH
-async function doRefresh() {
+// ── REFRESH & ALERTS
+let alertInterval = null;
+let originalTitle = document.title;
+let isAlertActive = false;
+
+function triggerAlertFlashing() {
+    if(isAlertActive) return;
+    isAlertActive = true;
+    
+    // Show Toast
+    const toast = document.getElementById('newAlertToast');
+    if(toast) toast.classList.add('show');
+    
+    // Play Audio (if permitted)
+    try {
+        const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+        audio.play().catch(e => console.log('Audio autoplay blocked'));
+    } catch(e) {}
+    
+    // Flash Title
+    let toggle = false;
+    alertInterval = setInterval(() => {
+        document.title = toggle ? '⚠️ NEW ALERT!' : 'Elite Breakout System';
+        toggle = !toggle;
+    }, 1000);
+}
+
+function dismissAlert() {
+    if(!isAlertActive) return;
+    isAlertActive = false;
+    clearInterval(alertInterval);
+    document.title = originalTitle;
+    const toast = document.getElementById('newAlertToast');
+    if(toast) toast.classList.remove('show');
+}
+
+// Global click listener to dismiss
+document.addEventListener('click', () => dismissAlert());
+
+async function doRefresh(isAuto = false) {
   const btn = document.getElementById('refreshBtn');
   btn.classList.add('spinning');
   const data = await loadData();
+  
+  // Alert Diffing Logic
+  if (isAuto && data.trades && ALL_TRADES.length > 0) {
+      const oldKeys = new Set(ALL_TRADES.map(t => t.symbol + '|' + (t.alert_time||t.entry_date)));
+      let hasNew = false;
+      for (const t of data.trades) {
+          if (t.status === 'OPEN' && !oldKeys.has(t.symbol + '|' + (t.alert_time||t.entry_date))) {
+              // Found a new open trade not in the old dataset!
+              const ageHours = (new Date() - new Date((t.alert_time||t.entry_date).replace(' ','T'))) / (1000 * 60 * 60);
+              if (ageHours < 2) { // Only flash if it's actually recent (< 2 hrs old)
+                  hasNew = true;
+                  break;
+              }
+          }
+      }
+      if (hasNew) {
+          triggerAlertFlashing();
+      }
+  }
+
   ALL_TRADES = data.trades || [];
   renderTradeTable();
   renderCategoryStats();
@@ -1335,6 +1405,9 @@ async function initDashboard() {
   // Start viewer ping
   pingViewer();
   setInterval(pingViewer, 30000);
+  
+  // Auto-Refresh Every 2 Minutes
+  setInterval(() => doRefresh(true), 120000);
 }
 
 // Trigger check

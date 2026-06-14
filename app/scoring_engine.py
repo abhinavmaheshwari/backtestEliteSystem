@@ -709,13 +709,26 @@ def calculate_score(
     atr_val=None,
     delivery_pct=None,
     min_vol=50_000,
+    regime="BULL"
 ):
     """
     Returns an integer score from 0 to 100 (plus bonuses, capped at 100).
-    Returns 0 if any hard disqualifier fires.
+    Returns (0, "v1") if any hard disqualifier fires.
     """
 
     import pandas as pd
+    from database import get_latest_weights
+    
+    # Bayesian Dynamic Weighting Support
+    model_version = "v1"
+    weights = None
+    try:
+        latest_db_weights = get_latest_weights(regime)
+        if latest_db_weights:
+            model_version = latest_db_weights.get("version", "v1")
+            weights = latest_db_weights.get("weights")
+    except Exception as e:
+        logger.error(f"Failed to fetch DB weights: {e}")
 
     score = 0
     tag   = f"[{symbol}] " if symbol else ""
@@ -726,7 +739,7 @@ def calculate_score(
             ticker, latest, volume_ratio, symbol, timeframe=timeframe, min_vol=min_vol
         )
         if disq:
-            return 0
+            return 0, model_version
             
     # ── STEP 1.5: PIOTROSKI F-SCORE DISQUALIFIER & CAP ──────────────────────────────
     f_score_pts = 0
@@ -737,7 +750,7 @@ def calculate_score(
             p_score = get_piotroski_score(symbol)
             if p_score >= 0 and p_score <= 3:
                 logger.warning(f"🚫 {tag}DISQ: Piotroski F-Score {p_score} <= 3 (Fundamental weakness)")
-                return 0
+                return 0, model_version
             elif p_score >= 7:
                 f_score_pts = 12
                 logger.debug(f"  +12 {tag}Piotroski F-Score {p_score} >= 7 bonus")
@@ -928,7 +941,7 @@ def calculate_score(
     final_score = int(score)
     if final_score > max_score_cap:
         logger.debug(f"  {tag}Score capped at {max_score_cap} (was {final_score})")
-        return max_score_cap
+        return max_score_cap, model_version
     final_score = min(final_score, 100)
-    logger.info(f"  📊 Final score: {final_score}")
-    return final_score
+    logger.info(f"  📊 Final score: {final_score} (Model: {model_version})")
+    return final_score, model_version
