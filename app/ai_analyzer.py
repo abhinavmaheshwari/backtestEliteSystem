@@ -52,33 +52,6 @@ def _try_gemini_model(model_name: str, gemini_key: str, text: str) -> dict:
         raise Exception(f"API Error ({res.status_code}): {res.text}")
 
 
-def _try_openai_model(model_name: str, openai_key: str, text: str) -> dict:
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {openai_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": model_name,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "TRANSCRIPT TEXT:\n" + text}
-        ]
-    }
-    res = requests.post(url, headers=headers, json=payload, timeout=90)
-    if res.status_code == 200:
-        data = res.json()
-        try:
-            content_str = data["choices"][0]["message"]["content"]
-            result = json.loads(content_str)
-            result["model_used"] = model_name
-            return result
-        except Exception as e:
-            raise Exception(f"Failed to parse response: {e}")
-    else:
-        raise Exception(f"API Error ({res.status_code}): {res.text}")
-
 
 def analyze_concall_text(text: str) -> dict:
     """
@@ -125,16 +98,5 @@ def analyze_concall_text(text: str) -> dict:
                         logger.warning(f"{model} failed: {err_str}")
                         errors.append(f"{model}: {err_str}")
                         break # Skip to next model if it's not a quota issue
-
-    # Fallback Chain 2: OpenAI Models
-    if openai_key:
-        openai_models = ["gpt-4o-mini", "gpt-3.5-turbo"]
-        for model in openai_models:
-            try:
-                logger.info(f"Attempting AI analysis with {model}...")
-                return _try_openai_model(model, openai_key, text)
-            except Exception as e:
-                logger.warning(f"{model} failed: {e}")
-                errors.append(f"{model}: {str(e)}")
 
     return {"error": "All AI models in the fallback chain failed.", "details": errors}
