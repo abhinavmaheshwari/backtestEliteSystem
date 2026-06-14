@@ -296,10 +296,12 @@ def api_macro_state():
     try:
         from wealth_engine import fetch_nifty_macro_state
         ret_6m, dist_52w = fetch_nifty_macro_state()
+        r_6m = round(float(ret_6m), 2) if ret_6m is not None else None
+        d_52w = round(float(dist_52w), 2) if dist_52w is not None else None
         return jsonify({
-            "nifty_6m_return": round(ret_6m, 2),
-            "nifty_dist_52w": round(dist_52w, 2),
-            "bear_market_gate": dist_52w > 15.0
+            "nifty_6m_return": r_6m,
+            "nifty_dist_52w": d_52w,
+            "bear_market_gate": bool(dist_52w > 15.0) if dist_52w is not None else False
         })
     except Exception as e:
         logger.error(f"Failed to fetch macro state: {e}")
