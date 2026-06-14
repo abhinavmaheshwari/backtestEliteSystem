@@ -1,0 +1,206 @@
+import os
+import time
+import logging
+import threading
+from datetime import datetime, timezone
+import pandas as pd
+import yfinance as yf
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+from database import get_cache_metadata, upsert_cache_metadata, upsert_data_fetch_health, get_all_data_fetch_health
+from data_registry import DATASETS
+
+logger = logging.getLogger(__name__)
+
+# In-memory run cache
+_price_cache = {}
+
+# Disk cache directory
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "price_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# Retry wrapper for network calls
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception),
+    reraise=True
+)
+def _fetch_history_with_retry(yf_symbol: str, period: str = "1y") -> pd.DataFrame:
+    ticker = yf.Ticker(yf_symbol)
+    hist = ticker.history(period=period)
+    if hist is None or hist.empty:
+        raise ValueError(f"Empty history returned for {yf_symbol}")
+    return hist
+
+
+def _cache_file_path(key: str) -> str:
+    safe = key.replace('/', '_').replace(':', '__')
+    return os.path.join(CACHE_DIR, f"{safe}.parquet")
+
+
+def _acquire_lock(lock_path: str) -> bool:
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+
+def _release_lock(lock_path: str) -> None:
+    try:
+        os.remove(lock_path)
+    except FileNotFoundError:
+        pass
+
+
+def _read_cache_file(path: str) -> pd.DataFrame:
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _write_cache_file(df: pd.DataFrame, path: str) -> None:
+    try:
+        df.to_parquet(path, index=False)
+    except Exception:
+        logger.exception(f"Failed to write cache file {path}")
+
+
+def _symbol_to_yf(symbol: str) -> str:
+    return symbol + ".NS" if not symbol.endswith(".NS") else symbol
+
+
+def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d", dataset_key: str = None, use_cache: bool = True, stale_serve: bool = True) -> pd.DataFrame:
+    """Cadence-aware fetcher with persistent disk cache and stale-while-revalidate behaviour.
+
+    dataset_key (optional) ties the fetch to a cadence defined in `app.data_registry.DATASETS`.
+    If cached data exists and is fresh (age < cadence) it's returned. If it's stale and
+    `stale_serve` is True we return stale immediately and start a background refresh.
+    """
+    yf_symbol = _symbol_to_yf(symbol)
+    if dataset_key is None:
+        dataset_key = f"price_{resolution}"
+
+    ds = DATASETS.get(dataset_key, {})
+    cadence = ds.get("cadence", 24 * 3600)
+
+    cache_key = f"{dataset_key}::{yf_symbol}"
+    cache_path = _cache_file_path(cache_key)
+    lock_path = cache_path + ".lock"
+
+    # In-memory run cache quick-hit
+    if use_cache and cache_key in _price_cache:
+        return _price_cache[cache_key].copy()
+
+    # Check persisted metadata
+    meta = None
+    try:
+        meta = get_cache_metadata(cache_key)
+    except Exception:
+        meta = None
+
+    now = datetime.now(timezone.utc)
+    if meta:
+        try:
+            last_fetched = datetime.fromisoformat(meta['last_fetched'])
+            age = (now - last_fetched).total_seconds()
+        except Exception:
+            age = float('inf')
+
+        # Fresh cache
+        if age < cadence and os.path.exists(cache_path):
+            df = _read_cache_file(cache_path)
+            if not df.empty:
+                if use_cache:
+                    _price_cache[cache_key] = df.copy()
+                return df
+
+        # Stale: return stale if allowed and trigger background refresh
+        if stale_serve and os.path.exists(cache_path):
+            df = _read_cache_file(cache_path)
+            # Trigger background refresh if possible
+            def _bg_refresh():
+                if not _acquire_lock(lock_path):
+                    return
+                try:
+                    try:
+                        fetched = _fetch_history_with_retry(yf_symbol, period)
+                        if not fetched.empty:
+                            _write_cache_file(fetched, cache_path)
+                            upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
+                            upsert_data_fetch_health('yfinance', last_success=datetime.now(timezone.utc).isoformat(), consecutive_failures=0)
+                    except Exception as e:
+                        # record failure in health table
+                        logger.warning(f"Background refresh failed for {yf_symbol}: {e}")
+                        try:
+                            rows = get_all_data_fetch_health()
+                            cur = next((r for r in rows if r['source_name']=='yfinance'), None)
+                            cur_failures = cur['consecutive_failures'] if cur else 0
+                        except Exception:
+                            cur_failures = 0
+                        upsert_data_fetch_health('yfinance', last_failure=datetime.now(timezone.utc).isoformat(), consecutive_failures=cur_failures+1, error_msg=str(e))
+                finally:
+                    _release_lock(lock_path)
+
+            threading.Thread(target=_bg_refresh, daemon=True).start()
+            if use_cache:
+                _price_cache[cache_key] = df.copy()
+            return df
+
+    # No cache or forced refresh — attempt direct fetch (synchronous)
+    got_lock = _acquire_lock(lock_path)
+    try:
+        if not got_lock:
+            # Another process is refreshing. If stale exists return it, else wait briefly then try
+            if os.path.exists(cache_path):
+                df = _read_cache_file(cache_path)
+                if use_cache:
+                    _price_cache[cache_key] = df.copy()
+                return df
+            # wait short period for lock to clear
+            waited = 0
+            while waited < 10:
+                time.sleep(1)
+                waited += 1
+                if not os.path.exists(lock_path):
+                    break
+
+        try:
+            fetched = _fetch_history_with_retry(yf_symbol, period)
+            if fetched is None or fetched.empty:
+                raise ValueError('Empty fetch')
+            # persist
+            _write_cache_file(fetched, cache_path)
+            upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
+            upsert_data_fetch_health('yfinance', last_success=datetime.now(timezone.utc).isoformat(), consecutive_failures=0)
+            if use_cache:
+                _price_cache[cache_key] = fetched.copy()
+            return fetched
+        except Exception as e:
+            logger.warning(f"Failed to fetch historical data for {yf_symbol}: {e}")
+            # update health table
+            try:
+                rows = get_all_data_fetch_health()
+                cur = next((r for r in rows if r['source_name']=='yfinance'), None)
+                cur_failures = cur['consecutive_failures'] if cur else 0
+            except Exception:
+                cur_failures = 0
+            upsert_data_fetch_health('yfinance', last_failure=datetime.now(timezone.utc).isoformat(), consecutive_failures=cur_failures+1, error_msg=str(e))
+            # fallback to any stale cache if present
+            if os.path.exists(cache_path):
+                df = _read_cache_file(cache_path)
+                if use_cache:
+                    _price_cache[cache_key] = df.copy()
+                return df
+            return pd.DataFrame()
+    finally:
+        if got_lock:
+            _release_lock(lock_path)
+
+
+def clear_price_cache():
+    """Clears the in-memory price cache. Should be called at the start of a new run."""
+    _price_cache.clear()
