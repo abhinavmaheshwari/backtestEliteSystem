@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Fund Manager System | Elite Breakout</title>
+  <title>Fund Manager System v2 | Elite Breakout</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Institutional-grade 100-point Fund Manager scoring system for long-term wealth compounding.">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Outfit:wght@600;800&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -15,51 +16,71 @@
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: var(--font-body); padding: 24px; min-height: 100vh; }
-    
-    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 24px; }
+
+    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
     .title { font-family: var(--font-head); font-size: 28px; letter-spacing: -0.5px; }
     .title span { color: var(--accent); }
     .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: var(--font-mono); }
-    
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
-    .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }
+    .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; transition: border-color 0.2s; }
+    .kpi-card:hover { border-color: var(--border2); }
     .kpi-value { font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
     .kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
-    
-    .section-title { font-family: var(--font-head); font-size: 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+
+    .weight-bar { display: flex; gap: 0; border-radius: 8px; overflow: hidden; height: 28px; margin-bottom: 32px; font-size: 11px; font-weight: 700; font-family: var(--font-mono); }
+    .weight-bar div { display: flex; align-items: center; justify-content: center; color: #fff; }
+
+    .section-title { font-family: var(--font-head); font-size: 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .section-title span { font-size: 12px; padding: 4px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; color: var(--muted); font-family: var(--font-mono); font-weight: 500; }
-    
-    .table-container { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 32px; }
+    .section-title .tag-green { color: var(--green); border-color: rgba(16,185,129,0.3); }
+
+    .table-container { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; margin-bottom: 32px; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
-    th { background: var(--card2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; white-space: nowrap; }
+    th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
+    th { background: var(--card2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; cursor: pointer; user-select: none; }
+    th:hover { color: var(--text); }
     tr:last-child td { border-bottom: none; }
     tr:hover { background: rgba(255,255,255,0.02); }
-    
+
     .sym { font-family: var(--font-mono); font-weight: 700; color: #fff; font-size: 14px; }
     .mono { font-family: var(--font-mono); }
-    .score-badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-family: var(--font-mono); font-weight: 700; font-size: 12px; }
+    .score-badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-family: var(--font-mono); font-weight: 700; font-size: 12px; min-width: 36px; text-align: center; }
     .score-high { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
     .score-med { background: rgba(245,158,11,0.15); color: var(--amber); border: 1px solid rgba(245,158,11,0.3); }
     .score-low { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
-    
+
     .signal { font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-family: var(--font-mono); }
     .sig-buy { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(139,92,246,0.3); }
     .sig-sell { background: rgba(239,68,68,0.1); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
-    
+
     .rs-pos { color: var(--green); }
     .rs-neg { color: var(--red); }
-    
+    .fcf-pos { color: var(--green); }
+    .fcf-neg { color: var(--red); }
+    .fcf-na { color: var(--muted); }
+
     .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 14px; }
+
+    .sector-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; background: var(--card2); color: var(--muted); border: 1px solid var(--border); font-family: var(--font-mono); max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
   </style>
 </head>
 <body>
   <div class="header">
     <div>
-      <div class="title">Fund Manager <span>System</span></div>
-      <div class="subtitle">Long-Term Compounding & Automated Bucketing</div>
+      <div class="title">Fund Manager <span>System v2</span></div>
+      <div class="subtitle">100-Point Institutional Scoring · Sector-Capped · Cash Flow Verified</div>
     </div>
     <a href="/" style="color: var(--muted); text-decoration: none; font-size: 13px; border: 1px solid var(--border); padding: 8px 16px; border-radius: 8px; transition: 0.2s;">&larr; Back to Trading Dashboard</a>
+  </div>
+
+  <!-- Score Weight Breakdown -->
+  <div class="weight-bar">
+    <div style="width:25%; background: #6366f1;">Quality 25</div>
+    <div style="width:25%; background: #8b5cf6;">Growth 25</div>
+    <div style="width:30%; background: #10b981;">Momentum 30</div>
+    <div style="width:10%; background: #3b82f6;">Ownership 10</div>
+    <div style="width:10%; background: #f59e0b;">Cash Flow 10</div>
   </div>
 
   <div class="kpi-grid">
@@ -69,11 +90,19 @@
     </div>
     <div class="kpi-card">
       <div class="kpi-value" id="kpi-core">-</div>
-      <div class="kpi-label">Core Portfolio Size</div>
+      <div class="kpi-label">Core Portfolio (Sector-Capped)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-growth" style="color: var(--blue);">-</div>
+      <div class="kpi-label">Growth Multipliers</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-value" id="kpi-buys" style="color: var(--green);">-</div>
       <div class="kpi-label">Active Buy Signals</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-avg-score" style="color: var(--amber);">-</div>
+      <div class="kpi-label">Avg Score (Top 20)</div>
     </div>
   </div>
 
@@ -81,75 +110,95 @@
   <div class="section-title">🏆 Top 20 Compounders <span id="top20-count">0</span></div>
   <div class="table-container">
     <table id="tbl-top20">
-      <thead><tr><th>Stock</th><th>Score</th><th>RS Rating (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>Category</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Rank</th><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Sector</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
 
   <!-- CORE -->
-  <div class="section-title">🛡️ Core Portfolio (Max 15 Allocation) <span id="core-count">0</span></div>
+  <div class="section-title">🛡️ Core Portfolio <span id="core-count" class="tag-green">0 / 15 max</span> <span>Sector-Capped · ₹10K Cr+</span></div>
   <div class="table-container">
     <table id="tbl-core">
-      <thead><tr><th>Stock</th><th>Score</th><th>RS Rating (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>FCF</th><th>Sector</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
-  
+
   <!-- GROWTH -->
-  <div class="section-title">🚀 Growth Multipliers <span id="growth-count">0</span></div>
+  <div class="section-title">🚀 Growth Multipliers <span id="growth-count">0</span> <span>₹2K Cr+ · Emerging Leaders</span></div>
   <div class="table-container">
     <table id="tbl-growth">
-      <thead><tr><th>Stock</th><th>Score</th><th>RS Rating (6M)</th><th>YoY Revenue</th><th>YoY Profit</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>YoY Revenue</th><th>YoY Profit</th><th>FCF</th><th>Signal</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- OPPORTUNISTIC -->
+  <div class="section-title">🔄 Opportunistic <span id="opp-count">0</span></div>
+  <div class="table-container">
+    <table id="tbl-opp">
+      <thead><tr><th>Stock</th><th>Score</th><th>Category</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
 
   <script>
+    const fmt = (v) => v !== null && v !== undefined ? parseFloat(v).toFixed(1) : '-';
+    const getScoreCls = (s) => s >= 85 ? 'score-high' : (s >= 70 ? 'score-med' : 'score-low');
+    const getRsCls = (rs) => rs > 0 ? 'rs-pos' : 'rs-neg';
+    const getFcfHtml = (f) => {
+      if (f === null || f === undefined) return '<span class="mono fcf-na">N/A</span>';
+      const v = parseFloat(f);
+      if (v > 0) return `<span class="mono fcf-pos">${v.toFixed(1)}%</span>`;
+      return `<span class="mono fcf-neg">${v.toFixed(1)}%</span>`;
+    };
+    const getSigHtml = (sig) => {
+      if (!sig) return '-';
+      if (sig.includes("BUY")) return `<span class="signal sig-buy">${sig}</span>`;
+      if (sig.includes("SELL")) return `<span class="signal sig-sell">${sig}</span>`;
+      return sig;
+    };
+    const sectorTag = (s) => `<span class="sector-tag">${s || 'Unknown'}</span>`;
+
     async function loadData() {
       try {
         const res = await fetch('/api/wealth');
         if (!res.ok) throw new Error('API Error');
         const data = await res.json();
-        
+
         if (data.status === "processing") {
-          document.body.innerHTML = `<div style="padding:40px; text-align:center; color:#a1a1aa;">Waiting for Fund Manager Engine to complete its first run... (This may take 5-10 minutes)</div>`;
+          document.querySelector('.kpi-grid').innerHTML = `<div class="kpi-card" style="grid-column: 1/-1;"><div class="kpi-value" style="font-size:16px; color:var(--muted);">⏳ Wealth Engine is computing metrics for all stocks... (First run takes ~5 min)</div></div>`;
           return;
         }
-        
+
         const stocks = data.data || [];
         document.getElementById('kpi-total').textContent = stocks.length;
-        
-        // Render Functions
-        const fmt = (v) => v !== null && v !== undefined ? parseFloat(v).toFixed(1) : '-';
-        const getScoreCls = (s) => s >= 85 ? 'score-high' : (s >= 70 ? 'score-med' : 'score-low');
-        const getRsCls = (rs) => rs > 0 ? 'rs-pos' : 'rs-neg';
-        const getSigHtml = (sig) => {
-          if (!sig) return '-';
-          if (sig.includes("BUY")) return `<span class="signal sig-buy">${sig}</span>`;
-          if (sig.includes("SELL")) return `<span class="signal sig-sell">${sig}</span>`;
-          return sig;
-        };
 
         // Top 20
         const top20 = [...stocks].sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0)).slice(0, 20);
         document.getElementById('top20-count').textContent = top20.length;
-        document.querySelector('#tbl-top20 tbody').innerHTML = top20.length ? top20.map(r => `
+        const avgScore = top20.length ? Math.round(top20.reduce((s,r) => s + (r.FM_Score || 0), 0) / top20.length) : 0;
+        document.getElementById('kpi-avg-score').textContent = avgScore;
+
+        document.querySelector('#tbl-top20 tbody').innerHTML = top20.length ? top20.map((r, i) => `
           <tr>
+            <td class="mono" style="color:var(--muted);">#${i+1}</td>
             <td class="sym">${r.Stock}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
             <td class="mono">${fmt(r['ROE %'])}%</td>
             <td class="mono">${fmt(r['YOY Profit %'])}%</td>
-            <td style="font-size:11px; color:var(--muted);">${r.Category || '-'}</td>
+            <td>${getFcfHtml(r['FCF Margin %'])}</td>
+            <td>${sectorTag(r.Sector)}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="8" class="empty">No data available</td></tr>`;
+        `).join('') : `<tr><td colspan="10" class="empty">No data available</td></tr>`;
 
-        // Core
-        const core = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Core")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0)).slice(0, 15);
+        // Core — use Core_Selected flag (already sector-capped by engine)
+        const core = stocks.filter(s => s.Core_Selected === true).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
         document.getElementById('kpi-core').textContent = core.length;
-        document.getElementById('core-count').textContent = core.length;
+        document.getElementById('core-count').textContent = `${core.length} / 15 max`;
         document.querySelector('#tbl-core tbody').innerHTML = core.length ? core.map(r => `
           <tr>
             <td class="sym">${r.Stock}</td>
@@ -157,13 +206,15 @@
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
             <td class="mono">${fmt(r['ROE %'])}%</td>
-            <td class="mono">${fmt(r['YOY Profit %'])}%</td>
+            <td>${getFcfHtml(r['FCF Margin %'])}</td>
+            <td>${sectorTag(r.Sector)}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="7" class="empty">No stocks met Core criteria</td></tr>`;
+        `).join('') : `<tr><td colspan="8" class="empty">No stocks met Core criteria</td></tr>`;
 
         // Growth
         const growth = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Growth")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
+        document.getElementById('kpi-growth').textContent = growth.length;
         document.getElementById('growth-count').textContent = growth.length;
         document.querySelector('#tbl-growth tbody').innerHTML = growth.length ? growth.map(r => `
           <tr>
@@ -172,9 +223,22 @@
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['YOY Revenue %'])}%</td>
             <td class="mono">${fmt(r['YOY Profit %'])}%</td>
+            <td>${getFcfHtml(r['FCF Margin %'])}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="6" class="empty">No stocks met Growth criteria</td></tr>`;
+        `).join('') : `<tr><td colspan="7" class="empty">No stocks met Growth criteria</td></tr>`;
+
+        // Opportunistic
+        const opp = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Opportunistic")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
+        document.getElementById('opp-count').textContent = opp.length;
+        document.querySelector('#tbl-opp tbody').innerHTML = opp.length ? opp.map(r => `
+          <tr>
+            <td class="sym">${r.Stock}</td>
+            <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
+            <td style="font-size:11px; color:var(--muted);">${r.Category || '-'}</td>
+            <td>${getSigHtml(r.Signal)}</td>
+          </tr>
+        `).join('') : `<tr><td colspan="4" class="empty">No turnarounds detected</td></tr>`;
 
         // Buys KPI
         const buys = stocks.filter(s => (s.Signal || "").includes("BUY")).length;

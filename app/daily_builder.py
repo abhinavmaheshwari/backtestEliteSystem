@@ -353,7 +353,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     return _build_row(
         symbol=symbol, cats=cats, path="Non-Financial", row=row, close_price=close_price,
         market_cap=market_cap, roe=roe, opm=opm, debt_equity=debt_equity, debt_missing=debt_missing,
-        qoq_rev=qoq_sales, yoy_rev=yoy_sales, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, peg=peg, roce=roce
+        qoq_rev=qoq_sales, yoy_rev=yoy_sales, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, peg=peg, roce=roce, fcf_margin=fcf_margin
     )
 
 # =====================================================================================
@@ -457,7 +457,7 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict:
     return _build_row(
         symbol=symbol, cats=cats, path="Financial", row=row, close_price=close_price,
         market_cap=market_cap, roe=roe, opm=None, debt_equity=debt_equity, debt_missing=debt_missing,
-        qoq_rev=qoq_rev, yoy_rev=yoy_rev, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, roa=roa, peg=peg, roce=roce
+        qoq_rev=qoq_rev, yoy_rev=yoy_rev, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, roa=roa, peg=peg, roce=roce, fcf_margin=None
     )
 
 # =====================================================================================
@@ -518,7 +518,7 @@ def _score_fin(yoy_rev, yoy_profit, qoq_rev, qoq_profit, roe, roa, yoy_margin, f
 # ROW BUILDER (shared)
 # =====================================================================================
 
-def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None, peg=None, roce=0.0) -> dict:
+def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None, peg=None, roce=0.0, fcf_margin=None) -> dict:
     desc_list = [CAT_DESCRIPTIONS.get(c, "") for c in cats]
     cat_desc = " | ".join(filter(None, desc_list))
 
@@ -535,6 +535,7 @@ def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, de
         "ROCE %":               round(roce, 2),
         "ROA %":                round(roa, 2) if roa is not None else None,
         "OPM %":                round(opm, 2) if opm is not None else None,
+        "FCF Margin %":         round(fcf_margin, 2) if fcf_margin is not None else None,
         "Debt/Equity":          round(debt_equity, 2),
         "D/E Missing":          debt_missing,
         "QOQ Revenue %":        round(qoq_rev,    2),
