@@ -314,18 +314,27 @@ def api_get_portfolio():
             for _, row in df.iterrows():
                 wealth_data[row["Stock"]] = row.to_dict()
 
+        def safe_num(v):
+            if v is None: return 0.0
+            try:
+                f = float(v)
+                import math
+                return 0.0 if math.isnan(f) else f
+            except (ValueError, TypeError):
+                return 0.0
+
         enriched = []
         for p in portfolio:
             sym = p["symbol"]
-            entry_price = float(p["entry_price"]) if p["entry_price"] else 0.0
+            entry_price = safe_num(p["entry_price"])
             
             # Defaults
             live_data = wealth_data.get(sym, {})
-            cmp = float(live_data.get("cmp", 0) or 0)
-            fm_score = live_data.get("FM_Score", 0)
-            signal = live_data.get("Signal", "")
-            ai_conf = live_data.get("AI_Confidence", 0)
-            category = live_data.get("Category", "")
+            cmp = safe_num(live_data.get("cmp"))
+            fm_score = safe_num(live_data.get("FM_Score"))
+            signal = live_data.get("Signal") or ""
+            ai_conf = safe_num(live_data.get("AI_Confidence"))
+            category = live_data.get("Category") or ""
 
             pnl_pct = 0.0
             if cmp > 0 and entry_price > 0:
