@@ -177,7 +177,7 @@ def fetch_universe() -> pd.DataFrame:
     fields = [
         "name", "sector", "close", "average_volume_30d_calc",
         "market_cap_basic", "return_on_equity_fy", "operating_margin", 
-        "debt_to_equity_fq", "return_on_assets_fq", "earnings_per_share_basic_ttm",
+        "debt_to_equity_fq", "return_on_assets_fq", "return_on_invested_capital_fq", "earnings_per_share_basic_ttm",
         "gross_profit_yoy_growth_ttm", "gross_profit_qoq_growth_fq",
         "earnings_per_share_diluted_yoy_growth_ttm", "earnings_per_share_diluted_qoq_growth_fq",
         "total_revenue_yoy_growth_ttm", "total_revenue_qoq_growth_fq",
@@ -259,6 +259,8 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     eps_5y      = fv("earnings_per_share_basic_5y_growth")
     fcf_margin  = fv("free_cash_flow_margin_ttm")
     div_yield   = fv("dividend_yield_recent")
+    _raw_roce   = fv("return_on_invested_capital_fq")
+    roce        = _raw_roce if _raw_roce is not None else 0.0
 
     missing = [
         name for name, val in [
@@ -351,7 +353,7 @@ def _classify_nonfin(row: pd.Series, symbol: str) -> dict:
     return _build_row(
         symbol=symbol, cats=cats, path="Non-Financial", row=row, close_price=close_price,
         market_cap=market_cap, roe=roe, opm=opm, debt_equity=debt_equity, debt_missing=debt_missing,
-        qoq_rev=qoq_sales, yoy_rev=yoy_sales, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, peg=peg
+        qoq_rev=qoq_sales, yoy_rev=yoy_sales, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, peg=peg, roce=roce
     )
 
 # =====================================================================================
@@ -381,6 +383,8 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict:
     rev_5y      = fv("total_revenue_5y_growth")
     eps_5y      = fv("earnings_per_share_basic_5y_growth")
     div_yield   = fv("dividend_yield_recent")
+    _raw_roce   = fv("return_on_invested_capital_fq")
+    roce        = _raw_roce if _raw_roce is not None else 0.0
 
     missing = [
         name for name, val in [
@@ -453,7 +457,7 @@ def _classify_fin(row: pd.Series, symbol: str) -> dict:
     return _build_row(
         symbol=symbol, cats=cats, path="Financial", row=row, close_price=close_price,
         market_cap=market_cap, roe=roe, opm=None, debt_equity=debt_equity, debt_missing=debt_missing,
-        qoq_rev=qoq_rev, yoy_rev=yoy_rev, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, roa=roa, peg=peg
+        qoq_rev=qoq_rev, yoy_rev=yoy_rev, qoq_profit=qoq_profit, yoy_profit=yoy_profit, score=score, roa=roa, peg=peg, roce=roce
     )
 
 # =====================================================================================
@@ -514,7 +518,7 @@ def _score_fin(yoy_rev, yoy_profit, qoq_rev, qoq_profit, roe, roa, yoy_margin, f
 # ROW BUILDER (shared)
 # =====================================================================================
 
-def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None, peg=None) -> dict:
+def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, debt_equity, debt_missing, qoq_rev, yoy_rev, qoq_profit, yoy_profit, score, roa=None, peg=None, roce=0.0) -> dict:
     desc_list = [CAT_DESCRIPTIONS.get(c, "") for c in cats]
     cat_desc = " | ".join(filter(None, desc_list))
 
@@ -528,6 +532,7 @@ def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, de
         "Market Cap Cr":        round(market_cap / 10_000_000, 2),
         "PEG Ratio":            round(peg, 2) if peg is not None else None,
         "ROE %":                round(roe, 2),
+        "ROCE %":               round(roce, 2),
         "ROA %":                round(roa, 2) if roa is not None else None,
         "OPM %":                round(opm, 2) if opm is not None else None,
         "Debt/Equity":          round(debt_equity, 2),
