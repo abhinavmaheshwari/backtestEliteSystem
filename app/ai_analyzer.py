@@ -84,6 +84,8 @@ def analyze_concall_text(text: str) -> dict:
                     logger.info(f"Attempting AI analysis with {model} (Key {i+1}/{len(gemini_keys)})...")
                     result = _try_gemini_model(model, gemini_key, text)
                     result["key_used"] = f"Key {i+1}"
+                    from data_fetch_status import mark_success
+                    mark_success('gemini')
                     return result
                 except Exception as e:
                     import time
@@ -99,4 +101,6 @@ def analyze_concall_text(text: str) -> dict:
                         errors.append(f"{model}: {err_str}")
                         break # Skip to next model if it's not a quota issue
 
+    from data_fetch_status import mark_failure
+    mark_failure('gemini', errors[-1] if errors else "All AI models failed.")
     return {"error": "All AI models in the fallback chain failed.", "details": errors}

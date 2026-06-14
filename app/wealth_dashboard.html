@@ -108,6 +108,25 @@
     <div style="width:10%; background: #f59e0b;">Cash Flow 10</div>
   </div>
 
+  <!-- API Health Scanner -->
+  <div id="api-health-container" style="display:none; margin-bottom:32px; background:rgba(239,68,68,0.1); border:1px solid var(--red); border-radius:12px; padding:16px;">
+    <div style="font-family:var(--font-head); font-size:18px; color:var(--red); margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+      ⚠️ API Connection Failures Detected
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; text-align:left;">
+        <thead>
+          <tr>
+            <th style="color:var(--red); border-bottom:1px solid rgba(239,68,68,0.3);">API Source</th>
+            <th style="color:var(--red); border-bottom:1px solid rgba(239,68,68,0.3);">Error Message</th>
+            <th style="color:var(--red); border-bottom:1px solid rgba(239,68,68,0.3);">Last Failed</th>
+          </tr>
+        </thead>
+        <tbody id="api-health-body"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="kpi-grid">
     <div class="kpi-card">
       <div class="kpi-value" id="kpi-total">-</div>
@@ -436,7 +455,44 @@
     };
     const sectorTag = (s) => `<span class="sector-tag">${s || 'Unknown'}</span>`;
 
+    async function fetchApiHealth() {
+      try {
+        const res = await fetch('/api/data_fetch_health');
+        if (!res.ok) return;
+        const rows = await res.json();
+        
+        const container = document.getElementById('api-health-container');
+        const tbody = document.getElementById('api-health-body');
+        tbody.innerHTML = '';
+        
+        // Filter rows that have consecutive_failures > 0 just in case
+        const failures = rows.filter(r => r.consecutive_failures > 0);
+        
+        if (failures.length > 0) {
+          container.style.display = 'block';
+          failures.forEach(r => {
+            const tr = document.createElement('tr');
+            const source = r.source_name || 'Unknown';
+            const error = r.error_msg || 'Timeout/Unknown Error';
+            const time = r.last_failure ? new Date(r.last_failure).toLocaleString() : 'N/A';
+            
+            tr.innerHTML = `
+              <td class="mono">${source}</td>
+              <td style="color:var(--muted); font-size:12px;">${error}</td>
+              <td class="mono" style="font-size:12px;">${time}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+        } else {
+          container.style.display = 'none';
+        }
+      } catch (e) {
+        console.error("Failed to load API health", e);
+      }
+    }
+
     async function loadData() {
+      fetchApiHealth();
       try {
         const res = await fetch('/api/wealth');
         if (!res.ok) throw new Error('API Error');

@@ -122,7 +122,7 @@ CAT_DESCRIPTIONS = {
 
 MIN_PRICE         = 100              # no penny stocks — ₹100 minimum for institutional interest
 MIN_MARKET_CAP    = 10_000_000_000   # ₹1,000 Cr — exclude micro-caps
-MIN_TRADED_VALUE  = 150_000_000      # ₹15 Cr/day — reliable fills on breakout entries
+from config import MIN_DAILY_LIQUIDITY_RUPEES_WATCHLIST as MIN_TRADED_VALUE
 MIN_ROE           = 8                # 8% ROE gate — let Wealth Engine v2 scoring handle quality filtering
 
 # ── JUNK-KILL GATES — These are NON-NEGOTIABLE hard blocks ──────────────────────────
@@ -211,9 +211,17 @@ def fetch_universe() -> pd.DataFrame:
         .limit(5000)
     )
 
-    total, df = q.get_scanner_data()
-    logger.info(f"✅ Universe fetched: {total} stocks")
-    return df
+    try:
+        total, df = q.get_scanner_data()
+        from data_fetch_status import mark_success
+        mark_success('tradingview')
+        logger.info(f"✅ Universe fetched: {total} stocks")
+        return df
+    except Exception as e:
+        from data_fetch_status import mark_failure
+        mark_failure('tradingview', e)
+        logger.error(f"❌ TradingView fetch failed: {e}")
+        return pd.DataFrame()
 
 # =====================================================================================
 # SHARED UTILITIES & SURVEILLANCE DATA
@@ -658,7 +666,7 @@ def main():
     import os
     from datetime import datetime, time as dt_time
     from zoneinfo import ZoneInfo
-    from config import WATCHLIST_PATH
+    from config import WATCHLIST_PATH, MIN_DAILY_LIQUIDITY_RUPEES_WATCHLIST
     
     global _DELIVERY_DATA, _INST_BUYS
     
@@ -749,53 +757,9 @@ def _main_impl():
         .reset_index(drop=True)
     )
 
-    # --- AI CONCALL INTEGRATION (ALL STOCKS) ---
-    logger.info("🤖 Checking Database for cached AI Concall reports on all fundamental stocks...")
-    try:
-        from database import get_recent_concall_analysis
-        
-        ai_scores = []
-        total_len = len(final_df)
-        cached_count = 0
-        for i, rrow in final_df.iterrows():
-            sym = rrow["Stock"]
-            
-            try:
-                # 1. Check recent cache (60 days)
-                cached = get_recent_concall_analysis(sym, max_age_days=60)
-                if cached:
-                    cached_count += 1
-                    ai_data = cached
-                else:
-                    ai_data = None
-                    
-                # 2. Apply Alpha Boost
-                score = 0
-                if ai_data and not "error" in ai_data:
-                    conf = ai_data.get("management_confidence")
-                    if conf:
-                        try:
-                            conf_val = int(str(conf).split('/')[0].strip())
-                            if conf_val >= 8: score = 15
-                            elif conf_val == 7: score = 10
-                            elif conf_val <= 4: score = -15
-                        except Exception: pass
-                        
-                ai_scores.append(score)
-                
-            except Exception as e:
-                logger.error(f"Failed AI check for {sym}: {e}")
-                ai_scores.append(0)
-                
-        logger.info(f"✅ Found {cached_count}/{total_len} AI reports in local database cache.")
-        
-        # Re-apply boosts to the final Fundamental Score
-        
-        # Resort based on new scores
-        final_df = final_df.sort_values(by=["Fundamental Score", "ROE %"], ascending=False).reset_index(drop=True)
-    except Exception as e:
-        logger.error(f"Failed to run AI Concall Integration: {e}")
-    # --------------------------------------------
+    # --- AI CONCALL INTEGRATION ---
+    # Moved entirely to wealth_engine.py to prevent split-brain scoring.
+    # daily_builder now only exports pure, unweighted fundamentals.
 
     final_df.to_csv(OUTPUT_CSV, index=False)
     final_df.to_parquet(OUTPUT_PARQUET, index=False)

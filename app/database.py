@@ -626,7 +626,9 @@ def upsert_data_fetch_health(source_name: str, last_success: str = None, last_fa
         with conn.cursor() as cur:
             try:
                 # If consecutive_failures is None, don't overwrite the existing value.
-                if consecutive_failures is not None:
+                if consecutive_failures == 0:
+                    cur.execute("DELETE FROM data_fetch_health WHERE source_name = %s", (source_name,))
+                elif consecutive_failures is not None:
                     cur.execute("""
                         INSERT INTO data_fetch_health (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
                         VALUES (%s, %s, %s, %s, %s, %s)
@@ -639,13 +641,14 @@ def upsert_data_fetch_health(source_name: str, last_success: str = None, last_fa
                     """, (source_name, last_success, last_failure, consecutive_failures, error_msg, now))
                 else:
                     cur.execute("""
-                        INSERT INTO data_fetch_health (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
-                        VALUES (%s, %s, %s, 0, %s, %s)
+                        INSERT INTO data_fetch_health 
+                          (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
+                        VALUES (%s, %s, %s, 1, %s, %s)
                         ON CONFLICT (source_name) DO UPDATE
-                            SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
-                                last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
-                                error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
-                                updated_at = EXCLUDED.updated_at
+                          SET last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
+                              consecutive_failures = COALESCE(data_fetch_health.consecutive_failures, 0) + 1,
+                              error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
+                              updated_at = EXCLUDED.updated_at
                     """, (source_name, last_success, last_failure, error_msg, now))
                 conn.commit()
             except Exception:

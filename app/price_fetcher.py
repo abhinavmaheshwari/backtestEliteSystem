@@ -132,17 +132,13 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                         if not fetched.empty:
                             _write_cache_file(fetched, cache_path)
                             upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
-                            upsert_data_fetch_health('yfinance', last_success=datetime.now(timezone.utc).isoformat(), consecutive_failures=0)
+                            from data_fetch_status import mark_success
+                            mark_success('yfinance')
                     except Exception as e:
                         # record failure in health table
                         logger.warning(f"Background refresh failed for {yf_symbol}: {e}")
-                        try:
-                            rows = get_all_data_fetch_health()
-                            cur = next((r for r in rows if r['source_name']=='yfinance'), None)
-                            cur_failures = cur['consecutive_failures'] if cur else 0
-                        except Exception:
-                            cur_failures = 0
-                        upsert_data_fetch_health('yfinance', last_failure=datetime.now(timezone.utc).isoformat(), consecutive_failures=cur_failures+1, error_msg=str(e))
+                        from data_fetch_status import mark_failure
+                        mark_failure('yfinance', e)
                 finally:
                     _release_lock(lock_path)
 
@@ -176,20 +172,15 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             # persist
             _write_cache_file(fetched, cache_path)
             upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
-            upsert_data_fetch_health('yfinance', last_success=datetime.now(timezone.utc).isoformat(), consecutive_failures=0)
+            from data_fetch_status import mark_success
+            mark_success('yfinance')
             if use_cache:
                 _price_cache[cache_key] = fetched.copy()
             return fetched
         except Exception as e:
             logger.warning(f"Failed to fetch historical data for {yf_symbol}: {e}")
-            # update health table
-            try:
-                rows = get_all_data_fetch_health()
-                cur = next((r for r in rows if r['source_name']=='yfinance'), None)
-                cur_failures = cur['consecutive_failures'] if cur else 0
-            except Exception:
-                cur_failures = 0
-            upsert_data_fetch_health('yfinance', last_failure=datetime.now(timezone.utc).isoformat(), consecutive_failures=cur_failures+1, error_msg=str(e))
+            from data_fetch_status import mark_failure
+            mark_failure('yfinance', e)
             # fallback to any stale cache if present
             if os.path.exists(cache_path):
                 df = _read_cache_file(cache_path)

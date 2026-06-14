@@ -92,6 +92,10 @@ SCAN_CONFIG = {
 ADX_MIN_THRESHOLD = 25
 MIN_STOCK_PRICE = 100.0    # No penny stocks — matches daily_builder MIN_PRICE
 
+# LIQUIDITY THRESHOLDS (in Rupees)
+MIN_DAILY_LIQUIDITY_RUPEES_WATCHLIST = 150_000_000  # ₹15 Cr/day for raw watchlist
+MIN_DAILY_LIQUIDITY_RUPEES_WEALTH    = 10_000_000   # ₹1 Cr/day for long-term wealth engine
+
 DELIVERY_CONVICTION_THRESHOLDS = {
     "institutional": 60,
     "positional":    40,
