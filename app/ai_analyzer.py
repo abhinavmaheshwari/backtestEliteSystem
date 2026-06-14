@@ -108,6 +108,10 @@ def analyze_concall_text(text: str) -> dict:
                             logger.warning(f"All Gemini keys exhausted for {model}. Sleeping 30s before trying next model/retry...")
                             time.sleep(30)
                             # We don't return here, we let it break and go to the next model in `gemini_models`
+                    elif "404" in err_str or "NOT_FOUND" in err_str:
+                        # User requested to silently ignore 404s (invalid model aliases)
+                        logger.warning(f"Skipping {model} as it is not found on this API key.")
+                        break # Skip to next model
                     else:
                         logger.warning(f"{model} failed: {err_str}")
                         errors.append(f"{model}: {err_str}")
@@ -116,6 +120,6 @@ def analyze_concall_text(text: str) -> dict:
                         break # Skip to next model if it's not a quota issue
 
     from data_fetch_status import mark_failure
-    final_error = errors[-1] if errors else "All AI models failed."
+    final_error = errors[-1] if errors else "All AI models failed or were not found."
     mark_failure('gemini', final_error)
     return {"error": "All AI models in the fallback chain failed.", "details": errors}

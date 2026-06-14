@@ -866,6 +866,7 @@ function renderScannerGrid(scanner_stats) {
       </div>`;
 
     const isAiWorker = sc === 'AI Worker';
+    const isApi = sc.startsWith('API_');
     const cardStyle = isAiWorker ? 'background:rgba(99,102,241,0.05);' : '';
 
     let alertLabel = "Today's Alerts";
@@ -894,6 +895,18 @@ function renderScannerGrid(scanner_stats) {
       </div>`;
       alertSub = lastStock ? lastStock : "Stocks cached";
       tooltipHtml = '';
+    } else if (isApi) {
+      alertLabel = "Failures";
+      alertHtml = `
+      <div class="scanner-alert-count ${data.today_alerts===0?'zero':''}" style="${data.today_alerts > 0 ? 'color: #ff4d6d;' : ''}">
+        ${data.today_alerts}
+      </div>`;
+      alertSub = data.today_alerts > 0 ? 'hover to view error' : 'system healthy';
+      tooltipHtml = data.today_alerts > 0 && data.error ? `
+      <div class="scanner-alert-tooltip">
+        <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
+        <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
+      </div>` : '';
     }
 
     el.innerHTML += `
@@ -906,19 +919,19 @@ function renderScannerGrid(scanner_stats) {
           <span class="scanner-badge ${badgeClass}">${badgeText}</span>
         </div>
         <div class="scanner-stats">
-          <button class="scanner-alert-btn" style="position:relative; ${isAiWorker ? 'pointer-events:none; cursor:default' : ''}" ${!isAiWorker ? `onclick="showScannerDrill('${sc}')"` : ''}>
+          <button class="scanner-alert-btn" style="position:relative; ${(isAiWorker || isApi) ? 'pointer-events:auto; cursor:default' : ''}" ${!(isAiWorker || isApi) ? `onclick="showScannerDrill('${sc}')"` : ''}>
             <div class="scanner-stat-label">${alertLabel}</div>
             ${alertHtml}
             <div class="scanner-stat-sub">${alertSub}</div>
             ${tooltipHtml}
           </button>
           <div class="scanner-stat-item">
-            <div class="scanner-stat-label">Last Run</div>
+            <div class="scanner-stat-label">Last Checked</div>
             <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.updated_at || data.last_success)}</div>
             <div class="scanner-stat-sub">${fmtTs(data.updated_at || data.last_success)}</div>
           </div>
         </div>
-        ${isDown && data.error ? `<div class="scanner-error">⚠ ${data.error}</div>` : ''}
+        ${isDown && data.error && !isApi ? `<div class="scanner-error">⚠ ${data.error}</div>` : ''}
       </div>`;
   });
 }
