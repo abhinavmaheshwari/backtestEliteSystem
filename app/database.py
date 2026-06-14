@@ -232,6 +232,18 @@ def init_db():
                     )
                 """)
 
+                # ── Manual Portfolio Tracker ──────────────────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS manual_portfolio (
+                        id SERIAL PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        entry_date DATE NOT NULL,
+                        entry_price REAL NOT NULL,
+                        quantity INTEGER NOT NULL,
+                        added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
                 conn.commit()
 
         _DB_INITIALIZED = True
@@ -643,3 +655,35 @@ def get_all_data_fetch_health() -> list:
                 logger.exception("❌ get_all_data_fetch_health failed")
                 return []
 
+# ── Manual Portfolio Tracker ──────────────────────────────────────────────────
+
+def get_manual_portfolio():
+    """Retrieve all manual portfolio entries."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, symbol, entry_date::TEXT, entry_price, quantity
+                FROM manual_portfolio
+                ORDER BY added_at DESC
+            """)
+            return cur.fetchall()
+
+def add_portfolio_entry(symbol: str, entry_date: str, entry_price: float, quantity: int):
+    """Add a new stock to the manual portfolio."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO manual_portfolio (symbol, entry_date, entry_price, quantity)
+                VALUES (%s, %s, %s, %s)
+            """, (symbol.upper(), entry_date, entry_price, quantity))
+        conn.commit()
+
+def remove_portfolio_entry(entry_id: int):
+    """Remove a stock from the manual portfolio by ID."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM manual_portfolio WHERE id = %s", (entry_id,))
+        conn.commit()

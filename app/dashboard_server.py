@@ -291,6 +291,102 @@ def api_wealth():
         return jsonify([])
 
 
+# ── MANUAL PORTFOLIO TRACKER ──────────────────────────────────────────────────
+@app.route("/api/portfolio", methods=["GET"])
+def api_get_portfolio():
+    """Returns manual portfolio with live recommendations based on Wealth Engine data."""
+    try:
+        from database import get_manual_portfolio
+        from config import DATA_DIR
+        import pandas as pd
+        import os
+        
+        portfolio = get_manual_portfolio()
+        if not portfolio:
+            return jsonify([])
+
+        # Load live wealth data to enrich the portfolio
+        wealth_data = {}
+        WEALTH_PATH = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+        if os.path.exists(WEALTH_PATH):
+            df = pd.read_parquet(WEALTH_PATH)
+            # Create a lookup dictionary by Stock symbol
+            for _, row in df.iterrows():
+                wealth_data[row["Stock"]] = row.to_dict()
+
+        enriched = []
+        for p in portfolio:
+            sym = p["symbol"]
+            entry_price = float(p["entry_price"]) if p["entry_price"] else 0.0
+            
+            # Defaults
+            live_data = wealth_data.get(sym, {})
+            cmp = float(live_data.get("cmp", 0) or 0)
+            fm_score = live_data.get("FM_Score", 0)
+            signal = live_data.get("Signal", "")
+            ai_conf = live_data.get("AI_Confidence", 0)
+            category = live_data.get("Category", "")
+
+            pnl_pct = 0.0
+            if cmp > 0 and entry_price > 0:
+                pnl_pct = ((cmp - entry_price) / entry_price) * 100
+
+            # Recommendation Engine Logic
+            rec = "HOLD"
+            if fm_score > 0 and fm_score < 65:
+                rec = "EXIT"
+            elif signal and "SELL" in str(signal).upper():
+                rec = "EXIT"
+            elif fm_score >= 80 and cmp > 0 and pnl_pct <= -8:
+                rec = "AVERAGE"
+            
+            p.update({
+                "cmp": cmp,
+                "pnl_pct": pnl_pct,
+                "FM_Score": fm_score,
+                "Signal": signal,
+                "AI_Confidence": ai_conf,
+                "Category": category,
+                "Recommendation": rec
+            })
+            enriched.append(p)
+            
+        return jsonify(enriched)
+    except Exception as e:
+        logger.error(f"Failed to get manual portfolio: {e}")
+        return jsonify([])
+
+@app.route("/api/portfolio/add", methods=["POST"])
+def api_add_portfolio():
+    try:
+        data = request.json
+        symbol = data.get("symbol")
+        entry_date = data.get("entry_date")
+        entry_price = float(data.get("entry_price"))
+        quantity = int(data.get("quantity"))
+        
+        if not symbol or not entry_date or not entry_price:
+            return jsonify({"error": "Missing required fields"}), 400
+            
+        from database import add_portfolio_entry
+        add_portfolio_entry(symbol, entry_date, entry_price, quantity)
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Failed to add portfolio entry: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/portfolio/remove", methods=["POST"])
+def api_remove_portfolio():
+    try:
+        data = request.json
+        entry_id = int(data.get("id"))
+        from database import remove_portfolio_entry
+        remove_portfolio_entry(entry_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Failed to remove portfolio entry: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/data_fetch_health")
 def api_data_fetch_health():
     """Return the health status of external data providers (cache/fetch failures)."""
