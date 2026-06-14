@@ -102,7 +102,7 @@ def analyze_concall_text(text: str) -> dict:
     # Fallback Chain 1: Gemini Models
     if gemini_key_str:
         gemini_keys = [k.strip() for k in gemini_key_str.split(",") if k.strip()]
-        gemini_models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        gemini_models = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-8b", "gemini-2.0-flash-exp"]
         
         for model in gemini_models:
             success = False
@@ -118,16 +118,9 @@ def analyze_concall_text(text: str) -> dict:
                     if "429" in err_str or "Quota" in err_str:
                         logger.warning(f"{model} hit rate limit on Key {i+1}.")
                         if i == len(gemini_keys) - 1:
-                            logger.warning("All Gemini keys exhausted. Sleeping 45s and retrying last key...")
-                            time.sleep(45)
-                            try:
-                                result = _try_gemini_model(model, gemini_key, text)
-                                result["key_used"] = f"Key {i+1} (After Retry)"
-                                return result
-                            except Exception as e2:
-                                err2_str = str(e2).replace(gemini_key, "[REDACTED_KEY]")
-                                logger.warning(f"{model} failed after retry: {err2_str}")
-                                errors.append(f"{model} (Retry): {err2_str}")
+                            logger.warning(f"All Gemini keys exhausted for {model}. Sleeping 30s before trying next model/retry...")
+                            time.sleep(30)
+                            # We don't return here, we let it break and go to the next model in `gemini_models`
                     else:
                         logger.warning(f"{model} failed: {err_str}")
                         errors.append(f"{model}: {err_str}")
