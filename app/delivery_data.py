@@ -14,6 +14,7 @@ import io
 from datetime import date, timedelta
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from app.data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,10 @@ def fetch_delivery_data(trading_date: date) -> dict[str, float]:
         try:
             response = session.get(url, headers=headers, timeout=FETCH_TIMEOUT)
             if response.status_code == 404:
+                try:
+                    mark_failure('nse_bhavcopy', '404')
+                except Exception:
+                    logger.exception('Failed to report nse_bhavcopy 404')
                 return {}
             if response.status_code == 200:
                 raw_csv = response.text
@@ -94,9 +99,17 @@ def fetch_delivery_data(trading_date: date) -> dict[str, float]:
                     return {}
                 df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
                 df["DELIV_PER"] = pd.to_numeric(df["DELIV_PER"], errors="coerce")
+                try:
+                    mark_success('nse_bhavcopy')
+                except Exception:
+                    logger.exception('Failed to report nse_bhavcopy success')
                 return dict(zip(df["SYMBOL"], df["DELIV_PER"].astype(float)))
         except Exception as e:
             logger.warning(f"⚠️ Bhavcopy attempt {attempt} failed: {e}")
+            try:
+                mark_failure('nse_bhavcopy', e)
+            except Exception:
+                logger.exception('Failed to report nse_bhavcopy exception')
         if attempt < MAX_RETRIES:
             time.sleep(2 ** attempt)
     return {}

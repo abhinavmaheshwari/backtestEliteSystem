@@ -7,6 +7,7 @@ import threading
 import time
 import pandas as pd
 import yfinance as yf
+from app.data_fetch_status import mark_success, mark_failure
 from datetime import datetime
 from zoneinfo import ZoneInfo
 try:
@@ -102,6 +103,11 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
                         all_data[batch[0]] = sym_df
                 
                 batch_success = True
+                try:
+                    # Report successful yfinance batch fetch
+                    mark_success('yfinance')
+                except Exception:
+                    logger.exception("Failed to report yfinance batch success")
                 break # Break retry loop on success
                 
             except Exception as e:
@@ -111,6 +117,10 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
         # ATTEMPT 2: Fallback to single downloads if the entire batch failed 3 times
         if not batch_success:
             logger.error(f"❌ Batch failed completely. Engaging single-ticker fallback for {len(batch)} symbols...")
+            try:
+                mark_failure('yfinance', f"Batch failed for symbols {batch}")
+            except Exception:
+                logger.exception("Failed to report yfinance batch failure")
             for sym in batch:
                 single_df = _download_single_ticker(sym, period, interval)
                 if single_df is not None:
@@ -118,4 +128,11 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
                 time.sleep(0.5) # Prevent aggressive rate limiting on single pulls
 
     logger.info(f"✅ Data secured for {len(all_data)}/{total} symbols [{interval}]")
+    try:
+        if len(all_data) > 0:
+            mark_success('yfinance')
+        else:
+            mark_failure('yfinance', "No symbols returned after batch + fallback")
+    except Exception:
+        logger.exception("Failed to report final yfinance fetch status")
     return all_data

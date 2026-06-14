@@ -46,6 +46,7 @@
 
 import logging
 import yfinance as yf
+from app.data_fetch_status import mark_success, mark_failure
 import pandas as pd
 
 from dataclasses import dataclass, field
@@ -490,6 +491,10 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
 
         if raw is None or raw.empty:
             logger.warning("⚠️  Sector batch download returned empty — all sectors will be skipped")
+            try:
+                mark_failure('yfinance', 'Sector batch returned empty')
+            except Exception:
+                logger.exception("Failed to report yfinance failure for sector rotation")
             for t in tickers:
                 results[t] = None
             return results
@@ -527,9 +532,17 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
         # Fan out: every originally requested ticker (including duplicates) gets its result.
         for t in tickers:
             results[t] = unique_results.get(t)
+        try:
+            mark_success('yfinance')
+        except Exception:
+            logger.exception("Failed to report yfinance success for sector rotation")
 
-    except Exception:
+    except Exception as e:
         logger.exception("⚠️  Sector batch download failed — all sectors will be skipped")
+        try:
+            mark_failure('yfinance', e)
+        except Exception:
+            logger.exception("Failed to report yfinance failure for sector rotation (exception path)")
         for t in tickers:
             results[t] = None
 

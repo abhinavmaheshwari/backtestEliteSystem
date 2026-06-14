@@ -32,6 +32,7 @@ import logging
 import time
 import requests
 import os
+from app.data_fetch_status import mark_success, mark_failure
 
 from config import BOT_TOKEN, CHAT_ID
 
@@ -118,6 +119,10 @@ def send_telegram_message(message: str, scan_type: str = None, retries: int = 3)
 
             if response.status_code == 200:
                 logger.info(f"📨 Sent | scan={scan_type} | thread={thread_id}")
+                try:
+                    mark_success('telegram')
+                except Exception:
+                    logger.exception('Failed to report telegram success')
                 return True
 
             # Telegram rate limit — respect retry_after
@@ -146,11 +151,19 @@ def send_telegram_message(message: str, scan_type: str = None, retries: int = 3)
 
         except requests.exceptions.Timeout:
             logger.warning(f"⚠️ Timeout (attempt {attempt}/{retries})")
-        except Exception:
+        except Exception as e:
             logger.exception("❌ Telegram exception (unexpected)")
+            try:
+                mark_failure('telegram', e)
+            except Exception:
+                logger.exception('Failed to report telegram exception')
 
         if attempt < retries:
             time.sleep(2 * attempt)  # back-off: 2s, 4s
 
     logger.error(f"❌ Failed after {retries} attempts | scan={scan_type}")
+    try:
+        mark_failure('telegram', f'Failed after {retries} attempts')
+    except Exception:
+        logger.exception('Failed to report telegram final failure')
     return False

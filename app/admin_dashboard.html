@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Abhinav's Screener Dashboard</title>
+<link rel="icon" href="data:,">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
@@ -469,8 +470,14 @@
         </button>
     </div>
     <div class="card" style="margin-bottom:28px">
-      <div class="filter-bar">
-        <input type="text" id="wlSearch" class="search-input" placeholder="Search symbol or sector..." oninput="renderWatchlist()">
+      <div class="filter-bar" style="display:flex; gap:12px;">
+        <input type="text" id="wlSearch" class="search-input" style="flex:1;" placeholder="Search symbol..." oninput="renderWatchlist()">
+        <select id="wlSectorFilter" class="search-input" style="max-width:200px;" onchange="renderWatchlist()">
+          <option value="">All Sectors</option>
+        </select>
+        <select id="wlCategoryFilter" class="search-input" style="max-width:200px;" onchange="renderWatchlist()">
+          <option value="">All Categories</option>
+        </select>
       </div>
       <div class="tbl-wrap">
         <table>
@@ -1672,6 +1679,45 @@ async function loadWatchlist() {
         const r = await fetch('/api/shortlist');
         if (r.ok) {
             WATCHLIST_DATA = await r.json();
+            
+            const filterCat = document.getElementById('wlCategoryFilter');
+            const filterSec = document.getElementById('wlSectorFilter');
+            
+            if(filterCat) {
+                filterCat.innerHTML = '<option value="">All Categories</option>';
+                let cats = new Set();
+                WATCHLIST_DATA.forEach(d => {
+                    if(d.Category) {
+                        d.Category.split(',').forEach(c => {
+                            const trimmed = c.trim();
+                            if(trimmed) cats.add(trimmed);
+                        });
+                    }
+                });
+                Array.from(cats).sort().forEach(c => {
+                    let opt = document.createElement('option');
+                    opt.value = c;
+                    opt.textContent = c;
+                    filterCat.appendChild(opt);
+                });
+            }
+
+            if(filterSec) {
+                filterSec.innerHTML = '<option value="">All Sectors</option>';
+                let secs = new Set();
+                WATCHLIST_DATA.forEach(d => {
+                    if(d.Sector) secs.add(d.Sector.trim());
+                });
+                Array.from(secs).sort().forEach(s => {
+                    if(s) {
+                        let opt = document.createElement('option');
+                        opt.value = s;
+                        opt.textContent = s;
+                        filterSec.appendChild(opt);
+                    }
+                });
+            }
+            
             renderWatchlist();
         }
     } catch(e) { console.error('Failed to load watchlist', e); }
@@ -1693,11 +1739,15 @@ function sortWatchlist(col) {
 
 function renderWatchlist() {
     const q = document.getElementById('wlSearch').value.toUpperCase();
-    let data = WATCHLIST_DATA.filter(d => 
-        (d.Stock && d.Stock.toUpperCase().includes(q)) || 
-        (d.Sector && d.Sector.toUpperCase().includes(q)) ||
-        (d.Category && d.Category.toUpperCase().includes(q))
-    );
+    const catFilter = document.getElementById('wlCategoryFilter') ? document.getElementById('wlCategoryFilter').value : "";
+    const secFilter = document.getElementById('wlSectorFilter') ? document.getElementById('wlSectorFilter').value : "";
+    
+    let data = WATCHLIST_DATA.filter(d => {
+        let textMatch = (d.Stock && d.Stock.toUpperCase().includes(q));
+        let catMatch = catFilter === "" || (d.Category && d.Category.includes(catFilter));
+        let secMatch = secFilter === "" || (d.Sector && d.Sector === secFilter);
+        return textMatch && catMatch && secMatch;
+    });
     
     data.sort((a,b) => {
         let va = a[wlSortCol];

@@ -157,6 +157,15 @@ def init_db():
                     )
                 """)
 
+                # ── Promoter Pledge Cache table ────────────────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS promoter_pledge_cache (
+                        symbol        TEXT PRIMARY KEY,
+                        pledge_pct    REAL NOT NULL,
+                        updated_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                    )
+                """)
+
                 # ── Trade analytics view mapping JSONB context to columns ───────────
                 cur.execute("""
                     CREATE OR REPLACE VIEW v_trade_analytics AS
@@ -196,6 +205,31 @@ def init_db():
                         context->'execution'->>'t_method' AS t_method,
                         context->'execution'->>'trail_note' AS trail_note
                     FROM alerts;
+                """)
+
+                # ── Data cache metadata table (cache keys, last fetched, cadence) ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS data_cache_metadata (
+                        key TEXT PRIMARY KEY,
+                        last_fetched TEXT NOT NULL,
+                        cadence_seconds INTEGER NOT NULL,
+                        rows INTEGER,
+                        etag TEXT,
+                        source TEXT,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+
+                # ── Data fetch health table for external systems (monitoring) ─────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS data_fetch_health (
+                        source_name TEXT PRIMARY KEY,
+                        last_success TEXT,
+                        last_failure TEXT,
+                        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                        error_msg TEXT,
+                        updated_at TEXT NOT NULL
+                    )
                 """)
 
                 conn.commit()
@@ -522,3 +556,90 @@ def save_concall_analysis(symbol: str, pdf_url: str, analysis_data: dict):
             conn.commit()
     except Exception as e:
         logger.error(f"Failed to save concall cache for {symbol}: {e}")
+
+
+def get_cache_metadata(key: str):
+    """Return metadata for a cache key from data_cache_metadata or None if missing."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("SELECT key, last_fetched, cadence_seconds, rows, etag, source, updated_at FROM data_cache_metadata WHERE key = %s", (key,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+            except Exception:
+                logger.exception(f"❌ get_cache_metadata failed for key={key}")
+                return None
+
+
+def upsert_cache_metadata(key: str, last_fetched: str, cadence_seconds: int, rows: int = None, etag: str = None, source: str = None):
+    """Insert or update cache metadata for a given key."""
+    init_db()
+    now = datetime.now(IST).isoformat()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO data_cache_metadata (key, last_fetched, cadence_seconds, rows, etag, source, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE
+                        SET last_fetched = EXCLUDED.last_fetched,
+                            cadence_seconds = EXCLUDED.cadence_seconds,
+                            rows = COALESCE(EXCLUDED.rows, data_cache_metadata.rows),
+                            etag = COALESCE(EXCLUDED.etag, data_cache_metadata.etag),
+                            source = COALESCE(EXCLUDED.source, data_cache_metadata.source),
+                            updated_at = EXCLUDED.updated_at
+                """, (key, last_fetched, cadence_seconds, rows, etag, source, now))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ upsert_cache_metadata failed for key={key}")
+
+
+def upsert_data_fetch_health(source_name: str, last_success: str = None, last_failure: str = None, consecutive_failures: int = None, error_msg: str = None):
+    """Insert/update health row for an external data provider (yfinance, nse, etc.)."""
+    init_db()
+    now = datetime.now(IST).isoformat()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                # If consecutive_failures is None, don't overwrite the existing value.
+                if consecutive_failures is not None:
+                    cur.execute("""
+                        INSERT INTO data_fetch_health (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (source_name) DO UPDATE
+                            SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
+                                last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
+                                consecutive_failures = EXCLUDED.consecutive_failures,
+                                error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
+                                updated_at = EXCLUDED.updated_at
+                    """, (source_name, last_success, last_failure, consecutive_failures, error_msg, now))
+                else:
+                    cur.execute("""
+                        INSERT INTO data_fetch_health (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
+                        VALUES (%s, %s, %s, 0, %s, %s)
+                        ON CONFLICT (source_name) DO UPDATE
+                            SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
+                                last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
+                                error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
+                                updated_at = EXCLUDED.updated_at
+                    """, (source_name, last_success, last_failure, error_msg, now))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ upsert_data_fetch_health failed for {source_name}")
+
+
+def get_all_data_fetch_health() -> list:
+    """Return all rows from data_fetch_health as list of dicts."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("SELECT source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at FROM data_fetch_health ORDER BY source_name")
+                return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                logger.exception("❌ get_all_data_fetch_health failed")
+                return []
+

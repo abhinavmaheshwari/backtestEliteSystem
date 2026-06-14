@@ -14,6 +14,7 @@ import time
 import threading
 from flask import Flask, jsonify, send_file, Response, request, make_response
 import yfinance as yf
+from app.data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -39,6 +40,15 @@ USER_DASHBOARD_PATH = get_html_path("user_dashboard.html")
 ADMIN_DASHBOARD_PATH = get_html_path("admin_dashboard.html")
 
 app = Flask(__name__)
+
+@app.route('/favicon.ico')
+def favicon():
+    # Return a transparent 1x1 GIF to perfectly satisfy all browsers and CDNs
+    from flask import send_file
+    import io
+    gif_data = b'GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x01D\x00;'
+    return send_file(io.BytesIO(gif_data), mimetype='image/gif')
+
 
 # ── Disable Flask startup banner in production ───────────────────────────────────────
 import logging as _logging
@@ -280,6 +290,18 @@ def api_wealth():
         logger.error(f"Failed to load wealth JSON: {e}")
         return jsonify([])
 
+
+@app.route("/api/data_fetch_health")
+def api_data_fetch_health():
+    """Return the health status of external data providers (cache/fetch failures)."""
+    try:
+        from database import get_all_data_fetch_health
+        rows = get_all_data_fetch_health()
+        return jsonify(rows)
+    except Exception:
+        logger.exception("❌ /api/data_fetch_health failed")
+        return jsonify([]), 500
+
 @app.route("/wealth")
 def route_wealth():
     from config import BASE_DIR
@@ -382,9 +404,17 @@ def api_indices():
         with _indices_lock:
             _indices_cache["data"] = data
             _indices_cache["timestamp"] = time.time()
+        try:
+            mark_success('yfinance')
+        except Exception:
+            logger.exception('Failed to report yfinance success from dashboard indices')
         return jsonify(data)
     except Exception as e:
         logger.error(f"Failed to fetch indices: {e}")
+        try:
+            mark_failure('yfinance', e)
+        except Exception:
+            logger.exception('Failed to report yfinance failure from dashboard indices')
         return jsonify(_indices_cache["data"] or {})
 
 _news_cache = {}
@@ -417,9 +447,17 @@ def api_news(symbol):
             
         with _news_lock:
             _news_cache[yf_symbol] = {"data": news, "timestamp": time.time()}
+        try:
+            mark_success('yfinance')
+        except Exception:
+            logger.exception('Failed to report yfinance success from dashboard news')
         return jsonify(news)
     except Exception as e:
         logger.error(f"Failed to fetch news for {yf_symbol}: {e}")
+        try:
+            mark_failure('yfinance', e)
+        except Exception:
+            logger.exception('Failed to report yfinance failure from dashboard news')
         return jsonify([])
 
 import subprocess
@@ -446,6 +484,10 @@ def api_notices(symbol):
         
         if r.status_code != 200:
             logger.error(f"NSE API returned {r.status_code} for {symbol}")
+            try:
+                mark_failure('nse_announcements', f'status_code={r.status_code}')
+            except Exception:
+                logger.exception('Failed to report nse_announcements failure')
             return jsonify([])
             
         data = r.json()
@@ -461,9 +503,17 @@ def api_notices(symbol):
                 "desc": desc,
                 "link": n.get("attchmntFile", "")
             })
+        try:
+            mark_success('nse_announcements')
+        except Exception:
+            logger.exception('Failed to report nse_announcements success')
         return jsonify(notices)
     except Exception as e:
         logger.error(f"Failed to fetch notices for {symbol}: {e}")
+        try:
+            mark_failure('nse_announcements', e)
+        except Exception:
+            logger.exception('Failed to report nse_announcements exception')
         return jsonify([])
 
 @app.route('/api/all_tickers', methods=['GET'])

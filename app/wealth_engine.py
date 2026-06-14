@@ -6,6 +6,13 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 from collections import defaultdict
+import concurrent.futures
+from app.pledge_scraper import fetch_promoter_pledge
+from app.price_fetcher import fetch_historical_data, clear_price_cache
+
+# Concurrency and retry tuning
+WORKER_COUNT = min(12, max(4, (os.cpu_count() or 2) * 2))
+RETRY_ATTEMPTS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -38,41 +45,50 @@ def fetch_nifty_6m_return() -> float:
 # =====================================================================================
 
 def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
-    """Fetch 200 SMA, 6-month RS vs Nifty, and distance to 52W high."""
-    yf_symbol = symbol + ".NS" if not symbol.endswith(".NS") else symbol
-    try:
-        ticker = yf.Ticker(yf_symbol)
-        hist = ticker.history(period="1y")
-        if hist.empty or len(hist) < 120:
-            return {"sma_200": None, "cmp": None, "rs_6m": None, "dist_52w_high": None}
+    """Fetch 200 SMA, 6-month RS vs Nifty, distance to 52W high, and Liquidity."""
+    defaults = {"sma_200": None, "cmp": None, "rs_6m": None, "dist_52w_high": None, "liquidity": 0.0}
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            hist = fetch_historical_data(symbol, period="1y", resolution="1d", dataset_key="price_1d")
+            if hist is None or hist.empty or len(hist) < 120:
+                return defaults
 
-        hist['sma_200'] = hist['Close'].rolling(window=200).mean()
+            hist['sma_200'] = hist['Close'].rolling(window=200).mean()
 
-        last_row = hist.iloc[-1]
-        cmp = float(last_row['Close'])
+            last_row = hist.iloc[-1]
+            cmp = float(last_row['Close'])
 
-        # 6-Month Relative Strength vs Nifty
-        hist_6m = hist.tail(126)
-        if len(hist_6m) > 0:
-            start_6m = hist_6m['Close'].iloc[0]
-            stock_6m_ret = ((cmp - start_6m) / start_6m) * 100.0
-            rs_6m = stock_6m_ret - nifty_6m_ret
-        else:
-            rs_6m = 0.0
+            # 6-Month Relative Strength vs Nifty
+            hist_6m = hist.tail(126)
+            if len(hist_6m) > 0:
+                start_6m = hist_6m['Close'].iloc[0]
+                stock_6m_ret = ((cmp - start_6m) / start_6m) * 100.0
+                rs_6m = stock_6m_ret - nifty_6m_ret
+            else:
+                rs_6m = 0.0
 
-        # Distance to 52-Week High
-        high_52w = float(hist['High'].max())
-        dist_52w_high = ((high_52w - cmp) / high_52w) * 100.0 if high_52w > 0 else 0.0
+            # Distance to 52-Week High
+            high_52w = float(hist['High'].max())
+            dist_52w_high = ((high_52w - cmp) / high_52w) * 100.0 if high_52w > 0 else 0.0
 
-        return {
-            "sma_200": float(last_row['sma_200']) if not pd.isna(last_row['sma_200']) else None,
-            "cmp": cmp,
-            "rs_6m": rs_6m,
-            "dist_52w_high": dist_52w_high
-        }
-    except Exception as e:
-        logger.error(f"Failed to fetch technicals for {symbol}: {e}")
-        return {"sma_200": None, "cmp": None, "rs_6m": None, "dist_52w_high": None}
+            # Liquidity (20-day Average Daily Volume * CMP)
+            avg_vol = hist['Volume'].tail(20).mean()
+            liquidity = float(avg_vol * cmp) if avg_vol > 0 else 0.0
+
+            return {
+                "sma_200": float(last_row['sma_200']) if not pd.isna(last_row['sma_200']) else None,
+                "cmp": cmp,
+                "rs_6m": rs_6m,
+                "dist_52w_high": dist_52w_high,
+                "liquidity": liquidity
+            }
+        except Exception as e:
+            logger.warning(f"Attempt {attempt+1}/{RETRY_ATTEMPTS} failed for {symbol}: {e}")
+            if attempt < RETRY_ATTEMPTS - 1:
+                time.sleep(2 ** attempt)
+            else:
+                logger.error(f"Failed to fetch technicals for {symbol} after {RETRY_ATTEMPTS} attempts: {e}")
+                return defaults
 
 
 # =====================================================================================
@@ -166,17 +182,29 @@ def determine_portfolio_bucket(r):
     yoy_profit = r.get("YOY Profit %", 0) or 0
     rs_6m      = r.get("rs_6m", 0) or 0
     dist_52w   = r.get("dist_52w_high", 100) or 100
+    pledge     = r.get("Promoter_Pledge", 0) or 0
+    liquidity  = r.get("liquidity", 0) or 0
     cats       = str(r.get("Category", ""))
 
     buckets = []
 
+    # Instant Kill Gates
+    if pledge > 20:
+        return None
+    if liquidity < 10000000: # Needs at least 1 Crore daily liquidity
+        return None
+
     # Core Compounder — ₹10,000 Cr+ mega-quality
-    if score >= 80 and mcap >= 10000 and roce >= 20 and roe >= 15 and de <= 0.5:
+    if score >= 80 and mcap >= 10000 and roce >= 20 and roe >= 15 and de <= 0.5 and pledge <= 20:
         buckets.append("Core")
 
     # Growth Multiplier — ₹2,000 Cr+ emerging leaders (lowered from 10k to catch future monsters)
-    if score >= 75 and mcap >= 2000 and yoy_sales >= 20 and yoy_profit >= 20 and rs_6m > 0 and dist_52w <= 15:
+    if score >= 75 and mcap >= 2000 and yoy_sales >= 20 and yoy_profit >= 20 and rs_6m > 0 and dist_52w <= 15 and pledge <= 20:
         buckets.append("Growth")
+
+    # Opportunistic Momentum — Any size, massive acceleration
+    if score >= 65 and yoy_profit >= 40 and rs_6m >= 15 and cats != "SME" and pledge <= 20:
+        buckets.append("Opportunistic")
 
     # Quality-On-Sale — Temporarily out of favor but high quality (PEG proxy or PE proxy logic)
     # Using PEG < 1.0 proxy for "PE below 5Y median" since 5Y median is not available.
@@ -185,15 +213,12 @@ def determine_portfolio_bucket(r):
     if peg is None:
         peg = 1.0
     cmp = r.get("cmp") or 0
-    sma = r.get("sma_200") or 1e9
-    if score >= 75 and roce >= 20 and yoy_sales >= 15 and yoy_profit >= 15 and (10 <= dist_52w <= 30) and cmp > sma and peg < 1.0:
-        buckets.append("Quality-On-Sale")
+    sma = r.get("sma_200")
+    if score >= 60 and mcap >= 500 and de <= 1.0 and cats != "SME" and pledge <= 20:
+        if dist_52w > 10 and dist_52w <= 30 and peg < 1.0 and rs_6m > 0:
+            buckets.append("Quality-On-Sale")
 
-    # Opportunistic / Turnaround
-    if score >= 60 and ("Recovery Play" in cats or "Financial Recovery" in cats):
-        buckets.append("Opportunistic")
-
-    return ", ".join(buckets)
+    return ", ".join(buckets) if buckets else None
 
 
 def apply_sector_cap(df: pd.DataFrame, bucket_col: str, bucket_name: str, max_stocks: int) -> pd.DataFrame:
@@ -249,15 +274,32 @@ def run_wealth_loop():
             nifty_6m_ret = fetch_nifty_6m_return()
             logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
 
-            technicals = []
-            for i, row in df.iterrows():
+            clear_price_cache()
+
+            def process_symbol(idx, row):
                 sym = row["Stock"]
                 tech = calculate_wealth_technicals(sym, nifty_6m_ret)
                 tech["Stock"] = sym
-                technicals.append(tech)
-                if (i + 1) % 50 == 0:
-                    logger.info(f"💰 [WEALTH ENGINE] Progress: {i+1}/{len(df)} stocks processed...")
-                time.sleep(0.5)
+                try:
+                    tech["Promoter_Pledge"] = fetch_promoter_pledge(sym)
+                except Exception as e:
+                    logger.warning(f"Promoter pledge fetch failed for {sym}: {e}")
+                    tech["Promoter_Pledge"] = 0
+                return tech
+
+            technicals = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
+                futures = {executor.submit(process_symbol, i, row): i for i, row in df.iterrows()}
+                completed = 0
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        technicals.append(future.result())
+                    except Exception as e:
+                        logger.exception(f"Worker failed unexpectedly: {e}")
+                        # skip or append minimal row handled inside process_symbol
+                    completed += 1
+                    if completed % 50 == 0 or completed == len(df):
+                        logger.info(f"💰 [WEALTH ENGINE] Progress: {completed}/{len(df)} stocks processed...")
 
             tech_df = pd.DataFrame(technicals)
             wealth_df = pd.merge(df, tech_df, on="Stock", how="left")
