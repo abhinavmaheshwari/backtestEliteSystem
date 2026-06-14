@@ -1688,7 +1688,7 @@ async function loadWatchlist() {
                 let cats = new Set();
                 WATCHLIST_DATA.forEach(d => {
                     if(d.Category) {
-                        d.Category.split(',').forEach(c => {
+                        d.Category.split('+').forEach(c => {
                             const trimmed = c.trim();
                             if(trimmed) cats.add(trimmed);
                         });
