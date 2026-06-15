@@ -75,6 +75,8 @@ def run_worker_loop():
 
             max_retries = 3
             global_penalty_idx = 0
+            final_failed_count = 0
+            
             for attempt in range(max_retries):
                 failed_stocks = []
                 for i, sym in enumerate(pending_stocks):
@@ -84,7 +86,7 @@ def run_worker_loop():
                         if cached:
                             # Already cached, skip
                             db_processed_count = get_total_cached_concalls()
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
+                            upsert_scanner_health("AI Worker", "RUNNING", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                             continue
                             
                         # 2. No cache. Fetch it.
@@ -97,7 +99,7 @@ def run_worker_loop():
                             key_used = result.get("key_used", "Key 1")
                             logger.info(f"✅ [AI WORKER] Successfully cached analysis for {sym} | Confidence: {conf} | {key_used}")
                             db_processed_count = get_total_cached_concalls()
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
+                            upsert_scanner_health("AI Worker", "RUNNING", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
                         else:
                             error_msg = result.get('error', 'Unknown Error')
                             logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {error_msg}")
@@ -108,7 +110,7 @@ def run_worker_loop():
                             except Exception:
                                 logger.exception("Failed to upsert fetch_error for AI Worker")
 
-                            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
+                            upsert_scanner_health("AI Worker", "RUNNING", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
 
                             # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
                             if "No recent concall transcripts" not in error_msg:
@@ -140,16 +142,13 @@ def run_worker_loop():
                     time.sleep(60)
                 else:
                     logger.error(f"❌ [AI WORKER] Giving up on {len(failed_stocks)} stocks after {max_retries} attempts.")
+                    final_failed_count = len(failed_stocks)
                     # Record final failures into fetch_errors and update scanner health so admin can triage
                     for fsym in failed_stocks:
                         try:
                             upsert_fetch_error('ai', 'AI Worker', fsym, None, 'ai_concall', 'Giving up after retries')
                         except Exception:
                             logger.exception(f"Failed to upsert final fetch_error for {fsym}")
-                    try:
-                        upsert_scanner_health('AI Worker', 'OK', last_success=datetime.now().isoformat(), today_alerts=get_total_cached_concalls(), error_msg=f"Failed: {len(failed_stocks)} stocks - last: {failed_stocks[-1] if failed_stocks else 'N/A'}")
-                    except Exception:
-                        logger.exception('Failed to upsert scanner health after final failures')
                     
         except Exception as e:
             logger.error(f"❌ [AI WORKER] Main loop crashed: {e}")
@@ -158,7 +157,11 @@ def run_worker_loop():
         # Once we've checked the whole list, sleep for 30 minutes before checking again
         db_processed_count = get_total_cached_concalls()
         logger.info(f"🤖 [AI WORKER] Finished scanning entire universe ({total_stocks} stocks). Sleeping for 30 minutes.")
-        upsert_scanner_health("AI Worker", "IDLE", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: Finished | Total: {total_stocks}")
+        
+        status = "IDLE" if final_failed_count == 0 else "DOWN"
+        error_msg = f"Last: Finished | Total: {total_stocks} | Failed: {final_failed_count}" if final_failed_count > 0 else f"Last: Finished | Total: {total_stocks}"
+        
+        upsert_scanner_health("AI Worker", status, last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=error_msg)
         time.sleep(1800)
 
 def start_worker():
