@@ -71,20 +71,28 @@ def worker_loop():
 
     while True:
         try:
-            # 1. Read the watchlist
-            if not os.path.exists(WATCHLIST_PATH):
-                logger.warning(f"Watchlist not found at {WATCHLIST_PATH}, sleeping 60s...")
+            symbols_set = set()
+            if os.path.exists(WATCHLIST_PATH):
+                df = pd.read_parquet(WATCHLIST_PATH)
+                if "Stock" in df.columns:
+                    symbols_set.update(df["Stock"].unique().tolist())
+            
+            excluded_path = WATCHLIST_PATH.replace(".parquet", "_excluded.csv")
+            if os.path.exists(excluded_path):
+                try:
+                    ex_df = pd.read_csv(excluded_path)
+                    if "Stock" in ex_df.columns:
+                        symbols_set.update(ex_df["Stock"].dropna().unique().tolist())
+                except Exception as e:
+                    logger.warning(f"Could not read excluded csv: {e}")
+
+            if not symbols_set:
+                logger.warning(f"No symbols found in watchlist or excluded list. Sleeping 60s...")
                 time.sleep(60)
                 continue
                 
-            df = pd.read_parquet(WATCHLIST_PATH)
-            if "Stock" not in df.columns:
-                logger.error("Stock column missing from watchlist")
-                time.sleep(60)
-                continue
-                
-            symbols = df["Stock"].unique().tolist()
-            logger.info(f"Loaded {len(symbols)} symbols from watchlist.")
+            symbols = list(symbols_set)
+            logger.info(f"Loaded {len(symbols)} symbols from watchlist + excluded list.")
             
             # 2. Check DB for stale pledges
             stale_symbols = []
@@ -112,10 +120,11 @@ def worker_loop():
             logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates.")
             upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=0, error_msg=f"Last: Starting... | Progress: {processed_base}/{total_watch}")
             
-            error_count = 0
-            for i, sym in enumerate(stale_symbols):
+            def process_symbol(sym, i_total, is_retry=False):
+                """Returns True if successful or definitive failure (like 404), False if should retry."""
                 target_url = discover_trendlyne_url(sym, api_key)
-                logger.info(f"[{i+1}/{len(stale_symbols)}] Scraping pledge for {sym} at {target_url}")
+                prefix = "[RETRY]" if is_retry else f"[{i_total}/{len(stale_symbols)}]"
+                logger.info(f"{prefix} Scraping pledge for {sym} at {target_url}")
                 
                 payload = {'api_key': api_key, 'url': target_url, 'render': 'false'}
                 try:
@@ -144,12 +153,6 @@ def worker_loop():
                                     """, (sym, pledge_val))
                                     conn.commit()
                             logger.info(f"✅ Saved pledge for {sym}: {pledge_val}%")
-                            mark_success('scraperapi')
-                            from datetime import datetime
-                            from zoneinfo import ZoneInfo
-                            now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
-                            current_processed = processed_base + i + 1
-                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Progress: {current_processed}/{total_watch}")
                         else:
                             logger.warning(f"⚠️ Could not find pledge text on page for {sym}. Assuming 0.0%")
                             with get_connection() as conn:
@@ -161,18 +164,12 @@ def worker_loop():
                                         SET pledge_pct = EXCLUDED.pledge_pct, updated_at = NOW()
                                     """, (sym,))
                                     conn.commit()
-                            mark_success('scraperapi')
-                            from datetime import datetime
-                            from zoneinfo import ZoneInfo
-                            now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
-                            current_processed = processed_base + i + 1
-                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Progress: {current_processed}/{total_watch}")
+                        mark_success('scraperapi')
+                        return True
                     elif res.status_code == 404:
                         logger.warning(f"❌ 404 Not Found for {sym} at {target_url}")
                         mark_failure('scraperapi', f"404 Not Found: {target_url}")
-                        error_count += 1
-                        
-                        # Cache the failure temporarily (7 days) so we don't spam 404s
+                        # Cache the 404 temporarily so we don't spam it
                         with get_connection() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("""
@@ -182,22 +179,59 @@ def worker_loop():
                                     SET updated_at = NOW() - INTERVAL '23 days'
                                 """, (sym, 0.0))
                                 conn.commit()
+                        return True # Don't retry 404s
                     else:
                         logger.warning(f"❌ HTTP {res.status_code} for {sym}")
                         mark_failure('scraperapi', f"HTTP {res.status_code} URL={target_url}")
-                        error_count += 1
+                        return False
                 except Exception as e:
                     logger.exception(f"Exception scraping {sym}: {e}")
                     mark_failure('scraperapi', str(e))
-                    error_count += 1
+                    return False
+
+            failed_queue = []
+            successful_in_first_pass = 0
+            
+            for i, sym in enumerate(stale_symbols):
+                success = process_symbol(sym, i+1)
+                if success:
+                    successful_in_first_pass += 1
+                else:
+                    failed_queue.append(sym)
                     
                 time.sleep(3) # Rate limit
                 
+                # Update health
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+                current_processed = processed_base + successful_in_first_pass
+                upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Progress: {current_processed}/{total_watch}")
+
+            final_error_count = 0
+            
+            if failed_queue:
+                logger.info(f"Retrying {len(failed_queue)} failed symbols...")
+                time.sleep(10) # Brief pause before retries
+                for sym in failed_queue:
+                    success = process_symbol(sym, 0, is_retry=True)
+                    if success:
+                        successful_in_first_pass += 1
+                    else:
+                        final_error_count += 1
+                    time.sleep(3)
+                    
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
+                    now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+                    current_processed = processed_base + successful_in_first_pass
+                    upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=len(stale_symbols), error_msg=f"Last: {sym} (Retry) | Progress: {current_processed}/{total_watch}")
+
             # Loop done
-            status = "IDLE" if error_count == 0 else "DOWN"
+            status = "IDLE" if final_error_count == 0 else "DOWN"
             last_sym = stale_symbols[-1] if stale_symbols else "None"
-            current_processed = processed_base + len(stale_symbols)
-            err_msg = f"Last: {last_sym} | Progress: {current_processed}/{total_watch} | Failed: {error_count}" if error_count > 0 else f"Last: {last_sym} | Progress: {current_processed}/{total_watch}"
+            current_processed = processed_base + successful_in_first_pass
+            err_msg = f"Last: {last_sym} | Progress: {current_processed}/{total_watch} | Failed: {final_error_count}" if final_error_count > 0 else f"Last: {last_sym} | Progress: {current_processed}/{total_watch}"
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
