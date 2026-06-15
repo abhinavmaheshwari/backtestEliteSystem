@@ -1489,6 +1489,36 @@ async function generateAIModal() {
 }
 </script>
 
+
+<style>
+.alert-blink{animation: blink 1s step-end infinite; background: rgba(255,235,59,0.08);}
+@keyframes blink{50%{opacity:0.3}}
+</style>
+<script>
+const ALERT_FETCH_INTERVAL = 60 * 1000;
+async function fetchTodaysAlertsAndBlink_User(){
+  try{
+    const res = await fetch('/api/todays_alerts'); if(!res.ok) return; const data = await res.json();
+    data.forEach(alert=>{
+      // attach attributes to matching table rows
+      document.querySelectorAll('tr').forEach(tr=>{
+        if(tr.textContent && tr.textContent.includes(alert.symbol) && !tr.dataset.alertId){
+          tr.dataset.alertSymbol = alert.symbol; tr.dataset.alertId = alert.id;
+          if(!alert.seen_by_user) tr.classList.add('alert-blink');
+          tr.addEventListener('click', async ()=>{
+            if(tr.classList.contains('alert-blink')){
+              tr.classList.remove('alert-blink');
+              try{ await fetch('/api/alert/mark_seen', {method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({id: alert.id, role: 'user'})}); }catch(e){}
+            }
+          }, {once:true});
+        }
+      });
+    });
+  }catch(e){console.warn('fetchTodaysAlerts failed', e)}
+}
+setTimeout(fetchTodaysAlertsAndBlink_User, 2000);
+setInterval(fetchTodaysAlertsAndBlink_User, ALERT_FETCH_INTERVAL);
+</script>
 </body>
 </html>
 
