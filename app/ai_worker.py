@@ -36,21 +36,30 @@ def run_worker_loop():
                 continue
                 
             pending_stocks = df["Stock"].tolist()
+            logger.info(f"📋 Loaded {len(pending_stocks)} stocks from watchlist parquet")
             
-                    # Read excluded stocks so they are pre-cached if they break out later
+            # Read excluded stocks so they are pre-cached if they break out later
             excluded_csv_paths = [
-                WATCHLIST_PATH.replace('.parquet', '_excluded.csv'),
                 os.path.join(os.path.dirname(WATCHLIST_PATH), 'elite_fundamental_watchlist_excluded.csv'),
                 os.path.join(os.path.dirname(WATCHLIST_PATH), 'elite_fundamental_watchlist-excluded.csv'),
+                WATCHLIST_PATH.replace('.parquet', '_excluded.csv'),
             ]
+            excluded_loaded = 0
             for excluded_csv_path in excluded_csv_paths:
                 if os.path.exists(excluded_csv_path):
                     try:
                         df_ex = pd.read_csv(excluded_csv_path)
                         if 'Stock' in df_ex.columns:
-                            pending_stocks.extend(df_ex['Stock'].dropna().tolist())
+                            ex_stocks = df_ex['Stock'].dropna().tolist()
+                            pending_stocks.extend(ex_stocks)
+                            excluded_loaded = len(ex_stocks)
+                            logger.info(f"📋 Loaded {excluded_loaded} stocks from excluded list: {excluded_csv_path}")
+                            break  # Stop after first successful load
                     except Exception as e:
                         logger.warning(f"Failed to load exclusion list {excluded_csv_path}: {e}")
+            
+            if excluded_loaded == 0:
+                logger.warning("⚠️ No excluded stocks loaded — will only process watchlist")
 
             # Deduplicate and sort
             pending_stocks = sorted(list(set(pending_stocks)))

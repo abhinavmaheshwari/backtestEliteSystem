@@ -594,7 +594,11 @@ def api_scanner_status():
                 # Compute total watchlist size (included + excluded)
                 import pandas as pd
                 total_needed = 0
-                for f in ['data/elite_fundamental_watchlist.csv', 'data/elite_fundamental_watchlist_excluded.csv']:
+                from config import DATA_DIR
+                for f in [
+                    os.path.join(DATA_DIR, 'elite_fundamental_watchlist.csv'),
+                    os.path.join(DATA_DIR, 'elite_fundamental_watchlist_excluded.csv'),
+                ]:
                     try:
                         if os.path.exists(f):
                             dfw = pd.read_csv(f)
