@@ -781,20 +781,19 @@ def upload_parquet_to_db(name: str, file_path: str):
         logger.error(f"❌ Failed to upload {name} to DB: {e}")
 
 def download_parquet_from_db(name: str, file_path: str) -> bool:
-    """Download today's binary parquet file from the database."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    """Download the latest binary parquet file from the database."""
     init_db()
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT data FROM parquet_cache WHERE name = %s AND date = %s", (name, today))
+                cur.execute("SELECT data, date FROM parquet_cache WHERE name = %s ORDER BY date DESC LIMIT 1", (name,))
                 row = cur.fetchone()
                 if row and row[0]:
                     import os
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
                     with open(file_path, "wb") as f:
                         f.write(row[0])
-                    logger.info(f"⚡ Downloaded {name} from DB parquet_cache for {today}")
+                    logger.info(f"⚡ Downloaded {name} from DB parquet_cache (from date: {row[1]})")
                     return True
         return False
     except Exception as e:

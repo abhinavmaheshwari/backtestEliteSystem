@@ -377,21 +377,20 @@ def compute_tax_hold_bonus(entry_date: date, unrealized_pnl_pct: float) -> dict:
     return {"bonus": 0, "reason": "Normal STCG zone", "harvest_signal": harvest_signal}
 
 
-def run_wealth_loop():
+def run_wealth_scan():
+    """Runs a single iteration of the Wealth Engine scan."""
     from config import WATCHLIST_PATH, DATA_DIR, MIN_DAILY_LIQUIDITY_RUPEES_WEALTH
     from database import upsert_scanner_health
 
     WEALTH_PATH = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
-    logger.info("💰 Fund Manager Wealth Engine v2 Started.")
+    logger.info("💰 Fund Manager Wealth Engine v2 Started Scan.")
     upsert_scanner_health("Wealth Engine", "IDLE", last_success=None, today_alerts=0)
 
-    last_telegram_week = -1
-
-    while True:
-        try:
-            if not os.path.exists(WATCHLIST_PATH):
-                time.sleep(300)
-                continue
+    try:
+        if not os.path.exists(WATCHLIST_PATH):
+            logger.warning("⚠️ Watchlist not found. Wealth Engine skipping scan.")
+            upsert_scanner_health("Wealth Engine", "IDLE", error_msg="Waiting for Watchlist")
+            return
 
 
             from database import download_parquet_from_db, upload_parquet_to_db
@@ -558,8 +557,8 @@ def run_wealth_loop():
 
             # Weekly Telegram Alert (Run on Sunday)
             now = datetime.now()
-            current_week = now.isocalendar()[1]
-            if now.weekday() == 6 and current_week != last_telegram_week:
+            # Note: Weekly Telegram state tracking moved to the scheduler in main.py
+            if now.weekday() == 6 and now.hour == 4:
                 try:
                     from telegram_engine import send_telegram_message
                     top_20 = wealth_df.sort_values(by="FM_Score", ascending=False).head(20)
@@ -572,13 +571,11 @@ def run_wealth_loop():
                         msg += f"  └ ROCE: {row.get('ROCE %', 0):.0f}% | RS: {rs:.0f}% | FCF: {fcf_str}\n"
 
                     send_telegram_message(msg, scan_type="EOD")
-                    last_telegram_week = current_week
                     logger.info("📤 [WEALTH ENGINE] Weekly Telegram report sent.")
                 except Exception as tg_err:
                     logger.warning(f"⚠️ [WEALTH ENGINE] Telegram send failed: {tg_err}")
 
-        except Exception as e:
-            logger.error(f"❌ [WEALTH ENGINE] Loop crashed: {e}")
-            upsert_scanner_health("Wealth Engine", "DOWN", error_msg=str(e))
-
-        time.sleep(3600)  # Run once an hour
+    except Exception as e:
+        logger.error(f"❌ [WEALTH ENGINE] Scan crashed: {e}")
+        upsert_scanner_health("Wealth Engine", "DOWN", error_msg=str(e))
+        raise e

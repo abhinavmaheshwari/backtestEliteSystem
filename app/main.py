@@ -269,6 +269,76 @@ def run_bayesian_loop():
 
 
 # =====================================================================================
+# TIME-BASED SCHEDULER
+# =====================================================================================
+def run_system_scheduler():
+    import schedule
+    from daily_builder import build_watchlist
+    from wealth_engine import run_wealth_scan
+    from config import WATCHLIST_PATH, DATA_DIR
+    
+    WEALTH_PATH = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+
+    def safe_run_daily_builder():
+        try:
+            logger.info("🕒 SCHEDULER | Triggering Daily Builder")
+            build_watchlist()
+        except Exception as e:
+            logger.exception("❌ SCHEDULER | Daily Builder crashed")
+            _telegram_notify(f"🚨 Daily Builder Scheduled Run Failed:\n{e}")
+
+    def safe_run_wealth_scan():
+        try:
+            logger.info("🕒 SCHEDULER | Triggering Wealth Engine")
+            run_wealth_scan()
+        except Exception as e:
+            logger.exception("❌ SCHEDULER | Wealth Engine crashed")
+            
+    def run_market_hours_wealth_scan():
+        now = datetime.now(IST)
+        # Weekdays only
+        if now.weekday() < 5:
+            # Between 9:15 AM and 3:30 PM
+            if (now.hour == 9 and now.minute >= 15) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 30):
+                safe_run_wealth_scan()
+
+    def verify_scans():
+        logger.info("🕒 SCHEDULER | Verifying file readiness (08:30 AM)")
+        now = datetime.now(IST)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+        # 1. Verify Watchlist
+        if not os.path.exists(WATCHLIST_PATH) or os.path.getmtime(WATCHLIST_PATH) < today_midnight:
+            logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
+            safe_run_daily_builder()
+
+        # 2. Verify Wealth Engine
+        if not os.path.exists(WEALTH_PATH) or os.path.getmtime(WEALTH_PATH) < today_midnight:
+            logger.warning("⚠️ Wealth system missing or stale! Forcing run.")
+            safe_run_wealth_scan()
+            
+    def run_sunday_telegram():
+        now = datetime.now(IST)
+        # Weekdays only
+        if now.weekday() == 6:
+            # We trigger the wealth scan at 4 AM which handles the telegram internally
+            pass # handled inside wealth_engine.py
+
+    # Setup core schedule
+    schedule.every().day.at("01:00", "Asia/Kolkata").do(safe_run_daily_builder)
+    schedule.every().day.at("04:00", "Asia/Kolkata").do(safe_run_wealth_scan)
+    schedule.every().day.at("08:30", "Asia/Kolkata").do(verify_scans)
+    
+    # Hourly market-hours check (runs every hour, but only executes if in market hours)
+    schedule.every().hour.at(":05").do(run_market_hours_wealth_scan)
+
+    logger.info("🕒 SCHEDULER | Initialized")
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+
+# =====================================================================================
 # SELF-HEALING WATCHDOG  (runs in background thread)
 #
 # EOD and REVERSAL are intentionally excluded from auto-restart — they run once and
@@ -277,15 +347,14 @@ def run_bayesian_loop():
 
 # Only intraday/live/performance get auto-restarted on crash
 from ai_worker import run_worker_loop
-from wealth_engine import run_wealth_loop
 
 RESTARTABLE_THREADS = {
     "IntradayScanner":    run_intraday_scanner,
     "LiveScanner":        run_live_scanner,
     "PerformanceTracker": run_performance_tracker,
     "AI Worker":          run_worker_loop,
-    "Wealth Engine":      run_wealth_loop,
     "BayesianUpdater":    run_bayesian_loop,
+    "SystemScheduler":    run_system_scheduler,
 }
 
 # EOD and Reversal are launched once and never restarted
