@@ -652,6 +652,44 @@ def get_total_cached_concalls() -> int:
                 logger.error(f"Error getting total cached concalls: {e}")
                 return 0
 
+
+def get_ai_concall_stats() -> dict:
+    """Return stats for AI concall cache: total distinct symbols, last processed symbol and timestamp."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT COUNT(DISTINCT symbol) FROM ai_concall_cache_v3")
+                total_row = cur.fetchone()
+                total = total_row[0] if total_row else 0
+                cur.execute("SELECT symbol, created_at FROM ai_concall_cache_v3 ORDER BY created_at DESC LIMIT 1")
+                last = cur.fetchone()
+                if last:
+                    return {"total_cached": int(total), "last_symbol": last[0], "last_updated": last[1]}
+                return {"total_cached": int(total), "last_symbol": None, "last_updated": None}
+            except Exception as e:
+                logger.error(f"Error getting ai concall stats: {e}")
+                return {"total_cached": 0, "last_symbol": None, "last_updated": None}
+
+
+def get_promoter_pledge_stats() -> dict:
+    """Return stats for promoter_pledge_cache: total symbols cached, last processed symbol and timestamp."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT COUNT(*) FROM promoter_pledge_cache")
+                total_row = cur.fetchone()
+                total = total_row[0] if total_row else 0
+                cur.execute("SELECT symbol, updated_at FROM promoter_pledge_cache ORDER BY updated_at DESC LIMIT 1")
+                last = cur.fetchone()
+                if last:
+                    return {"total_cached": int(total), "last_symbol": last[0], "last_updated": last[1]}
+                return {"total_cached": int(total), "last_symbol": None, "last_updated": None}
+            except Exception as e:
+                logger.error(f"Error getting pledge stats: {e}")
+                return {"total_cached": 0, "last_symbol": None, "last_updated": None}
+
 def get_recent_concall_analysis(symbol: str, max_age_days: int = 60):
     """Retrieves cached AI analysis for a symbol if it is less than max_age_days old."""
     init_db()

@@ -1031,22 +1031,16 @@ function renderScannerGrid(scanner_stats) {
         <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
       </div>` : '';
     } else if (isProgressWorker) {
-      let totalCount = "Total";
-      let lastStock = "";
-      if (data.error && data.error.includes("Total:")) {
-          const parts = data.error.split("|");
-          if (parts.length >= 2) {
-              lastStock = parts[0].trim();
-              totalCount = parts[1].replace("Total:", "").trim();
-          }
-      }
-      
+      // Prefer structured progress fields from the server
+      const prog = data.progress != null ? data.progress : (data.today_alerts || 0);
+      const totalNeeded = data.total_needed != null ? data.total_needed : '—';
+      const lastSym = data.last_processed_symbol || data.last_processed || '';
       alertLabel = "Processed";
       alertHtml = `
       <div class="scanner-alert-count" style="color: #6366f1;">
-        ${data.today_alerts} <span style="font-size:13px;color:var(--muted);font-weight:400">/ ${totalCount}</span>
+        ${prog} <span style="font-size:13px;color:var(--muted);font-weight:400">/ ${totalNeeded}</span>
       </div>`;
-      alertSub = lastStock ? lastStock : "Stocks cached";
+      alertSub = lastSym ? `${lastSym}` : "Stocks cached";
       tooltipHtml = '';
     } else if (isApi) {
       const fails = data.today_alerts;

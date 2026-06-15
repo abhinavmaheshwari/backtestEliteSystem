@@ -580,7 +580,36 @@ def api_scanner_status():
                 except Exception as e:
                     pass
 
-            result[sc] = {
+            # Enrich AI/Pledge workers with progress metrics
+        extra = {}
+        try:
+            if sc in ("AI Worker", "Pledge Worker"):
+                # Compute total watchlist size (included + excluded)
+                import pandas as pd
+                total_needed = 0
+                for f in ['data/elite_fundamental_watchlist.csv', 'data/elite_fundamental_watchlist_excluded.csv']:
+                    try:
+                        if os.path.exists(f):
+                            dfw = pd.read_csv(f)
+                            if 'Stock' in dfw.columns:
+                                total_needed += dfw['Stock'].dropna().shape[0]
+                    except Exception:
+                        pass
+                from database import get_ai_concall_stats, get_promoter_pledge_stats
+                if sc == 'AI Worker':
+                    stats = get_ai_concall_stats()
+                else:
+                    stats = get_promoter_pledge_stats()
+                extra = {
+                    'progress': stats.get('total_cached', 0),
+                    'total_needed': total_needed,
+                    'last_processed_symbol': stats.get('last_symbol'),
+                    'last_processed_at': stats.get('last_updated')
+                }
+        except Exception:
+            logger.exception('Failed to compute worker progress metrics')
+
+        result[sc] = {
                 "status":        row["status"],
                 "last_success":  row["last_success"],
                 "today_alerts":  row["today_alerts"],
@@ -605,6 +634,9 @@ def api_scanner_status():
                     for t in today_trades
                 ],
             }
+        # Merge extras if present
+        if extra:
+            result[sc].update(extra)
         return jsonify(result)
     except Exception as exc:
         logger.exception("❌ /api/scanner_status failed")
