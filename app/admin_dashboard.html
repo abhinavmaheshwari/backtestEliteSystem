@@ -740,8 +740,13 @@ async function loadScannerStatus() {
       };
 
       const healthBySource = {};
-      health.forEach(f => healthBySource[f.source_name] = f);
+      // also build a list of health entries for flexible matching
+      health.forEach(f => { healthBySource[f.source_name] = f; });
 
+      // Map interval scopes to scanners in the client (keep in sync with server mapping)
+      const INTERVAL_TO_SCANNER_JS = { '1m':'INTRADAY', '15m':'INTRADAY', '1h':'1H', '60m':'1H', '1d':'EOD', 'daily':'EOD' };
+
+      // Register API cards per health row, and propagate to scanners more selectively when scoped entries exist
       health.forEach(f => {
         const isPersistentWarning = f.is_acknowledged === false;
         const isDown = f.consecutive_failures > 0 || isPersistentWarning;
@@ -758,22 +763,45 @@ async function loadScannerStatus() {
           label: `API: ${f.source_name.toUpperCase()}`,
           desc: 'External data feed connection'
         };
-      });
 
-      // Propagate short error snippet to impacted scanners if they don't already have one
-      Object.entries(SOURCE_IMPACT_MAP_JS).forEach(([src, scanners]) => {
-        const h = healthBySource[src];
-        if (!h || (!h.error_msg && h.consecutive_failures === 0)) return;
-        const snippet = h.error_msg ? (h.error_msg.length > 240 ? h.error_msg.slice(0,240) + '...' : h.error_msg) : `External failure: ${h.consecutive_failures} failures`;
-        scanners.forEach(sc => {
-          if (stats[sc]) {
-            if (!stats[sc].error) {
-              stats[sc].error = snippet;
-              stats[sc].is_acknowledged = h.is_acknowledged;
-              stats[sc].status = 'DOWN';
+        // Now propagate to impacted scanners based on scope if present
+        try {
+          const parts = f.source_name.split(':');
+          const base = parts[0];
+          const scope = parts.length > 1 ? parts[1] : null;
+          const impacted = SOURCE_IMPACT_MAP_JS[base] || [];
+          const snippet = f.error_msg ? (f.error_msg.length > 240 ? f.error_msg.slice(0,240) + '...' : f.error_msg) : `External failure: ${f.consecutive_failures} failures`;
+
+          if (scope) {
+            const mapped = INTERVAL_TO_SCANNER_JS[scope.toLowerCase()];
+            if (mapped && impacted.includes(mapped)) {
+              if (stats[mapped] && !stats[mapped].error) {
+                stats[mapped].error = snippet;
+                stats[mapped].is_acknowledged = f.is_acknowledged;
+                stats[mapped].status = 'DOWN';
+              }
+            } else {
+              // If scope directly names a scanner, use it
+              const scopeUp = scope.toUpperCase();
+              if (impacted.includes(scopeUp) && stats[scopeUp] && !stats[scopeUp].error) {
+                stats[scopeUp].error = snippet;
+                stats[scopeUp].is_acknowledged = f.is_acknowledged;
+                stats[scopeUp].status = 'DOWN';
+              }
             }
+          } else {
+            // No scope: propagate to all impacted scanners as before
+            impacted.forEach(sc => {
+              if (stats[sc] && !stats[sc].error) {
+                stats[sc].error = snippet;
+                stats[sc].is_acknowledged = f.is_acknowledged;
+                stats[sc].status = 'DOWN';
+              }
+            });
           }
-        });
+        } catch (e) {
+          console.debug('Error while propagating API health to scanners', e);
+        }
       });
     }
   } catch {}

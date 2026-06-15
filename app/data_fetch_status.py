@@ -35,19 +35,52 @@ SOURCE_IMPACT_MAP = {
 }
 
 
+def _split_source(source_name: str) -> tuple[str, str | None]:
+    """Split a source_name like 'yfinance:15m' into (base, scope).
+    scope can be interval e.g., '15m','1h','1d' or a scanner name like 'INTRADAY'."""
+    if ':' in source_name:
+        base, scope = source_name.split(':', 1)
+        return base, scope
+    return source_name, None
+
+
+INTERVAL_TO_SCANNER = {
+    '1m': 'INTRADAY',
+    '15m': 'INTRADAY',
+    '1h': '1H',
+    '60m': '1H',
+    '1d': 'EOD',
+    'daily': 'EOD',
+}
+
+
 def mark_success(source_name: str) -> None:
     try:
         upsert_data_fetch_health(source_name, last_success=_now_iso(), consecutive_failures=0)
         # Also clear any external-scanner health flag for this data source
         try:
             from database import upsert_scanner_health
-            upsert_scanner_health(f"External:{source_name}", status="OK", last_success=_now_iso(), today_alerts=0, error_msg=None)
+            base, scope = _split_source(source_name)
+            # Clear the generic external health row for the base provider as well
+            upsert_scanner_health(f"External:{base}", status="OK", last_success=_now_iso(), today_alerts=0, error_msg=None)
 
-            # Also mark impacted scanners as OK (they can re-evaluate their own state when they run)
-            impacted = SOURCE_IMPACT_MAP.get(source_name, [])
-            for sc in impacted:
+            # Decide which scanners to mark OK. If scope provided, try to narrow the impact.
+            impacted = SOURCE_IMPACT_MAP.get(base, [])
+            targeted = []
+            if scope:
+                # If scope is interval, map to scanner name
+                mapped = INTERVAL_TO_SCANNER.get(scope.lower())
+                if mapped:
+                    targeted = [sc for sc in impacted if sc == mapped]
+                else:
+                    # If scope directly names a scanner (e.g., 'INTRADAY'), use it
+                    targeted = [sc for sc in impacted if sc.upper() == scope.upper()]
+            else:
+                targeted = impacted
+
+            for sc in targeted:
                 try:
-                    upsert_scanner_health(sc, status="OK", last_success=_now_iso(), today_alerts=0, error_msg=f"Cleared External:{source_name} issue")
+                    upsert_scanner_health(sc, status="OK", last_success=_now_iso(), today_alerts=0, error_msg=f"Cleared External:{base} issue")
                 except Exception:
                     logger.debug(f"Could not mark scanner {sc} OK for source {source_name}")
         except Exception:
@@ -68,12 +101,24 @@ def mark_failure(source_name: str, error: Optional[Union[Exception, str]] = None
         # Also mark an external scanner health row so the dashboard shows which external provider is failing
         try:
             from database import upsert_scanner_health
-            upsert_scanner_health(f"External:{source_name}", status="DOWN", last_success=None, today_alerts=0, error_msg=(msg or 'External data source failure'))
+            base, scope = _split_source(source_name)
+            # Mark the generic external row for the exact key (include scope if present)
+            external_name = f"External:{source_name}" if scope else f"External:{base}"
+            upsert_scanner_health(external_name, status="DOWN", last_success=None, today_alerts=0, error_msg=(msg or 'External data source failure'))
 
-            # Propagate impact to known dependent scanners so the dashboard shows both the external failure
-            # and the scanners that are likely affected by it.
-            impacted = SOURCE_IMPACT_MAP.get(source_name, [])
-            for sc in impacted:
+            # Propagate impact to known dependent scanners but narrow if scope is provided
+            impacted = SOURCE_IMPACT_MAP.get(base, [])
+            targeted = []
+            if scope:
+                mapped = INTERVAL_TO_SCANNER.get(scope.lower())
+                if mapped:
+                    targeted = [sc for sc in impacted if sc == mapped]
+                else:
+                    targeted = [sc for sc in impacted if sc.upper() == scope.upper()]
+            else:
+                targeted = impacted
+
+            for sc in targeted:
                 try:
                     upsert_scanner_health(sc, status="DOWN", last_success=None, today_alerts=0, error_msg=(msg or f'Impacted by {source_name} failure'))
                 except Exception:

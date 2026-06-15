@@ -4,6 +4,7 @@
 # =====================================================================================
 
 import pandas as pd
+import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
 import yfinance as yf
 import time
 import logging

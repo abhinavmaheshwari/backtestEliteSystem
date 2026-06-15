@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import pandas as pd
+import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
 import yfinance as yf
 from data_fetch_status import mark_success, mark_failure
 from database import upsert_fetch_error
@@ -120,8 +121,8 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
                 
                 batch_success = True
                 try:
-                    # Report successful yfinance batch fetch
-                    mark_success('yfinance')
+                    # Report successful yfinance batch fetch for this interval
+                    mark_success(f"yfinance:{interval}")
                 except Exception:
                     logger.exception("Failed to report yfinance batch success")
                 break # Break retry loop on success
@@ -135,7 +136,7 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
         if not batch_success:
             logger.error(f"❌ Batch failed completely. Engaging single-ticker fallback for {len(batch)} symbols...")
             try:
-                mark_failure('yfinance', f"Batch failed for symbols {batch}. Last Error: {last_error}")
+                mark_failure(f"yfinance:{interval}", f"Batch failed for symbols {batch}. Last Error: {last_error}")
             except Exception:
                 logger.exception("Failed to report yfinance batch failure")
             for sym in batch:
@@ -159,9 +160,9 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
 
     try:
         if len(all_data) > 0:
-            mark_success('yfinance')
+            mark_success(f"yfinance:{interval}")
         else:
-            mark_failure('yfinance', "No symbols returned after batch + fallback")
+            mark_failure(f"yfinance:{interval}", "No symbols returned after batch + fallback")
     except Exception:
         logger.exception("Failed to report final yfinance fetch status")
     return all_data

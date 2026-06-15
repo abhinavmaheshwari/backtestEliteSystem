@@ -4,6 +4,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 import pandas as pd
+import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
 import yfinance as yf
 
 # Ensure yfinance tz cache uses app-writable dir to avoid /root/.cache permission issues
@@ -167,7 +168,8 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                             _write_cache_file(fetched, cache_path)
                             upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
                             from data_fetch_status import mark_success
-                            mark_success('yfinance')
+                            # Mark success for the specific resolution (scope-aware)
+                            mark_success(f"yfinance:{resolution}")
                     except Exception as e:
                         # record failure in health table
                         logger.warning(f"Background refresh failed for {yf_symbol}: {e}")
@@ -215,14 +217,14 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             _write_cache_file(fetched, cache_path)
             upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
             from data_fetch_status import mark_success
-            mark_success('yfinance')
+            mark_success(f"yfinance:{resolution}")
             if use_cache:
                 _price_cache[cache_key] = fetched.copy()
             return fetched
         except Exception as e:
             logger.warning(f"Failed to fetch historical data for {yf_symbol}: {e}")
             from data_fetch_status import mark_failure
-            mark_failure('yfinance', f"{e} (Symbol: {yf_symbol})")
+            mark_failure(f"yfinance:{resolution}", f"{e} (Symbol: {yf_symbol})")
             # For intraday datasets prefer skipping the symbol instead of serving stale data
             is_intraday = cadence < 3600
             if os.path.exists(cache_path) and not is_intraday:

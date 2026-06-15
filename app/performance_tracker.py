@@ -27,6 +27,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
+import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
 import yfinance as yf
 
 from database import get_all_alerts, update_alert_outcome, upsert_scanner_health, save_system_state

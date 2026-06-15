@@ -45,6 +45,7 @@
 # =====================================================================================
 
 import logging
+import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
 import yfinance as yf
 from data_fetch_status import mark_success, mark_failure
 import pandas as pd

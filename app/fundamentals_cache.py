@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import pandas as pd
+import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
 import yfinance as yf
 from datetime import datetime, date
 import concurrent.futures
