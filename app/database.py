@@ -954,7 +954,7 @@ def upsert_fetch_error(source_name: str, scanner_name: str, symbol: str, interva
 
 
 def get_all_fetch_errors(limit: int = 100) -> list:
-    """Return all rows from fetch_errors ordered by occurrences desc."""
+    """Return all non-acknowledged rows from fetch_errors ordered by occurrences desc."""
     init_db()
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -962,6 +962,7 @@ def get_all_fetch_errors(limit: int = 100) -> list:
                 cur.execute("""
                     SELECT id, source_name, scanner_name, symbol, interval, category, occurrences, first_seen, last_seen, last_error_msg, is_acknowledged
                     FROM fetch_errors
+                    WHERE is_acknowledged = FALSE
                     ORDER BY occurrences DESC, last_seen DESC
                     LIMIT %s
                 """, (limit,))

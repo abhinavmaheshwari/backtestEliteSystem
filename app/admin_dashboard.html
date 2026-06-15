@@ -724,87 +724,9 @@ async function loadScannerStatus() {
   }
   if (!stats) stats = {};
 
-  // Fetch API health and inject as scanner cards
-  try {
-    const r2 = await fetch('/api/data_fetch_health');
-    if (r2.ok) {
-      const health = await r2.json();
-      // Map of external source -> impacted scanners (keep in sync with server SOURCE_IMPACT_MAP)
-      const SOURCE_IMPACT_MAP_JS = {
-        'yfinance': ['EOD','INTRADAY','1H','REVERSAL','Wealth Engine'],
-        'nse_announcements': ['Wealth Engine','DAILY_BUILDER'],
-        'nse_bhavcopy': ['EOD','DAILY_BUILDER'],
-        'scraperapi': ['Pledge Worker'],
-        'telegram': ['Telegram Engine'],
-        'gemini': ['AI Worker','Wealth Engine']
-      };
-
-      const healthBySource = {};
-      // also build a list of health entries for flexible matching
-      health.forEach(f => { healthBySource[f.source_name] = f; });
-
-      // Map interval scopes to scanners in the client (keep in sync with server mapping)
-      const INTERVAL_TO_SCANNER_JS = { '1m':'INTRADAY', '15m':'INTRADAY', '1h':'1H', '60m':'1H', '1d':'EOD', 'daily':'EOD' };
-
-      // Register API cards per health row, and propagate to scanners more selectively when scoped entries exist
-      health.forEach(f => {
-        const isPersistentWarning = f.is_acknowledged === false;
-        const isDown = f.consecutive_failures > 0 || isPersistentWarning;
-        stats[`API_${f.source_name}`] = {
-          status: isDown ? 'DOWN' : 'OK',
-          updated_at: isDown ? f.last_failure : f.last_success,
-          error: f.error_msg,
-          today_alerts: f.consecutive_failures,
-          is_acknowledged: f.is_acknowledged,
-          raw_source: f.source_name,
-          today_trades: []
-        };
-        SCANNER_META[`API_${f.source_name}`] = {
-          label: `API: ${f.source_name.toUpperCase()}`,
-          desc: 'External data feed connection'
-        };
-
-        // Now propagate to impacted scanners based on scope if present
-        try {
-          const parts = f.source_name.split(':');
-          const base = parts[0];
-          const scope = parts.length > 1 ? parts[1] : null;
-          const impacted = SOURCE_IMPACT_MAP_JS[base] || [];
-          const snippet = f.error_msg ? (f.error_msg.length > 240 ? f.error_msg.slice(0,240) + '...' : f.error_msg) : `External failure: ${f.consecutive_failures} failures`;
-
-          if (scope) {
-            const mapped = INTERVAL_TO_SCANNER_JS[scope.toLowerCase()];
-            if (mapped && impacted.includes(mapped)) {
-              if (stats[mapped] && !stats[mapped].error) {
-                stats[mapped].error = snippet;
-                stats[mapped].is_acknowledged = f.is_acknowledged;
-                stats[mapped].status = 'DOWN';
-              }
-            } else {
-              // If scope directly names a scanner, use it
-              const scopeUp = scope.toUpperCase();
-              if (impacted.includes(scopeUp) && stats[scopeUp] && !stats[scopeUp].error) {
-                stats[scopeUp].error = snippet;
-                stats[scopeUp].is_acknowledged = f.is_acknowledged;
-                stats[scopeUp].status = 'DOWN';
-              }
-            }
-          } else {
-            // No scope: propagate to all impacted scanners as before
-            impacted.forEach(sc => {
-              if (stats[sc] && !stats[sc].error) {
-                stats[sc].error = snippet;
-                stats[sc].is_acknowledged = f.is_acknowledged;
-                stats[sc].status = 'DOWN';
-              }
-            });
-          }
-        } catch (e) {
-          console.debug('Error while propagating API health to scanners', e);
-        }
-      });
-    }
-  } catch {}
+  // Note: External API health (data_fetch_health) is intentionally NOT injected here.
+  // Scanner health cards only reflect whether the scanner's own code completed its cycle.
+  // Data fetch issues are tracked separately in the Fetch Errors panel below.
 
   return stats;
 }
@@ -1577,25 +1499,59 @@ async function fetchFetchErrors() {
 function renderFetchErrors(errs) {
   const el = document.getElementById('fetchErrorsContainer');
   if (!el) return;
-  if (!errs || errs.length === 0) {
-    el.innerHTML = `<div class="card"><div class="card-title">Fetch Errors — No recent issues</div><div style="padding:12px;color:var(--muted)">All external fetchers operating normally.</div></div>`;
+
+  // Filter out acknowledged errors
+  const active = (errs || []).filter(e => !e.is_acknowledged);
+  if (active.length === 0) {
+    el.innerHTML = `<div class="card"><div class="card-title">📡 Data Fetch Errors — All Clear</div><div style="padding:12px;color:var(--muted)">No unacknowledged data fetch issues.</div></div>`;
     return;
   }
-  const rows = errs.map(e => `
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border-bottom:1px solid var(--border);">
-      <div style="min-width:160px;">
-        <div style="font-family:var(--font-mono); font-weight:700">${e.symbol}</div>
-        <div style="font-size:12px; color:var(--muted);">${e.source_name} · ${e.interval || ''} · ${e.category}</div>
+
+  // Group by scanner_name + category
+  const groups = {};
+  active.forEach(e => {
+    const key = `${e.scanner_name}::${e.category}`;
+    if (!groups[key]) {
+      groups[key] = { scanner: e.scanner_name, category: e.category, totalOccurrences: 0, stocks: new Set(), ids: [], lastSeen: e.last_seen, lastError: e.last_error_msg };
+    }
+    groups[key].totalOccurrences += (e.occurrences || 1);
+    groups[key].stocks.add(e.symbol);
+    groups[key].ids.push(e.id);
+    if (e.last_seen > groups[key].lastSeen) {
+      groups[key].lastSeen = e.last_seen;
+      groups[key].lastError = e.last_error_msg;
+    }
+  });
+
+  const groupList = Object.values(groups).sort((a,b) => b.totalOccurrences - a.totalOccurrences);
+
+  const catColors = {
+    'no_data': '#e74c3c', 'missing_col': '#e67e22', 'stale_data': '#f39c12',
+    'processing_error': '#c0392b', 'rate_limited': '#8e44ad'
+  };
+
+  const rows = groupList.map(g => {
+    const color = catColors[g.category] || 'var(--muted)';
+    const stockList = [...g.stocks].slice(0, 5).join(', ') + (g.stocks.size > 5 ? ` +${g.stocks.size - 5} more` : '');
+    return `
+    <div style="display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--border);">
+      <div style="min-width:120px;">
+        <div style="font-family:var(--font-mono); font-weight:700; font-size:14px;">${g.scanner}</div>
+        <div style="font-size:12px; margin-top:2px;"><span style="background:${color}22; color:${color}; padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">${g.category}</span></div>
       </div>
-      <div style="flex:1; color:var(--muted); font-family:var(--font-mono); font-size:12px;">${e.last_error_msg || ''}</div>
-      <div style="width:120px; text-align:right;">
-        <div style="font-family:var(--font-mono); font-weight:700">${e.occurrences}×</div>
-        <div style="font-size:11px; color:var(--muted);">Last: ${e.last_seen ? new Date(e.last_seen).toLocaleString() : '-'}</div>
-        <button onclick="ackFetchError(${e.id})" style="margin-top:6px;background:rgba(0,0,0,0.04);border:1px solid var(--border);padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12px;">Acknowledge</button>
+      <div style="flex:1; font-size:12px; color:var(--muted); font-family:var(--font-mono);">
+        <div>${g.stocks.size} stocks affected</div>
+        <div style="margin-top:2px; font-size:11px; opacity:0.8;">${stockList}</div>
       </div>
-    </div>
-  `).join('');
-  el.innerHTML = `<div class="card"><div class="card-title">Fetch Errors — Recent</div><div style="max-height:280px; overflow:auto;">${rows}</div></div>`;
+      <div style="text-align:right; min-width:100px;">
+        <div style="font-family:var(--font-mono); font-weight:700; color:${color}; font-size:16px;">${g.totalOccurrences}×</div>
+        <div style="font-size:11px; color:var(--muted);">Last: ${g.lastSeen ? new Date(g.lastSeen).toLocaleTimeString() : '-'}</div>
+      </div>
+      <button onclick="ackFetchErrorGroup([${g.ids.join(',')}])" style="background:rgba(0,0,0,0.04);border:1px solid var(--border);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap;">✓ Ack All</button>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `<div class="card"><div class="card-title">📡 Data Fetch Errors — ${groupList.length} issue${groupList.length > 1 ? 's' : ''}</div><div style="max-height:320px; overflow:auto;">${rows}</div></div>`;
 }
 
 async function ackFetchError(id) {
@@ -1603,6 +1559,13 @@ async function ackFetchError(id) {
     await fetch('/api/fetch_errors/ack/' + id, {method:'POST'});
     await doRefresh();
   } catch(e) { console.error('Failed to ack fetch error', e); }
+}
+
+async function ackFetchErrorGroup(ids) {
+  try {
+    await Promise.all(ids.map(id => fetch('/api/fetch_errors/ack/' + id, {method:'POST'})));
+    await doRefresh();
+  } catch(e) { console.error('Failed to ack fetch error group', e); }
 }
 
 function updateSim() {
