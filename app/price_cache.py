@@ -73,6 +73,7 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
         logger.info(f"📥 Fetching Batch ({i}–{batch_end}/{total}) [{interval}]")
         
         batch_success = False
+        last_error = None
         
         # ATTEMPT 1: Exponential Backoff Batch Download
         for attempt in range(1, MAX_RETRIES + 1):
@@ -111,6 +112,7 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
                 break # Break retry loop on success
                 
             except Exception as e:
+                last_error = e
                 logger.warning(f"⚠️ Batch download error (Attempt {attempt}/{MAX_RETRIES}): {e}")
                 time.sleep(2 ** attempt) # Exponential backoff: 2s, 4s, 8s
 
@@ -118,7 +120,7 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
         if not batch_success:
             logger.error(f"❌ Batch failed completely. Engaging single-ticker fallback for {len(batch)} symbols...")
             try:
-                mark_failure('yfinance', f"Batch failed for symbols {batch}")
+                mark_failure('yfinance', f"Batch failed for symbols {batch}. Last Error: {last_error}")
             except Exception:
                 logger.exception("Failed to report yfinance batch failure")
             for sym in batch:

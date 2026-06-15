@@ -156,7 +156,7 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                         # record failure in health table
                         logger.warning(f"Background refresh failed for {yf_symbol}: {e}")
                         from data_fetch_status import mark_failure
-                        mark_failure('yfinance', e)
+                        mark_failure('yfinance', f"{e} (Symbol: {yf_symbol})")
                 finally:
                     _release_lock(lock_path)
 
@@ -198,7 +198,7 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
         except Exception as e:
             logger.warning(f"Failed to fetch historical data for {yf_symbol}: {e}")
             from data_fetch_status import mark_failure
-            mark_failure('yfinance', e)
+            mark_failure('yfinance', f"{e} (Symbol: {yf_symbol})")
             # fallback to any stale cache if present
             if os.path.exists(cache_path):
                 df = _read_cache_file(cache_path)

@@ -588,9 +588,9 @@ def api_indices():
             logger.exception('Failed to report yfinance success from dashboard indices')
         return jsonify(data)
     except Exception as e:
-        logger.error(f"Failed to fetch indices: {e}")
+        logger.warning(f"Failed to fetch indices from yfinance: {e}")
         try:
-            mark_failure('yfinance', e)
+            mark_failure('yfinance', f"{e} (Dashboard Indices)")
         except Exception:
             logger.exception('Failed to report yfinance failure from dashboard indices')
         return jsonify(_indices_cache["data"] or {})
@@ -633,7 +633,7 @@ def api_news(symbol):
     except Exception as e:
         logger.error(f"Failed to fetch news for {yf_symbol}: {e}")
         try:
-            mark_failure('yfinance', e)
+            mark_failure('yfinance', f"{e} (Dashboard News: {yf_symbol})")
         except Exception:
             logger.exception('Failed to report yfinance failure from dashboard news')
         return jsonify([])

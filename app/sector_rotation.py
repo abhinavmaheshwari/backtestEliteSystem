@@ -540,7 +540,7 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
     except Exception as e:
         logger.exception("⚠️  Sector batch download failed — all sectors will be skipped")
         try:
-            mark_failure('yfinance', e)
+            mark_failure('yfinance', f"{e} (Sector Rotation Batch)")
         except Exception:
             logger.exception("Failed to report yfinance failure for sector rotation (exception path)")
         for t in tickers:
