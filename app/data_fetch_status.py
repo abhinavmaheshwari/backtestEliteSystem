@@ -58,34 +58,21 @@ INTERVAL_TO_SCANNER = {
 def mark_success(source_name: str) -> None:
     try:
         upsert_data_fetch_health(source_name, last_success=_now_iso(), consecutive_failures=0)
-        # Also clear any external-scanner health flag for this data source
+        # Clear the external data source status but DO NOT touch scanner status
+        # Scanners should only be marked DOWN/OK by their own main loop, not by data source status
         try:
             from database import upsert_scanner_health
             base, scope = _split_source(source_name)
             # Clear the generic external health row for the base provider as well
             upsert_scanner_health(f"External:{base}", status="OK", last_success=_now_iso(), today_alerts=0, error_msg=None)
 
-            # Decide which scanners to mark OK. If scope provided, try to narrow the impact.
-            impacted = SOURCE_IMPACT_MAP.get(base, [])
-            targeted = []
-            if scope:
-                # If scope is interval, map to scanner name
-                mapped = INTERVAL_TO_SCANNER.get(scope.lower())
-                if mapped:
-                    targeted = [sc for sc in impacted if sc == mapped]
-                else:
-                    # If scope directly names a scanner (e.g., 'INTRADAY'), use it
-                    targeted = [sc for sc in impacted if sc.upper() == scope.upper()]
-            else:
-                targeted = impacted
-
-            for sc in targeted:
-                try:
-                    upsert_scanner_health(sc, status="OK", last_success=_now_iso(), today_alerts=0, error_msg=f"Cleared External:{base} issue")
-                except Exception:
-                    logger.debug(f"Could not mark scanner {sc} OK for source {source_name}")
+            # REMOVED: Marking dependent scanners OK
+            # Reason: We no longer mark scanners DOWN for data source failures,
+            # so we shouldn't mark them OK either. Scanners manage their own status based on
+            # whether their main loop is running (critical), not based on temporary API failures.
+            
         except Exception:
-            logger.debug(f"Could not update scanner health for External:{source_name}")
+            logger.debug(f"Could not update external data source status for {source_name}")
     except Exception:
         logger.exception(f"Failed to mark success for data source {source_name}")
 
@@ -99,33 +86,24 @@ def mark_failure(source_name: str, error: Optional[Union[Exception, str]] = None
             msg = str(error) if error is not None else None
         upsert_data_fetch_health(source_name, last_failure=_now_iso(), consecutive_failures=None, error_msg=msg)
 
-        # Also mark an external scanner health row so the dashboard shows which external provider is failing
+        # Mark the external data source as DOWN but DO NOT propagate to scanners
+        # Individual stock failures should NOT turn scanner RED - they go to fetch_errors table only
         try:
-            from database import upsert_scanner_health
+            from database import upsert_scanner_health, upsert_fetch_error
             base, scope = _split_source(source_name)
             # Mark the generic external row for the exact key (include scope if present)
             external_name = f"External:{source_name}" if scope else f"External:{base}"
             upsert_scanner_health(external_name, status="DOWN", last_success=None, today_alerts=0, error_msg=(msg or 'External data source failure'))
 
-            # Propagate impact to known dependent scanners but narrow if scope is provided
-            impacted = SOURCE_IMPACT_MAP.get(base, [])
-            targeted = []
-            if scope:
-                mapped = INTERVAL_TO_SCANNER.get(scope.lower())
-                if mapped:
-                    targeted = [sc for sc in impacted if sc == mapped]
-                else:
-                    targeted = [sc for sc in impacted if sc.upper() == scope.upper()]
-            else:
-                targeted = impacted
-
-            for sc in targeted:
-                try:
-                    upsert_scanner_health(sc, status="DOWN", last_success=None, today_alerts=0, error_msg=(msg or f'Impacted by {source_name} failure'))
-                except Exception:
-                    logger.debug(f"Could not mark scanner {sc} DOWN for source {source_name}")
+            # Log to fetch_errors for detailed tracking, but DO NOT mark scanner DOWN
+            # The theory: if yfinance fails for one stock, we log it but scanner keeps running
+            # Only CRITICAL (scanner loop crash) should turn scanner RED
+            # REMOVED: Propagating impact to known dependent scanners
+            # This was incorrectly turning scanners RED for temporary API failures
+            
         except Exception:
-            logger.debug(f"Could not update scanner health for External:{source_name}")
+            logger.debug(f"Could not update external data source status for {source_name}")
     except Exception:
         logger.exception(f"Failed to mark failure for data source {source_name}: {error}")
+
 
