@@ -466,9 +466,19 @@ def run_wealth_scan():
                     tech["dist_52w_high"] = prev_row.get("dist_52w_high")
                     tech["liquidity"] = prev_row.get("liquidity", 0.0)
                     rejection_counts["stale_data"] = rejection_counts.get("stale_data", 0) + 1
+                    try:
+                        from database import upsert_fetch_error
+                        upsert_fetch_error('yfinance', 'WEALTH', sym, '1d', 'stale_data', 'using_yesterdays_cache')
+                    except Exception:
+                        pass
                     logger.warning(f"⚠️ YFinance failed for {sym}, using cached technicals from yesterday.")
                 elif tech.get("cmp") is None:
                     rejection_counts["no_data"] = rejection_counts.get("no_data", 0) + 1
+                    try:
+                        from database import upsert_fetch_error
+                        upsert_fetch_error('yfinance', 'WEALTH', sym, '1d', 'no_data', 'missing_data_no_fallback')
+                    except Exception:
+                        pass
                     
                 tech["Stock"] = sym
                 try:
@@ -623,14 +633,7 @@ def run_wealth_scan():
         core_count = len(core_capped)
         logger.info(f"✅ [WEALTH ENGINE] Updated | Core: {core_count} | Buys: {buy_count} | Total: {len(wealth_df)}")
         
-        # Aggregate data fetch errors for dashboard tracking
-        error_keys = ["no_data", "stale_data", "processing_error"]
-        err_list = [f"{k}: {rejection_counts[k]}" for k in error_keys if rejection_counts.get(k, 0) > 0]
-        
-        status = "DOWN" if err_list else "OK"
-        msg = "Data Errors -> " + " | ".join(err_list) if err_list else None
-        
-        upsert_scanner_health("Wealth Engine", status, last_success=datetime.now().isoformat(), today_alerts=buy_count, error_msg=msg)
+        upsert_scanner_health("Wealth Engine", "OK", last_success=datetime.now().isoformat(), today_alerts=buy_count)
 
         # Weekly Telegram Alert (Run on Sunday)
         now = datetime.now()

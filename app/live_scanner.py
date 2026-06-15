@@ -583,21 +583,13 @@ def start(run_once=False):
             logger.info("=" * 80)
             logger.info(f"✅ 1H SCAN COMPLETE | {elapsed:.2f}s | Alerts={total_alerts}/{len(watchlist)}")
             
-            # Aggregate data fetch errors for dashboard tracking
-            error_keys = ["no_data", "missing_col", "stale_data", "processing_error"]
-            err_list = [f"{k}: {rejection_counts[k]}" for k in error_keys if rejection_counts.get(k, 0) > 0]
-            
-            status = "DOWN" if err_list else "OK"
-            msg = "Data Errors -> " + " | ".join(err_list) if err_list else None
-
             try:
                 from database import upsert_scanner_health
                 upsert_scanner_health(
                     scanner_name="1H",
-                    status=status,
+                    status="OK",
                     last_success=datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                    today_alerts=total_alerts,
-                    error_msg=msg
+                    today_alerts=total_alerts
                 )
             except Exception:
                 logger.exception("❌ Failed to update scanner health for 1H")
