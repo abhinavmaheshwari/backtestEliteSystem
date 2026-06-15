@@ -850,6 +850,18 @@ function closeDrill() {
   document.getElementById('drill-panel').classList.remove('open');
   document.querySelectorAll('.kpi').forEach(k => k.classList.remove('active'));
   activeKpi = null;
+  
+  if (window.activeScannerDrill) {
+    const sc = window.activeScannerDrill;
+    const stats = window._scannerStats || {};
+    const data = stats[sc];
+    if (data && data.is_acknowledged === false) {
+      const isApi = sc.startsWith('API_');
+      const endpoint = isApi ? `/api/data_fetch_health/acknowledge/${data.raw_source}` : `/api/scanner_health/acknowledge/${sc}`;
+      fetch(endpoint, {method: 'POST'}).then(() => window.location.reload());
+    }
+    window.activeScannerDrill = null;
+  }
 }
 
 // ── SCANNER STATUS
@@ -1000,6 +1012,7 @@ function showScannerDrill(sc) {
   const meta = SCANNER_META[sc] || {label:sc};
   document.querySelectorAll('.kpi').forEach(k => k.classList.remove('active'));
   activeKpi = null;
+  window.activeScannerDrill = sc;
   
   if (sc.startsWith('API_')) {
     const fails = data.today_alerts;
