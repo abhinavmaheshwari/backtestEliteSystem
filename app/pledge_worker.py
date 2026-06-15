@@ -72,29 +72,47 @@ def worker_loop():
     while True:
         try:
             symbols_set = set()
+            watchlist_count = 0
             if os.path.exists(WATCHLIST_PATH):
                 df = pd.read_parquet(WATCHLIST_PATH)
                 if "Stock" in df.columns:
-                    symbols_set.update(df["Stock"].unique().tolist())
+                    watch_symbols = df["Stock"].unique().tolist()
+                    symbols_set.update(watch_symbols)
+                    watchlist_count = len(watch_symbols)
             
-            excluded_path = WATCHLIST_PATH.replace(".parquet", "_excluded.csv")
-            if os.path.exists(excluded_path):
-                try:
-                    ex_df = pd.read_csv(excluded_path)
-                    if "Stock" in ex_df.columns:
-                        symbols_set.update(ex_df["Stock"].dropna().unique().tolist())
-                except Exception as e:
-                    logger.warning(f"Could not read excluded csv: {e}")
+            excluded_count = 0
+            excluded_paths = [
+                os.path.join(os.path.dirname(WATCHLIST_PATH), 'elite_fundamental_watchlist_excluded.csv'),
+                os.path.join(os.path.dirname(WATCHLIST_PATH), 'elite_fundamental_watchlist-excluded.csv'),
+                WATCHLIST_PATH.replace(".parquet", "_excluded.csv"),
+            ]
+            for excluded_path in excluded_paths:
+                if os.path.exists(excluded_path):
+                    try:
+                        ex_df = pd.read_csv(excluded_path)
+                        if "Stock" in ex_df.columns:
+                            ex_symbols = ex_df["Stock"].dropna().unique().tolist()
+                            symbols_set.update(ex_symbols)
+                            excluded_count = len(ex_symbols)
+                            logger.info(f"📋 Loaded {excluded_count} stocks from excluded list: {excluded_path}")
+                            break  # Stop after first successful load
+                    except Exception as e:
+                        logger.warning(f"Could not read excluded csv {excluded_path}: {e}")
+            
+            if excluded_count == 0:
+                logger.warning("⚠️ No excluded stocks loaded — will only process watchlist")
 
             if not symbols_set:
                 logger.warning(f"No symbols found in watchlist or excluded list. Sleeping 60s...")
                 time.sleep(60)
                 continue
                 
-            symbols = list(symbols_set)
-            logger.info(f"Loaded {len(symbols)} symbols from watchlist + excluded list.")
+            symbols = sorted(list(symbols_set))
+            total_watch = len(symbols)
+            logger.info(f"📋 Loaded {watchlist_count} (watchlist) + {excluded_count} (excluded) = {total_watch} total symbols")
             
-            # 2. Check DB for stale pledges
+            # 2. Check DB for stale pledges (refresh every 60-90 days = 2-3 months)
+            # This ensures data freshness while not overloading the API
             stale_symbols = []
             with get_connection() as conn:
                 with conn.cursor() as cur:
@@ -103,22 +121,21 @@ def worker_loop():
                             SELECT updated_at 
                             FROM promoter_pledge_cache 
                             WHERE symbol = %s 
-                              AND updated_at >= NOW() - INTERVAL '30 days'
+                              AND updated_at >= NOW() - INTERVAL '75 days'
                         """, (sym,))
                         if not cur.fetchone():
                             stale_symbols.append(sym)
                             
-            total_watch = len(symbols)
             processed_base = total_watch - len(stale_symbols)
 
             if not stale_symbols:
-                logger.info(f"✅ All pledges are up-to-date. Sleeping for 4 hours.")
-                upsert_scanner_health("Pledge Worker", "IDLE", error_msg=f"Last: None | Progress: {total_watch}/{total_watch}", today_alerts=0)
+                logger.info(f"✅ All pledges are fresh (updated within 75 days). Sleeping for 4 hours.")
+                upsert_scanner_health("Pledge Worker", "IDLE", last_success=datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(), today_alerts=total_watch, error_msg=f"Last: None | Total: {total_watch}")
                 time.sleep(4 * 3600)
                 continue
                 
-            logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates.")
-            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=0, error_msg=f"Last: Starting... | Progress: {processed_base}/{total_watch}")
+            logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates (out of {total_watch} total).")
+            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=processed_base, error_msg=f"Last: Starting... | Total: {total_watch}")
             
             def process_symbol(sym, i_total, is_retry=False):
                 """Returns True if successful or definitive failure (like 404), False if should retry."""
@@ -199,14 +216,13 @@ def worker_loop():
                 else:
                     failed_queue.append(sym)
                     
-                time.sleep(3) # Rate limit
                 
-                # Update health
+                # Update health with processed count
                 from datetime import datetime
                 from zoneinfo import ZoneInfo
                 now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
                 current_processed = processed_base + successful_in_first_pass
-                upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Progress: {current_processed}/{total_watch}")
+                upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=current_processed, error_msg=f"Last: {sym} | Total: {total_watch}")
 
             final_error_count = 0
             
@@ -225,18 +241,26 @@ def worker_loop():
                     from zoneinfo import ZoneInfo
                     now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
                     current_processed = processed_base + successful_in_first_pass
-                    upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=len(stale_symbols), error_msg=f"Last: {sym} (Retry) | Progress: {current_processed}/{total_watch}")
+                    upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=current_processed, error_msg=f"Last: {sym} (Retry) | Total: {total_watch}")
 
             # Loop done
             status = "IDLE" if final_error_count == 0 else "DOWN"
             last_sym = stale_symbols[-1] if stale_symbols else "None"
             current_processed = processed_base + successful_in_first_pass
-            err_msg = f"Last: {last_sym} | Progress: {current_processed}/{total_watch} | Failed: {final_error_count}" if final_error_count > 0 else f"Last: {last_sym} | Progress: {current_processed}/{total_watch}"
+            
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
-            upsert_scanner_health("Pledge Worker", status, last_success=now_str, error_msg=err_msg, today_alerts=len(stale_symbols))
-            logger.info("Sleeping 1 hour before next full check...")
+            
+            if final_error_count > 0:
+                err_msg = f"Last: {last_sym} | Total: {total_watch} | Failed: {final_error_count}"
+                logger.warning(f"⚠️ Pledge Worker completed with {final_error_count} failures")
+            else:
+                err_msg = f"Last: {last_sym} | Total: {total_watch}"
+                logger.info(f"✅ Pledge Worker completed successfully for all {total_watch} symbols")
+            
+            upsert_scanner_health("Pledge Worker", status, last_success=now_str, today_alerts=current_processed, error_msg=err_msg)
+            logger.info(f"🕒 Processed: {current_processed}/{total_watch}. Sleeping 1 hour before next check...")
             time.sleep(3600)
             
         except Exception as e:
