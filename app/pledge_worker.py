@@ -218,10 +218,7 @@ def worker_loop():
                 else:
                     failed_queue.append(sym)
                     
-                
                 # Update health with processed count
-                from datetime import datetime
-                from zoneinfo import ZoneInfo
                 now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
                 current_processed = processed_base + successful_in_first_pass
                 upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=current_processed, error_msg=f"Last: {sym} | Total: {total_watch}")
@@ -239,8 +236,6 @@ def worker_loop():
                         final_error_count += 1
                     time.sleep(3)
                     
-                    from datetime import datetime
-                    from zoneinfo import ZoneInfo
                     now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
                     current_processed = processed_base + successful_in_first_pass
                     upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=current_processed, error_msg=f"Last: {sym} (Retry) | Total: {total_watch}")
@@ -250,8 +245,6 @@ def worker_loop():
             last_sym = stale_symbols[-1] if stale_symbols else "None"
             current_processed = processed_base + successful_in_first_pass
             
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
             
             if final_error_count > 0:
