@@ -4,7 +4,14 @@ import logging
 import threading
 from datetime import datetime, timezone
 import pandas as pd
-import app.yf_bootstrap  # ensure tzcache writable location before importing yfinance
+# Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
+try:
+    import app.yf_bootstrap
+except Exception:
+    try:
+        import yf_bootstrap
+    except Exception:
+        pass
 import yfinance as yf
 
 # Ensure yfinance tz cache uses app-writable dir to avoid /root/.cache permission issues
