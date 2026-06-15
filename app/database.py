@@ -184,6 +184,25 @@ def init_db():
                     )
                 """)
 
+                # ── Fetch error aggregation table (skipped records / fetch failures) ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS fetch_errors (
+                        id SERIAL PRIMARY KEY,
+                        source_name TEXT NOT NULL,
+                        scanner_name TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        interval TEXT,
+                        category TEXT NOT NULL,
+                        occurrences INTEGER NOT NULL DEFAULT 1,
+                        first_seen TEXT NOT NULL,
+                        last_seen TEXT NOT NULL,
+                        last_error_msg TEXT,
+                        is_acknowledged BOOLEAN DEFAULT FALSE
+                    )
+                """)
+                # Ensure a uniqueness constraint for upsert logic
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fetch_errors_uni ON fetch_errors (source_name, scanner_name, symbol, interval, category)")
+
                 # ── Trade analytics view mapping JSONB context to columns ───────────
                 cur.execute("""
                     CREATE OR REPLACE VIEW v_trade_analytics AS
@@ -824,6 +843,65 @@ def acknowledge_scanner_health(scanner_name: str):
             except Exception:
                 conn.rollback()
                 logger.exception(f"❌ acknowledge_scanner_health failed for {scanner_name}")
+
+
+def upsert_fetch_error(source_name: str, scanner_name: str, symbol: str, interval: str, category: str, error_msg: str = None):
+    """Insert or update a fetch_errors aggregation row.
+
+    If the combination (source, scanner, symbol, interval, category) exists, increment occurrences
+    and update last_seen/last_error_msg. Otherwise create a new row with occurrences=1.
+    """
+    init_db()
+    now = datetime.now(IST).isoformat()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO fetch_errors (source_name, scanner_name, symbol, interval, category, occurrences, first_seen, last_seen, last_error_msg, is_acknowledged)
+                    VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, FALSE)
+                    ON CONFLICT (source_name, scanner_name, symbol, interval, category) DO UPDATE
+                      SET occurrences = fetch_errors.occurrences + 1,
+                          last_seen = EXCLUDED.last_seen,
+                          last_error_msg = COALESCE(EXCLUDED.last_error_msg, fetch_errors.last_error_msg),
+                          is_acknowledged = FALSE
+                """, (source_name, scanner_name, symbol, interval, category, now, now, error_msg))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ upsert_fetch_error failed for {source_name}/{symbol}")
+
+
+def get_all_fetch_errors(limit: int = 100) -> list:
+    """Return all rows from fetch_errors ordered by occurrences desc."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT id, source_name, scanner_name, symbol, interval, category, occurrences, first_seen, last_seen, last_error_msg, is_acknowledged
+                    FROM fetch_errors
+                    ORDER BY occurrences DESC, last_seen DESC
+                    LIMIT %s
+                """, (limit,))
+                return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                logger.exception("❌ get_all_fetch_errors failed")
+                return []
+
+
+def acknowledge_fetch_error(error_id: int) -> bool:
+    """Mark a fetch_errors row as acknowledged (so it won't keep blinking in UI). Returns True if updated."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("UPDATE fetch_errors SET is_acknowledged = TRUE WHERE id = %s", (error_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ acknowledge_fetch_error failed for id={error_id}")
+                return False
 
 def get_all_data_fetch_health() -> list:
     """Return all rows from data_fetch_health as list of dicts."""

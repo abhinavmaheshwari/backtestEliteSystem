@@ -511,6 +511,9 @@ function playDing() {
     <!-- SCANNER STATUS -->
     <div class="section-label">Scanner Health</div>
     <div class="scanner-grid" id="scannerGrid" style="margin-bottom:28px"></div>
+
+    <!-- FETCH ERRORS PANEL (Admin) -->
+    <div id="fetchErrorsContainer" style="margin-bottom:20px;"></div>
     
     <!-- FUNDAMENTAL WATCHLIST -->
     <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
@@ -1541,6 +1544,46 @@ function renderCategoryStats() {
   if (cg) cg.innerHTML = html || '<div style="color:var(--muted);font-size:12px;">No categorized trades yet.</div>';
 }
 
+// ── FETCH ERRORS (ADMIN PANEL)
+async function fetchFetchErrors() {
+  try {
+    const r = await fetch('/api/fetch_errors');
+    if (!r.ok) return [];
+    return await r.json();
+  } catch (e) { console.error('Failed to fetch fetch_errors', e); return []; }
+}
+
+function renderFetchErrors(errs) {
+  const el = document.getElementById('fetchErrorsContainer');
+  if (!el) return;
+  if (!errs || errs.length === 0) {
+    el.innerHTML = `<div class="card"><div class="card-title">Fetch Errors — No recent issues</div><div style="padding:12px;color:var(--muted)">All external fetchers operating normally.</div></div>`;
+    return;
+  }
+  const rows = errs.map(e => `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border-bottom:1px solid var(--border);">
+      <div style="min-width:160px;">
+        <div style="font-family:var(--font-mono); font-weight:700">${e.symbol}</div>
+        <div style="font-size:12px; color:var(--muted);">${e.source_name} · ${e.interval || ''} · ${e.category}</div>
+      </div>
+      <div style="flex:1; color:var(--muted); font-family:var(--font-mono); font-size:12px;">${e.last_error_msg || ''}</div>
+      <div style="width:120px; text-align:right;">
+        <div style="font-family:var(--font-mono); font-weight:700">${e.occurrences}×</div>
+        <div style="font-size:11px; color:var(--muted);">Last: ${e.last_seen ? new Date(e.last_seen).toLocaleString() : '-'}</div>
+        <button onclick="ackFetchError(${e.id})" style="margin-top:6px;background:rgba(0,0,0,0.04);border:1px solid var(--border);padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12px;">Acknowledge</button>
+      </div>
+    </div>
+  `).join('');
+  el.innerHTML = `<div class="card"><div class="card-title">Fetch Errors — Recent</div><div style="max-height:280px; overflow:auto;">${rows}</div></div>`;
+}
+
+async function ackFetchError(id) {
+  try {
+    await fetch('/api/fetch_errors/ack/' + id, {method:'POST'});
+    await doRefresh();
+  } catch(e) { console.error('Failed to ack fetch error', e); }
+}
+
 function updateSim() {
   const cap = parseFloat(document.getElementById('simCapital').value) || 500000;
   
@@ -1800,6 +1843,13 @@ async function doRefresh(isAuto = false) {
   renderTradeTable();
   renderCategoryStats();
   updateSim();
+
+  // Fetch and render aggregated fetch errors for admin triage
+  try {
+    const errs = await fetchFetchErrors();
+    renderFetchErrors(errs);
+  } catch (e) { console.error('Failed to load fetch errors', e); }
+
   document.getElementById('gen-time').textContent = 'Updated: ' + new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata'});
   btn.classList.remove('spinning');
 }

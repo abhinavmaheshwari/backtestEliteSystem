@@ -308,6 +308,31 @@ def api_macro_state():
         return jsonify({"nifty_6m_return": 0, "nifty_dist_52w": 0, "bear_market_gate": False})
 
 
+# ── Fetch errors API (admin) ─────────────────────────────────────────────────────
+@app.route("/api/fetch_errors")
+def api_fetch_errors():
+    """Return recent aggregated fetch errors for admin triage."""
+    try:
+        from database import get_all_fetch_errors
+        rows = get_all_fetch_errors(200)
+        return jsonify(rows)
+    except Exception:
+        logger.exception("❌ /api/fetch_errors failed")
+        return jsonify([]), 500
+
+
+@app.route("/api/fetch_errors/ack/<int:error_id>", methods=["POST"])
+def api_ack_fetch_error(error_id):
+    """Acknowledge a specific fetch error so it stops alerting in UI."""
+    try:
+        from database import acknowledge_fetch_error
+        ok = acknowledge_fetch_error(error_id)
+        return jsonify({"ok": ok})
+    except Exception:
+        logger.exception("❌ /api/fetch_errors/ack failed")
+        return jsonify({"ok": False}), 500
+
+
 # ── MANUAL PORTFOLIO TRACKER ──────────────────────────────────────────────────
 @app.route("/api/portfolio", methods=["GET"])
 def api_get_portfolio():

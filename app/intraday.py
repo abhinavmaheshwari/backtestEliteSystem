@@ -17,7 +17,7 @@ from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new
+from database import init_db, save_alert_if_new, upsert_fetch_error
 from delivery_data import fetch_previous_day_delivery
 from price_cache import fetch_watchlist_data  
 from sl_target_helper import compute_sl_and_target
@@ -156,12 +156,20 @@ def start(run_once=False):
 
                     if symbol not in all_ticker_data:
                         rejection_counts["no_data"] += 1
+                        try:
+                            upsert_fetch_error('yfinance', 'INTRADAY', symbol, '15m', 'no_data', 'missing_in_batch')
+                        except Exception:
+                            logger.exception('Failed to upsert fetch error')
                         continue
 
                     ticker = all_ticker_data[symbol].copy()
 
                     if ticker.empty:
                         rejection_counts["no_data"] += 1
+                        try:
+                            upsert_fetch_error('yfinance', 'INTRADAY', symbol, '15m', 'no_data', 'empty_dataframe')
+                        except Exception:
+                            logger.exception('Failed to upsert fetch error')
                         continue
 
                     if isinstance(ticker.columns, pd.MultiIndex):
@@ -202,6 +210,17 @@ def start(run_once=False):
                             if now_naive < candle_end:
                                 ticker = ticker.iloc[:-1].copy()
                                 rejection_counts["forming_candle_stripped"] += 1
+                        except Exception:
+                            pass
+
+                        try:
+                            if _last_ts.date() != ist_now.date():
+                                rejection_counts["stale_data"] += 1
+                                try:
+                                    upsert_fetch_error('yfinance', 'INTRADAY', symbol, '15m', 'stale_data', f'last_ts:{_last_ts.date()}')
+                                except Exception:
+                                    logger.exception('Failed to upsert fetch error')
+                                continue
                         except Exception:
                             pass
 

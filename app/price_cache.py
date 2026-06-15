@@ -8,6 +8,7 @@ import time
 import pandas as pd
 import yfinance as yf
 from data_fetch_status import mark_success, mark_failure
+from database import upsert_fetch_error
 from datetime import datetime
 from zoneinfo import ZoneInfo
 try:
@@ -24,18 +25,32 @@ _lock = threading.Lock()
 CACHE_TTL_SECONDS = PRICE_CACHE_TTL_SECONDS
 MAX_RETRIES = 3
 
+# Map interval string to required freshness cadence (seconds)
+_INTERVAL_CADENCE = {
+    '1m': 60,
+    '15m': 900,
+    '1h': 3600,
+    '1d': 24 * 3600,
+}
+
+
 def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval: str = "15m") -> dict[str, pd.DataFrame]:
     cache_key = (interval, period)
+
+    cadence = _INTERVAL_CADENCE.get(interval, CACHE_TTL_SECONDS)
 
     with _lock:
         entry = _cache.get(cache_key)
         if entry is not None:
             age = time.monotonic() - entry["ts"]
-            if age < CACHE_TTL_SECONDS:
-                logger.debug(f"📦 Price cache hit | {interval} | {period}")
+            # Use cached data only if it is fresher than the interval cadence.
+            if age < cadence:
+                logger.debug(f"📦 Price cache hit | {interval} | {period} | age={age:.1f}s < cadence={cadence}s")
                 return entry["data"]
+            else:
+                logger.info(f"Price cache stale for {interval} (age={age:.1f}s >= cadence={cadence}s). Forcing fresh download.")
 
-    # Cache miss — download fresh data with robust retries
+    # Cache miss or stale — download fresh data with robust retries
     result = _download_all_robust(watchlist, period=period, interval=interval)
 
     with _lock:
@@ -130,6 +145,18 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
                 time.sleep(0.5) # Prevent aggressive rate limiting on single pulls
 
     logger.info(f"✅ Data secured for {len(all_data)}/{total} symbols [{interval}]")
+
+    # Record missing symbols into fetch_errors for audit/triage
+    try:
+        for sym in symbols:
+            if sym not in all_data:
+                try:
+                    upsert_fetch_error('yfinance', 'PRICE_CACHE', sym, interval, 'no_data_after_fetch', 'no_data_returned')
+                except Exception:
+                    logger.exception('Failed to upsert fetch error for symbol %s', sym)
+    except Exception:
+        logger.exception('Failed while recording missing symbols')
+
     try:
         if len(all_data) > 0:
             mark_success('yfinance')

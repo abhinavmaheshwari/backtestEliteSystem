@@ -5,6 +5,18 @@ import threading
 from datetime import datetime, timezone
 import pandas as pd
 import yfinance as yf
+
+# Ensure yfinance tz cache uses app-writable dir to avoid /root/.cache permission issues
+TZCACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "tzcache")
+os.makedirs(TZCACHE_DIR, exist_ok=True)
+try:
+    yf.set_tz_cache_location(TZCACHE_DIR)
+except Exception as _e:
+    logger.debug(f"Unable to set yfinance tz cache location: {_e}")
+
+# Limit concurrent yfinance network calls to avoid provider rate limits
+_YF_SEMAPHORE = threading.BoundedSemaphore(int(os.getenv('YF_CONCURRENCY', '6')))
+
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from database import get_cache_metadata, upsert_cache_metadata, upsert_data_fetch_health, get_all_data_fetch_health
@@ -146,7 +158,11 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                     return
                 try:
                     try:
-                        fetched = _fetch_history_with_retry(yf_symbol, period)
+                        _YF_SEMAPHORE.acquire()
+                        try:
+                            fetched = _fetch_history_with_retry(yf_symbol, period)
+                        finally:
+                            _YF_SEMAPHORE.release()
                         if not fetched.empty:
                             _write_cache_file(fetched, cache_path)
                             upsert_cache_metadata(cache_key, datetime.now(timezone.utc).isoformat(), cadence, len(fetched), source='yfinance')
@@ -161,6 +177,14 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                     _release_lock(lock_path)
 
             threading.Thread(target=_bg_refresh, daemon=True).start()
+            # For high-frequency intraday datasets (short cadence), prefer skipping the symbol
+            # for this scanner call instead of returning stale (yesterday) data.
+            is_intraday = cadence < 3600
+            if is_intraday:
+                logger.warning(f"Skipping symbol {yf_symbol} for this run: stale cache present but serving stale intraday data is unsafe (cadence={cadence}).")
+                # Do not populate in-memory cache; caller should skip this symbol when an empty DataFrame is returned
+                return pd.DataFrame()
+
             if use_cache:
                 _price_cache[cache_key] = df.copy()
             return df
@@ -199,12 +223,15 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             logger.warning(f"Failed to fetch historical data for {yf_symbol}: {e}")
             from data_fetch_status import mark_failure
             mark_failure('yfinance', f"{e} (Symbol: {yf_symbol})")
-            # fallback to any stale cache if present
-            if os.path.exists(cache_path):
+            # For intraday datasets prefer skipping the symbol instead of serving stale data
+            is_intraday = cadence < 3600
+            if os.path.exists(cache_path) and not is_intraday:
                 df = _read_cache_file(cache_path)
                 if use_cache:
                     _price_cache[cache_key] = df.copy()
                 return df
+            # No safe data to serve for this symbol at this cadence — caller should skip
+            logger.info(f"No fresh data for {yf_symbol} and cadence indicates intraday; returning empty DataFrame to signal caller to skip this symbol.")
             return pd.DataFrame()
     finally:
         if got_lock:

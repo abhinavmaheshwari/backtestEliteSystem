@@ -100,14 +100,17 @@ def worker_loop():
                         if not cur.fetchone():
                             stale_symbols.append(sym)
                             
+            total_watch = len(symbols)
+            processed_base = total_watch - len(stale_symbols)
+
             if not stale_symbols:
-                logger.info("✅ All pledges are up-to-date. Sleeping for 4 hours.")
-                upsert_scanner_health("Pledge Worker", "IDLE", error_msg="Last: None | Total: 0", today_alerts=0)
+                logger.info(f"✅ All pledges are up-to-date. Sleeping for 4 hours.")
+                upsert_scanner_health("Pledge Worker", "IDLE", error_msg=f"Last: None | Progress: {total_watch}/{total_watch}", today_alerts=0)
                 time.sleep(4 * 3600)
                 continue
                 
             logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates.")
-            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=0, error_msg=f"Last: Starting... | Total: {len(stale_symbols)}")
+            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=0, error_msg=f"Last: Starting... | Progress: {processed_base}/{total_watch}")
             
             error_count = 0
             for i, sym in enumerate(stale_symbols):
@@ -145,7 +148,8 @@ def worker_loop():
                             from datetime import datetime
                             from zoneinfo import ZoneInfo
                             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
-                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
+                            current_processed = processed_base + i + 1
+                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Progress: {current_processed}/{total_watch}")
                         else:
                             logger.warning(f"⚠️ Could not find pledge text on page for {sym}. Assuming 0.0%")
                             with get_connection() as conn:
@@ -161,7 +165,8 @@ def worker_loop():
                             from datetime import datetime
                             from zoneinfo import ZoneInfo
                             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
-                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
+                            current_processed = processed_base + i + 1
+                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Progress: {current_processed}/{total_watch}")
                     elif res.status_code == 404:
                         logger.warning(f"❌ 404 Not Found for {sym} at {target_url}")
                         mark_failure('scraperapi', f"404 Not Found: {target_url}")
@@ -191,7 +196,8 @@ def worker_loop():
             # Loop done
             status = "IDLE" if error_count == 0 else "DOWN"
             last_sym = stale_symbols[-1] if stale_symbols else "None"
-            err_msg = f"Last: {last_sym} | Total: {len(stale_symbols)} | Failed: {error_count}" if error_count > 0 else f"Last: {last_sym} | Total: {len(stale_symbols)}"
+            current_processed = processed_base + len(stale_symbols)
+            err_msg = f"Last: {last_sym} | Progress: {current_processed}/{total_watch} | Failed: {error_count}" if error_count > 0 else f"Last: {last_sym} | Progress: {current_processed}/{total_watch}"
             from datetime import datetime
             from zoneinfo import ZoneInfo
             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
