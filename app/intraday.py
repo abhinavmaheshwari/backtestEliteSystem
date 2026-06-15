@@ -93,11 +93,9 @@ def start(run_once=False):
 
         sleep_time = 300  
         try:
-            try:
-                watchlist = get_watchlist()
-            except Exception:
-                time.sleep(300)
-                continue
+            watchlist = get_watchlist()
+            if watchlist is None or watchlist.empty:
+                raise ValueError("Watchlist is missing or empty. Cannot run scan.")
             
             # ── FETCH WEALTH ENGINE SIGNAL ──────────────────────────────────────────
             try:

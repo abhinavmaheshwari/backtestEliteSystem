@@ -492,6 +492,9 @@ def run_wealth_scan():
                     logger.info(f"💰 [WEALTH ENGINE] Progress: {completed}/{len(df)} stocks processed...")
 
         tech_df = pd.DataFrame(technicals)
+        if not tech_df.empty and (tech_df.get("cmp") is None or tech_df["cmp"].isnull().all() or (tech_df["cmp"] == 0).all()):
+            raise Exception("YFinance returned 0 prices. API might be down or rate-limited.")
+
         wealth_df = pd.merge(df, tech_df, on="Stock", how="left")
 
         if "rs_6m" in wealth_df.columns:
