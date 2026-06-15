@@ -332,7 +332,9 @@ def run_system_scheduler():
     # Hourly market-hours check (runs every hour, but only executes if in market hours)
     schedule.every().hour.at(":05").do(run_market_hours_wealth_scan)
 
-    logger.info("🕒 SCHEDULER | Initialized")
+    logger.info("🕒 SCHEDULER | Initialized. Running initial boot verification...")
+    verify_scans()
+
     while True:
         schedule.run_pending()
         time.sleep(30)

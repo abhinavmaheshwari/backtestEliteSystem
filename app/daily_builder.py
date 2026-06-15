@@ -790,28 +790,28 @@ def _main_impl():
         results = [classify_stock(row) for _, row in universe_df.iterrows()]
         winners = [r for r in results if r is not None]
 
-    if EXCLUSION_LOG:
-        with _exclusion_lock:
-            exclusion_snapshot = list(EXCLUSION_LOG)
-        pd.DataFrame(exclusion_snapshot).to_csv(EXCLUSION_CSV, index=False)
-        logger.info(f"📋 Exclusion log saved to {EXCLUSION_CSV} ({len(exclusion_snapshot)} skipped)")
+        if EXCLUSION_LOG:
+            with _exclusion_lock:
+                exclusion_snapshot = list(EXCLUSION_LOG)
+            pd.DataFrame(exclusion_snapshot).to_csv(EXCLUSION_CSV, index=False)
+            logger.info(f"📋 Exclusion log saved to {EXCLUSION_CSV} ({len(exclusion_snapshot)} skipped)")
 
-    if not winners:
-        logger.warning("❌ No qualifying stocks after classification")
-        return
+        if not winners:
+            logger.warning("❌ No qualifying stocks after classification")
+            return
 
-    final_df = (
-        pd.DataFrame(winners)
-        .sort_values(
-            by=["Fundamental Score", "ROE %", "YOY Profit %"],
-            ascending=False,
+        final_df = (
+            pd.DataFrame(winners)
+            .sort_values(
+                by=["Fundamental Score", "ROE %", "YOY Profit %"],
+                ascending=False,
+            )
+            .reset_index(drop=True)
         )
-        .reset_index(drop=True)
-    )
 
-    # --- AI CONCALL INTEGRATION ---
-    # Moved entirely to wealth_engine.py to prevent split-brain scoring.
-    # daily_builder now only exports pure, unweighted fundamentals.
+        # --- AI CONCALL INTEGRATION ---
+        # Moved entirely to wealth_engine.py to prevent split-brain scoring.
+        # daily_builder now only exports pure, unweighted fundamentals.
 
         final_df.to_csv(OUTPUT_CSV, index=False)
         final_df.to_parquet(OUTPUT_PARQUET, index=False)
