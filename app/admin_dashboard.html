@@ -76,9 +76,21 @@
   .header-brand { display:flex; align-items:center; gap:12px; }
   .header-dot {
     width:10px; height:10px; border-radius:50%; background:var(--accent);
-    box-shadow:0 0 8px var(--accent); animation:pulse 2s infinite;
+    box-shadow:0 0 8px var(--accent); animation:pulse-dot 2s infinite;
   }
-  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+  @keyframes blinkBg {
+      0% { background-color: rgba(99,102,241,0.25); }
+      50% { background-color: transparent; }
+      100% { background-color: rgba(99,102,241,0.25); }
+    }
+    .blink-row {
+      animation: blinkBg 1.5s infinite;
+      transition: background-color 0.3s ease;
+    }
+    .main-row.blink-row td {
+      font-weight: 800;
+    }
+    @keyframes pulse-dot { 0%,100%{opacity:1}50%{opacity:.4} }
   .header h1 { font-size:17px; font-weight:700; letter-spacing:-.3px; }
   .header h1 span { color:var(--accent); }
   .header-sub { font-size:11px; color:var(--muted); font-family:var(--font-mono); margin-top:2px; }
@@ -291,7 +303,7 @@
   ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
 
   /* ── STATUS INDICATOR ── */
-  .live-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); display:inline-block; animation:pulse 2s infinite; margin-right:5px; }
+  .live-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); display:inline-block; animation:pulse-dot 2s infinite; margin-right:5px; }
 
   @media(max-width:760px) {
     .scanner-grid { grid-template-columns:1fr; }
@@ -809,7 +821,15 @@ function getDemoData() {
 let ALL_TRADES = [], activeKpi = null;
 
 function renderKPIs(s) {
+  const nowIst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
+  const yy = nowIst.getFullYear();
+  const mm = String(nowIst.getMonth() + 1).padStart(2, '0');
+  const dd = String(nowIst.getDate()).padStart(2, '0');
+  const todayStr = `${yy}-${mm}-${dd}`;
+  const todaysCount = ALL_TRADES.filter(t => (t.alert_time||t.entry_date||'').startsWith(todayStr)).length;
+
   const defs = [
+    {id:'today',   label:"Today's Alerts", value:todaysCount,       cls:'blue',   sub:'new today',             filter:t=>(t.alert_time||t.entry_date||'').startsWith(todayStr)},
     {id:'total',   label:'Total Alerts',  value:s.total_alerts,       cls:'',       sub:'all time',             filter:t=>true},
     {id:'judged',  label:'Judged',        value:s.judged,             cls:'',       sub:`${s.sl_triggered||0} SL · ${s.target_hit||0} target`, filter:t=>['WIN','LOSS','NEUTRAL'].includes(t.status)},
     {id:'winrate', label:'Win Rate',      value:s.win_rate+'%',       cls:s.win_rate>=55?'green':s.win_rate>=45?'amber':'red', sub:`${s.winners}W / ${s.losers}L`, filter:t=>t.status==='WIN'||t.status==='LOSS'},
@@ -1045,14 +1065,25 @@ let expandedIds = new Set();
 let sortCol = 'status', sortDir = 1;
 
 function buildTradeRows(trades, maxAbs, prefix) {
+  const nowIst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
+  const yy = nowIst.getFullYear();
+  const mm = String(nowIst.getMonth() + 1).padStart(2, '0');
+  const dd = String(nowIst.getDate()).padStart(2, '0');
+  const todayStr = `${yy}-${mm}-${dd}`;
+  const clickedIds = JSON.parse(localStorage.getItem('clickedAlerts') || '[]');
+
   return trades.map((t, i) => {
     const id = prefix + i;
     const barW = t.pnl_pct != null ? Math.min(100, Math.abs(t.pnl_pct) / maxAbs * 100).toFixed(1) : 0;
     const barColor = t.pnl_pct == null ? C.muted : t.pnl_pct >= 0 ? C.accent : C.warn;
     const isOpen = expandedIds.has(id);
     const sc = t.score != null ? `<span class="score-ring ${scoreClass(t.score)}">${t.score}</span>` : '—';
+    const key = t.symbol + '|' + (t.alert_time||t.entry_date);
+    const isToday = (t.alert_time||t.entry_date||'').startsWith(todayStr);
+    const isBlinking = isToday && !clickedIds.includes(key);
+
     return `
-    <tr class="main-row${isOpen?' open':''}" id="mr-${id}" onclick="toggleDetail('${id}', '${t.symbol}')">
+    <tr class="main-row${isOpen?' open':''}${isBlinking?' blink-row':''}" id="mr-${id}" onclick="toggleDetail('${id}', '${t.symbol}', '${key}')">
       <td>${isOpen?'\u25bc':'\u25b6'}</td>
       <td style="font-weight:700;color:var(--text);letter-spacing:-.3px">${t.symbol}</td>
       <td style="color:var(--muted);font-family:var(--font-mono);font-size:11px">${fmtAlertTime(t.alert_time||t.entry_date)}</td>
@@ -1151,7 +1182,17 @@ function buildTradeRows(trades, maxAbs, prefix) {
 
 window.NOTICES_CACHE = window.NOTICES_CACHE || {};
 
-function toggleDetail(id, symbol) {
+function toggleDetail(id, symbol, key) {
+  if (key) {
+    let clickedIds = JSON.parse(localStorage.getItem('clickedAlerts') || '[]');
+    if (!clickedIds.includes(key)) {
+      clickedIds.push(key);
+      localStorage.setItem('clickedAlerts', JSON.stringify(clickedIds));
+    }
+    const mr = document.getElementById('mr-' + id);
+    if (mr) mr.classList.remove('blink-row');
+  }
+
   const mainRow = document.getElementById('mr-' + id);
   const panel   = document.getElementById('dp-' + id);
   if (!panel) return;
@@ -1679,36 +1720,18 @@ function exportCSV() {
 }
 
 // ── REFRESH & ALERTS
-let alertInterval = null;
+let adminAlertInterval = null;
 let originalTitle = document.title;
 let isAlertActive = false;
 
 function triggerAlertFlashing() {
-    if(isAlertActive) return;
-    isAlertActive = true;
-    
-    // Show Toast
-    const toast = document.getElementById('newAlertToast');
-    if(toast) toast.classList.add('show');
-    
-    // Play Audio (if permitted)
-    try {
-        const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-        audio.play().catch(e => console.log('Audio autoplay blocked'));
-    } catch(e) {}
-    
-    // Flash Title
-    let toggle = false;
-    alertInterval = setInterval(() => {
-        document.title = toggle ? '⚠️ NEW ALERT!' : 'Elite Breakout System';
-        toggle = !toggle;
-    }, 1000);
+    // Disabled per user request
 }
 
 function dismissAlert() {
     if(!isAlertActive) return;
     isAlertActive = false;
-    clearInterval(alertInterval);
+    clearInterval(adminAlertInterval);
     document.title = originalTitle;
     const toast = document.getElementById('newAlertToast');
     if(toast) toast.classList.remove('show');
@@ -1736,7 +1759,7 @@ async function doRefresh(isAuto = false) {
           }
       }
       if (hasNew) {
-          triggerAlertFlashing();
+        // No longer triggering toast or audio as per user request
       }
   }
 

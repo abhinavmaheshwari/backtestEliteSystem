@@ -44,13 +44,13 @@ function playDing() {
             admin_script = """
 let isAlertActive = false;
 let originalTitle = document.title;
-let alertInterval;
+let audioAlertInterval;
 function triggerAlertNotification() {
     if(isAlertActive) return;
     isAlertActive = true;
     if (typeof playDing === 'function') playDing();
     let toggle = false;
-    alertInterval = setInterval(() => {
+    adminAlertInterval = setInterval(() => {
         document.title = toggle ? '⚠️ NEW ALERT!' : 'System Admin';
         toggle = !toggle;
     }, 1000);
@@ -58,7 +58,7 @@ function triggerAlertNotification() {
 function dismissAlert() {
     if(!isAlertActive) return;
     isAlertActive = false;
-    clearInterval(alertInterval);
+    clearInterval(adminAlertInterval);
     document.title = originalTitle;
 }
 document.addEventListener('click', dismissAlert);

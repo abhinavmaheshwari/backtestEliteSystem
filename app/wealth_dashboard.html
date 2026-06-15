@@ -287,7 +287,7 @@
   </div><!-- /panel-buckets -->
 
   <script>
-    let alertInterval = null;
+    let wealthAlertInterval = null;
     let originalTitle = document.title;
     let isAlertActive = false;
     let ALL_WEALTH_STOCKS = [];
@@ -303,7 +303,7 @@
             audio.play().catch(e => console.log('Audio autoplay blocked'));
         } catch(e) {}
         let toggle = false;
-        alertInterval = setInterval(() => {
+        wealthAlertInterval = setInterval(() => {
             document.title = toggle ? '⚠️ NEW ALERT!' : 'Fund Manager System v2';
             toggle = !toggle;
         }, 1000);
@@ -312,7 +312,7 @@
     function dismissAlert() {
         if(!isAlertActive) return;
         isAlertActive = false;
-        clearInterval(alertInterval);
+        clearInterval(wealthAlertInterval);
         document.title = originalTitle;
         const toast = document.getElementById('newAlertToast');
         if(toast) toast.classList.remove('show');

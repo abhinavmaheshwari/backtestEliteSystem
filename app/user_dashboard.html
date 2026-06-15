@@ -1290,7 +1290,7 @@ function exportCSV() {
 }
 
 // ── REFRESH & ALERTS
-let alertInterval = null;
+let userAlertInterval = null;
 let originalTitle = document.title;
 let isAlertActive = false;
 
@@ -1311,7 +1311,7 @@ function triggerAlertFlashing() {
     
     // Flash Title
     let toggle = false;
-    alertInterval = setInterval(() => {
+    userAlertInterval = setInterval(() => {
         document.title = toggle ? '⚠️ NEW ALERT!' : 'Elite Breakout System';
         toggle = !toggle;
     }, 1000);
@@ -1320,7 +1320,7 @@ function triggerAlertFlashing() {
 function dismissAlert() {
     if(!isAlertActive) return;
     isAlertActive = false;
-    clearInterval(alertInterval);
+    clearInterval(userAlertInterval);
     document.title = originalTitle;
     const toast = document.getElementById('newAlertToast');
     if(toast) toast.classList.remove('show');

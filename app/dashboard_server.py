@@ -427,6 +427,35 @@ def api_data_fetch_health():
         logger.exception("❌ /api/data_fetch_health failed")
         return jsonify([]), 500
 
+
+@app.route('/api/todays_alerts')
+def api_todays_alerts():
+    """Return alerts fired today (includes seen flags)."""
+    try:
+        from database import get_todays_alerts
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        rows = get_todays_alerts(today)
+        return jsonify(rows)
+    except Exception:
+        logger.exception('❌ /api/todays_alerts failed')
+        return jsonify([]), 500
+
+
+@app.route('/api/alert/mark_seen', methods=['POST'])
+def api_mark_alert_seen():
+    """Mark an alert as seen by user/admin via POST {id: int, role: 'user'|'admin'}."""
+    try:
+        data = request.json or {}
+        alert_id = int(data.get('id'))
+        role = data.get('role', 'user')
+        from database import mark_alert_seen
+        ok = mark_alert_seen(alert_id, role)
+        return jsonify({'success': bool(ok)})
+    except Exception as e:
+        logger.exception('❌ /api/alert/mark_seen failed')
+        return jsonify({'error': str(e)}), 500
+
 @app.route("/api/data_fetch_health/acknowledge/<source_name>", methods=["POST"])
 def api_acknowledge_health(source_name):
     """Admin endpoint to dismiss persistent API warnings."""

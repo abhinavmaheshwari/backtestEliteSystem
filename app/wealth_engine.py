@@ -171,19 +171,29 @@ def calculate_100_point_score(r) -> int:
     elif yoy_profit >= 15: score += 8
 
     # ── MOMENTUM (30 pts) — Highest weight: price leadership matters most ────
-    rs_6m     = _safe_float(r.get("rs_6m"), 0)
-    rs_rating = _safe_float(r.get("RS_Rating"), 0)
+    # Prefer preserving None for unavailable fields so we do not implicitly award/penalize
+    rs_6m_raw = r.get("rs_6m")
+    rs_6m = None if rs_6m_raw is None else _safe_float(rs_6m_raw, 0)
+    rs_rating_raw = r.get("RS_Rating")
+    rs_rating = None if rs_rating_raw is None or (isinstance(rs_rating_raw, float) and pd.isna(rs_rating_raw)) else _safe_float(rs_rating_raw, 0)
     dist_52w  = _safe_float(r.get("dist_52w_high"), 100)
     cmp_price = _safe_float(r.get("cmp"), 0)
-    sma_200   = _safe_float(r.get("sma_200"), 0)
+    sma_200_raw = r.get("sma_200")
+    sma_200   = None if sma_200_raw is None else _safe_float(sma_200_raw, 0)
 
-    if rs_rating > 90: score += 12
-    elif rs_rating > 80: score += 8
-    elif rs_rating > 60: score += 4
+    # RS Rating buckets (only if available)
+    if rs_rating is not None:
+        if rs_rating > 90: score += 12
+        elif rs_rating > 80: score += 8
+        elif rs_rating > 60: score += 4
+
     if dist_52w <= 5:  score += 8
     elif dist_52w <= 10: score += 5
     elif dist_52w <= 15: score += 3
-    if cmp_price > sma_200 and sma_200 > 0: score += 10
+
+    # Price > SMA200 only when SMA200 is known
+    if sma_200 is not None and cmp_price > sma_200 and sma_200 > 0:
+        score += 10
 
     # ── OWNERSHIP (10 pts) — Institutional accumulation ──────────────────────
     cats = str(r.get("Category", ""))

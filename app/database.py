@@ -127,6 +127,8 @@ def init_db():
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS data_partition TEXT DEFAULT 'TRAIN'",
                 ]:
                     cur.execute(col_sql)
+                cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS seen_by_user BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS seen_by_admin BOOLEAN DEFAULT FALSE")
 
                 # ── Score Weight Log (Bayesian Versioning) ─────────────────────────
                 cur.execute("""
@@ -519,6 +521,41 @@ def get_scanner_today_trades(scanner_name: str, today_str: str) -> list[dict]:
                 return []
 
     logger.debug("🗑️  cleanup_old_alerts called — deletion disabled, all data retained.")
+
+
+def get_todays_alerts(today_str: str) -> list[dict]:
+    """Return all alerts for the provided alert_date (YYYY-MM-DD)."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT id, symbol, breakout_type, alert_time, scanner, category, entry_price,
+                           stop_loss, target_price, signals, score, status, seen_by_user, seen_by_admin
+                    FROM alerts
+                    WHERE alert_date = %s
+                    ORDER BY alert_time DESC
+                """, (today_str,))
+                return [dict(row) for row in cur.fetchall()]
+            except Exception:
+                logger.exception("❌ get_todays_alerts failed")
+                return []
+
+
+def mark_alert_seen(alert_id: int, role: str = "user") -> bool:
+    """Mark an alert as seen by 'user' or 'admin'. Returns True if updated."""
+    init_db()
+    col = 'seen_by_user' if role == 'user' else 'seen_by_admin'
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(f"UPDATE alerts SET {col} = TRUE WHERE id = %s", (alert_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ mark_alert_seen failed for id={alert_id}")
+                return False
 
 
 def save_system_state(key: str, value_str: str) -> None:
