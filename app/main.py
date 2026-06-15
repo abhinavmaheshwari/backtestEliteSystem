@@ -78,6 +78,8 @@ def _cleanup_old_scanner_names():
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM scanner_health WHERE scanner_name ILIKE '%worker%' OR scanner_name ILIKE '%wealthengine%';")
+                # Reset stale DOWN status from old data fetch error logic for main scanners
+                cur.execute("UPDATE scanner_health SET status='OK', error_msg=NULL WHERE scanner_name IN ('INTRADAY', '1H', 'EOD', 'REVERSAL', 'Wealth Engine', 'DAILY_BUILDER');")
             conn.commit()
     except Exception as e:
         logger.warning(f"Failed to cleanup old scanner names: {e}")
