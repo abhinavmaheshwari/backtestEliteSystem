@@ -498,7 +498,7 @@ def build_performance_data():
             # timestamps updated directly by the scanner loops.
             upsert_scanner_health(
                 scanner_name  = sc,
-                status        = "OK",
+                status        = None,
                 last_success  = None,
                 today_alerts  = len(sc_today),
                 error_msg     = None,

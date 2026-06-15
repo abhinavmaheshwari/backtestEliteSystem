@@ -401,7 +401,7 @@ def get_all_alerts() -> list[dict]:
 
 def upsert_scanner_health(
     scanner_name: str,
-    status: str,                  # "OK" | "DOWN" | "IDLE"
+    status: str = None,           # "OK" | "DOWN" | "IDLE" | None (keep existing)
     last_success: str = None,     # ISO timestamp of last successful scan
     today_alerts: int = None,     # number of alerts fired today (None = keep existing)
     error_msg: str = None,        # error message when status=DOWN, else None
@@ -426,51 +426,51 @@ def upsert_scanner_health(
                         cur.execute("""
                             INSERT INTO scanner_health
                                 (scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, FALSE, %s)
+                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, %s, FALSE, %s)
                             ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = EXCLUDED.status,
+                                SET status       = COALESCE(%s, scanner_health.status),
                                     last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
                                     today_alerts = EXCLUDED.today_alerts,
                                     error_msg    = EXCLUDED.error_msg,
                                     is_acknowledged = FALSE,
                                     updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str))
+                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str, status))
                     else:
                         cur.execute("""
                             INSERT INTO scanner_health
                                 (scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, TRUE, %s)
+                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, %s, TRUE, %s)
                             ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = EXCLUDED.status,
+                                SET status       = COALESCE(%s, scanner_health.status),
                                     last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
                                     today_alerts = EXCLUDED.today_alerts,
-                                    error_msg    = EXCLUDED.error_msg,
+                                    error_msg    = CASE WHEN %s IS NULL AND %s IS NULL THEN scanner_health.error_msg ELSE EXCLUDED.error_msg END,
                                     updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str))
+                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str, status, status, error_msg))
                 else:
                     if is_ack is False:
                         cur.execute("""
                             INSERT INTO scanner_health
                                 (scanner_name, status, last_success, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, %s, %s, %s, FALSE, %s)
+                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, FALSE, %s)
                             ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = EXCLUDED.status,
+                                SET status       = COALESCE(%s, scanner_health.status),
                                     last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
                                     error_msg    = EXCLUDED.error_msg,
                                     is_acknowledged = FALSE,
                                     updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, error_msg, now_str))
+                        """, (scanner_name, status, last_success, error_msg, now_str, status))
                     else:
                         cur.execute("""
                             INSERT INTO scanner_health
                                 (scanner_name, status, last_success, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, %s, %s, %s, TRUE, %s)
+                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, TRUE, %s)
                             ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = EXCLUDED.status,
+                                SET status       = COALESCE(%s, scanner_health.status),
                                     last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                    error_msg    = EXCLUDED.error_msg,
+                                    error_msg    = CASE WHEN %s IS NULL AND %s IS NULL THEN scanner_health.error_msg ELSE EXCLUDED.error_msg END,
                                     updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, error_msg, now_str))
+                        """, (scanner_name, status, last_success, error_msg, now_str, status, status, error_msg))
                 conn.commit()
             except Exception:
                 conn.rollback()

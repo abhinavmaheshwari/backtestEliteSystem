@@ -531,6 +531,7 @@ def api_scanner_status():
                 "today_alerts":  row["today_alerts"],
                 "error":         row["error_msg"],
                 "updated_at":    row["updated_at"],
+                "is_acknowledged": row["is_acknowledged"],
                 "today_trades":  [
                     {
                         "symbol":       t["symbol"],
