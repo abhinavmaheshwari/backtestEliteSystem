@@ -308,14 +308,56 @@ def run_system_scheduler():
         now = datetime.now(IST)
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
-        # 1. Verify Watchlist
-        if not os.path.exists(WATCHLIST_PATH) or os.path.getmtime(WATCHLIST_PATH) < today_midnight:
-            logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
+        # 1. Verify Watchlist — use timezone-aware mtime check (compare dates in IST)
+        try:
+            if not os.path.exists(WATCHLIST_PATH):
+                logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
+                safe_run_daily_builder()
+            else:
+                mtime_ts = os.path.getmtime(WATCHLIST_PATH)
+                mtime = datetime.fromtimestamp(mtime_ts, IST)
+                logger.debug(f"Watchlist mtime: {mtime.isoformat()}")
+                if mtime.date() < now.date():
+                    logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
+                    safe_run_daily_builder()
+        except Exception:
+            logger.exception("Failed to stat watchlist path; forcing rebuild.")
             safe_run_daily_builder()
 
-        # 2. Verify Wealth Engine
-        if not os.path.exists(WEALTH_PATH) or os.path.getmtime(WEALTH_PATH) < today_midnight:
-            logger.warning("⚠️ Wealth system missing or stale! Forcing run.")
+        # 2. Verify Wealth Engine — try DB restore first, then force run if still missing/stale
+        try:
+            if not os.path.exists(WEALTH_PATH):
+                # Try to restore from DB to avoid an expensive immediate run
+                try:
+                    from database import download_parquet_from_db
+                    restored = download_parquet_from_db("wealth_engine", WEALTH_PATH)
+                    if restored and os.path.exists(WEALTH_PATH):
+                        logger.info("✅ Wealth system restored from DB, skipping forced run.")
+                    else:
+                        logger.warning("⚠️ Wealth system missing or stale! Forcing run.")
+                        safe_run_wealth_scan()
+                except Exception:
+                    logger.exception("Failed to restore wealth from DB; forcing run.")
+                    safe_run_wealth_scan()
+            else:
+                mtime_ts = os.path.getmtime(WEALTH_PATH)
+                mtime = datetime.fromtimestamp(mtime_ts, IST)
+                logger.debug(f"Wealth parquet mtime: {mtime.isoformat()}")
+                if mtime.date() < now.date():
+                    # Try DB restore before forcing a full recompute
+                    try:
+                        from database import download_parquet_from_db
+                        restored = download_parquet_from_db("wealth_engine", WEALTH_PATH)
+                        if restored and os.path.exists(WEALTH_PATH):
+                            logger.info("✅ Wealth system restored from DB, skipping forced run.")
+                        else:
+                            logger.warning("⚠️ Wealth system missing or stale! Forcing run.")
+                            safe_run_wealth_scan()
+                    except Exception:
+                        logger.exception("Failed to restore wealth from DB; forcing run.")
+                        safe_run_wealth_scan()
+        except Exception:
+            logger.exception("Failed to stat wealth parquet; forcing run.")
             safe_run_wealth_scan()
             
     def run_sunday_telegram():
