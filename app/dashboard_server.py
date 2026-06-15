@@ -547,6 +547,7 @@ def api_scanner_status():
     alerts table is queried live for today's trades per scanner.
     """
     try:
+        import os
         from database import get_all_scanner_health, get_scanner_today_trades
         from datetime import date as _date
         today_str = _date.today().isoformat()
