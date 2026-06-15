@@ -523,6 +523,11 @@ def start():
 
         return total_alerts
 
-    except Exception:
+    except Exception as e:
         logger.exception("❌ CRITICAL EOD SCAN ERROR")
+        try:
+            from database import upsert_scanner_health
+            upsert_scanner_health("EOD", "DOWN", error_msg=str(e))
+        except Exception:
+            pass
         raise  # re-raise so caller can send Telegram crash alert

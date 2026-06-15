@@ -586,8 +586,16 @@ def start(run_once=False):
             if rejection_summary:
                 logger.info(f"   Rejections: {rejection_summary}")
 
-        except Exception:
+        except Exception as e:
+            if isinstance(e, RuntimeError) and "interpreter shutdown" in str(e).lower():
+                logger.info("Interpreter shutting down, ignoring 1H scan future error.")
+                break
             logger.exception("❌ CRITICAL 1H SCAN ERROR — will retry next cycle")
+            try:
+                from database import upsert_scanner_health
+                upsert_scanner_health("1H", "DOWN", error_msg=str(e))
+            except Exception:
+                pass
             elapsed    = (datetime.now(IST) - scan_start).total_seconds()
             sleep_time = max(0, 300 - elapsed)
 

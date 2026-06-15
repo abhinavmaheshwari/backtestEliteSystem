@@ -619,6 +619,9 @@ def run_wealth_scan():
                 logger.warning(f"⚠️ [WEALTH ENGINE] Telegram send failed: {tg_err}")
 
     except Exception as e:
-        logger.error(f"❌ [WEALTH ENGINE] Scan crashed: {e}")
-        upsert_scanner_health("Wealth Engine", "DOWN", error_msg=str(e))
+        logger.exception(f"❌ [WEALTH ENGINE] Scan crashed: {e}")
+        try:
+            upsert_scanner_health("Wealth Engine", "DOWN", error_msg=str(e))
+        except Exception:
+            pass
         raise e

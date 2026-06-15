@@ -488,4 +488,13 @@ def start() -> int:
     Raises on failure so main.py can send a Telegram crash alert.
     """
     init_db()
-    return _run_scan()
+    try:
+        return _run_scan()
+    except Exception as e:
+        logger.exception("❌ CRITICAL REVERSAL SCAN ERROR")
+        try:
+            from database import upsert_scanner_health
+            upsert_scanner_health("REVERSAL", "DOWN", error_msg=str(e))
+        except Exception:
+            pass
+        raise

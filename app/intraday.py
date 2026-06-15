@@ -599,7 +599,15 @@ def start(run_once=False):
             sleep_time  = max(0, 300 - elapsed)
             time.sleep(sleep_time)
 
-        except Exception:
+        except Exception as e:
+            if isinstance(e, RuntimeError) and "interpreter shutdown" in str(e).lower():
+                logger.info("Interpreter shutting down, ignoring INTRADAY scan future error.")
+                break
             logger.exception("❌ CRITICAL SCAN ERROR")
+            try:
+                from database import upsert_scanner_health
+                upsert_scanner_health("INTRADAY", "DOWN", error_msg=str(e))
+            except Exception:
+                pass
             elapsed    = (datetime.now(IST) - scan_start).total_seconds()
             time.sleep(max(0, 300 - elapsed))
