@@ -484,7 +484,7 @@ def get_all_scanner_health() -> list[dict]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             try:
                 cur.execute("""
-                    SELECT scanner_name, status, last_success, today_alerts, error_msg, updated_at
+                    SELECT scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at
                     FROM scanner_health
                     ORDER BY scanner_name
                 """)
@@ -772,6 +772,21 @@ def acknowledge_data_fetch_health(source_name: str):
                 conn.rollback()
                 logger.exception(f"❌ acknowledge_data_fetch_health failed for {source_name}")
 
+def acknowledge_scanner_health(scanner_name: str):
+    """Admin acknowledgment to clear persistent UI warnings for scanners."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    UPDATE scanner_health 
+                    SET is_acknowledged = TRUE, error_msg = NULL, status = 'OK'
+                    WHERE scanner_name = %s
+                """, (scanner_name,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ acknowledge_scanner_health failed for {scanner_name}")
 
 def get_all_data_fetch_health() -> list:
     """Return all rows from data_fetch_health as list of dicts."""
@@ -779,7 +794,7 @@ def get_all_data_fetch_health() -> list:
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             try:
-                cur.execute("SELECT source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at FROM data_fetch_health ORDER BY source_name")
+                cur.execute("SELECT source_name, last_success, last_failure, consecutive_failures, error_msg, is_acknowledged, updated_at FROM data_fetch_health ORDER BY source_name")
                 return [dict(r) for r in cur.fetchall()]
             except Exception:
                 logger.exception("❌ get_all_data_fetch_health failed")
