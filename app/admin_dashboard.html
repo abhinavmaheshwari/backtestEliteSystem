@@ -907,7 +907,7 @@ function renderScannerGrid(scanner_stats) {
     const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
     const meta = SCANNER_META[sc] || {label:sc, desc:''};
     const isAck = data.is_acknowledged !== false;
-    const isDown = data.status === 'DOWN' || !isAck;
+    const isDown = data.status === 'DOWN';  // Only compile-level crashes show RED
     const isIdle = !data.last_success;
     const statusClass = isDown ? 'status-down' : isIdle ? 'status-idle' : 'status-ok';
     const badgeClass  = isDown ? 'badge-down'  : isIdle ? 'badge-idle'  : 'badge-ok';

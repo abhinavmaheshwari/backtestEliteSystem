@@ -444,8 +444,9 @@ def upsert_scanner_health(
     """
     init_db()
     now_str = datetime.now(IST).isoformat()
-    # If status is DOWN, or we explicitly pass an error_msg, flag as unacknowledged
-    is_ack = False if (status == 'DOWN' or error_msg) else None
+    # Only flag as unacknowledged when status is explicitly DOWN (compile-level crash).
+    # Informational error_msg strings (e.g. "Last: RELIANCE | Total: 250") should NOT trigger RED.
+    is_ack = False if status == 'DOWN' else None
 
     with get_connection() as conn:
         with conn.cursor() as cur:
