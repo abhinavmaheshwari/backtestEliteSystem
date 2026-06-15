@@ -4,10 +4,25 @@ import logging
 from bs4 import BeautifulSoup
 import re
 from functools import lru_cache
+from tenacity import retry, stop_after_attempt, wait_exponential
 from database import get_connection, init_db
 from data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5),
+    reraise=True
+)
+def _fetch_pledge_from_api(api_key: str, target_url: str) -> requests.Response:
+    """Fetch pledge data from ScraperAPI with retry logic."""
+    payload = {
+        'api_key': api_key,
+        'url': target_url,
+        'render': 'false'
+    }
+    return requests.get('https://api.scraperapi.com/', params=payload, timeout=10)
 
 @lru_cache(maxsize=5000)
 def fetch_promoter_pledge(symbol: str):
@@ -46,16 +61,10 @@ def fetch_promoter_pledge(symbol: str):
     
     target_url = fallback_urls.get(symbol, f"https://trendlyne.com/stock/{symbol}/")
     
-    payload = {
-        'api_key': api_key,
-        'url': target_url,
-        'render': 'false'
-    }
-    
     pledge_val = None
     try:
-        # Extremely short timeout to prevent blocking wealth engine
-        res = requests.get('https://api.scraperapi.com/', params=payload, timeout=10)
+        # Use retry-decorated API call for robustness
+        res = _fetch_pledge_from_api(api_key, target_url)
         if res.status_code == 200:
             match = re.search(r'pledge[^\d]{1,30}?(\d+\.?\d*)\s*%', res.text, re.IGNORECASE)
             if match:

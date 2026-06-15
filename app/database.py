@@ -202,6 +202,14 @@ def init_db():
                 """)
                 # Ensure a uniqueness constraint for upsert logic
                 cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fetch_errors_uni ON fetch_errors (source_name, scanner_name, symbol, interval, category)")
+                
+                # Add missing indexes for frequently queried columns
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_symbol ON alerts(symbol)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_date ON alerts(alert_date)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_symbol_date ON alerts(symbol, alert_date)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_scanner_health_name ON scanner_health(scanner_name)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_data_fetch_health_source ON data_fetch_health(source_name)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_data_cache_metadata_key ON data_cache_metadata(key)")
 
                 # ── Trade analytics view mapping JSONB context to columns ───────────
                 cur.execute("""
@@ -564,10 +572,17 @@ def get_todays_alerts(today_str: str) -> list[dict]:
 def mark_alert_seen(alert_id: int, role: str = "user") -> bool:
     """Mark an alert as seen by 'user' or 'admin'. Returns True if updated."""
     init_db()
-    col = 'seen_by_user' if role == 'user' else 'seen_by_admin'
+    # Validate column name to prevent SQL injection
+    allowed_cols = {'user': 'seen_by_user', 'admin': 'seen_by_admin'}
+    col = allowed_cols.get(role)
+    if not col:
+        logger.warning(f"Invalid role '{role}' for mark_alert_seen")
+        return False
+    
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
+                # Use parameterized query with validated column name
                 cur.execute(f"UPDATE alerts SET {col} = TRUE WHERE id = %s", (alert_id,))
                 conn.commit()
                 return cur.rowcount > 0
