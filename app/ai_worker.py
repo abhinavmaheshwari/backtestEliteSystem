@@ -14,21 +14,27 @@ def run_worker_loop():
     from dashboard_server import fetch_and_analyze_concall
     
     logger.info("🤖 AI Worker Thread Started. Monitoring watchlist for missing caches...")
-    upsert_scanner_health("AI Worker", "IDLE", last_success=None, today_alerts=0)
+    
+    # Initialize with actual processed count instead of 0
+    db_processed_count = get_total_cached_concalls()
+    upsert_scanner_health("AI Worker", "IDLE", last_success=None, today_alerts=db_processed_count, error_msg="Status: Booting up")
     
     while True:
         try:
             if not os.path.exists(WATCHLIST_PATH):
+                upsert_scanner_health("AI Worker", "IDLE", today_alerts=get_total_cached_concalls(), error_msg="Status: Waiting for watchlist.parquet")
                 time.sleep(300) # Sleep 5 mins if watchlist doesn't exist yet
                 continue
                 
-            # Read the latest watchlist
-            csv_path = WATCHLIST_PATH.replace(".parquet", ".csv")
-            if not os.path.exists(csv_path):
+            # Read the latest watchlist directly from parquet
+            try:
+                df = pd.read_parquet(WATCHLIST_PATH)
+            except Exception as e:
+                logger.error(f"Failed to read parquet watchlist: {e}")
+                upsert_scanner_health("AI Worker", "IDLE", today_alerts=get_total_cached_concalls(), error_msg=f"Status: Error reading parquet: {e}")
                 time.sleep(300)
                 continue
                 
-            df = pd.read_csv(csv_path)
             pending_stocks = df["Stock"].tolist()
             
             # Read excluded stocks so they are pre-cached if they break out later
