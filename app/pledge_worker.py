@@ -262,8 +262,21 @@ def worker_loop():
                 logger.info(f"✅ Pledge Worker completed successfully for all {total_watch} symbols")
             
             upsert_scanner_health("Pledge Worker", status, last_success=now_str, today_alerts=current_processed, error_msg=err_msg)
-            logger.info(f"🕒 Processed: {current_processed}/{total_watch}. Sleeping 1 hour before next check...")
-            time.sleep(3600)
+            
+            # Sleep until 1 AM or 5 PM IST
+            from datetime import timedelta
+            now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+            t1 = now_ist.replace(hour=1, minute=0, second=0, microsecond=0)
+            t2 = now_ist.replace(hour=17, minute=0, second=0, microsecond=0)
+            if now_ist < t1:
+                next_run = t1
+            elif now_ist < t2:
+                next_run = t2
+            else:
+                next_run = t1 + timedelta(days=1)
+            sleep_secs = (next_run - now_ist).total_seconds()
+            logger.info(f"🕒 Processed: {current_processed}/{total_watch}. Sleeping {int(sleep_secs)}s until {next_run.strftime('%Y-%m-%d %H:%M:%S')} IST")
+            time.sleep(sleep_secs)
             
         except Exception as e:
             logger.exception("Pledge worker loop crashed")

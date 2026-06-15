@@ -162,7 +162,22 @@ def run_worker_loop():
         error_msg = f"Last: Finished | Total: {total_stocks} | Failed: {final_failed_count}" if final_failed_count > 0 else f"Last: Finished | Total: {total_stocks}"
         
         upsert_scanner_health("AI Worker", status, last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=error_msg)
-        time.sleep(1800)
+        
+        # Sleep until 1 AM or 5 PM IST
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+        t1 = now_ist.replace(hour=1, minute=0, second=0, microsecond=0)
+        t2 = now_ist.replace(hour=17, minute=0, second=0, microsecond=0)
+        if now_ist < t1:
+            next_run = t1
+        elif now_ist < t2:
+            next_run = t2
+        else:
+            next_run = t1 + timedelta(days=1)
+        sleep_secs = (next_run - now_ist).total_seconds()
+        logger.info(f"🤖 [AI WORKER] Sleeping {int(sleep_secs)}s until {next_run.strftime('%Y-%m-%d %H:%M:%S')} IST")
+        time.sleep(sleep_secs)
 
 def start_worker():
     """Starts the AI worker in a daemon thread."""
