@@ -83,7 +83,8 @@ def run_worker_loop():
                     try:
                         # 1. Check if we already have a cache for this stock
                         cached = get_recent_concall_analysis(sym, max_age_days=60)
-                        if cached:
+                        # Skip if cached (ignore negative cache errors - they should have been saved)
+                        if cached and not (isinstance(cached, dict) and "error" in cached):
                             # Already cached, skip
                             db_processed_count = get_total_cached_concalls()
                             upsert_scanner_health("AI Worker", "RUNNING", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
@@ -112,17 +113,21 @@ def run_worker_loop():
 
                             upsert_scanner_health("AI Worker", "RUNNING", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
 
-                            # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
-                            if "No recent concall transcripts" not in error_msg:
+                            # For PDF extraction errors, save negative cache immediately - don't retry
+                            if "extract text" in error_msg.lower() or "Could not extract" in error_msg:
+                                logger.warning(f"⚠️ [AI WORKER] Saving negative cache for {sym} - PDF extraction failed, will not retry today")
+                                save_concall_analysis(sym, f"NONE_{sym}", {"error": error_msg})
+                            # For "No transcripts" error, save negative cache
+                            elif "No recent concall transcripts" in error_msg:
+                                save_concall_analysis(sym, f"NONE_{sym}", {"error": error_msg})
+                            # For other API/parsing errors, add to retry list
+                            else:
                                 failed_stocks.append(sym)
                                 if "All AI models" in error_msg or "429" in error_msg:
                                     penalty = [300, 900, 1800][min(global_penalty_idx, 2)]
                                     logger.warning(f"⚠️ [AI WORKER] Global API failure. Backing off for {penalty//60} minutes...")
                                     time.sleep(penalty)
                                     global_penalty_idx += 1
-                            else:
-                                # Save negative cache so it doesn't infinitely retry on the next 30-min global loop
-                                save_concall_analysis(sym, f"NONE_{sym}", {"error": error_msg})
                             
                         # Sleep 5 seconds between successful fetches to gently pace the API
                         time.sleep(5)

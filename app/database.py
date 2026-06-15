@@ -57,7 +57,7 @@ def _get_pool() -> pool.ThreadedConnectionPool:
                 "DATABASE_URL env var is not set. "
                 "Add the Railway Postgres addon and it will be injected automatically."
             )
-        _pool = pool.ThreadedConnectionPool(minconn=1, maxconn=10, dsn=db_url)
+        _pool = pool.ThreadedConnectionPool(minconn=2, maxconn=30, dsn=db_url)
         logger.info("✅ Postgres connection pool created")
         return _pool
 
