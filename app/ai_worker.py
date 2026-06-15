@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 def run_worker_loop():
     """Infinite loop that scans the watchlist CSV and fetches AI concall reports."""
     from config import WATCHLIST_PATH
-    from database import get_recent_concall_analysis, upsert_scanner_health, get_total_cached_concalls
+    from database import get_recent_concall_analysis, upsert_scanner_health, get_total_cached_concalls, upsert_fetch_error, save_concall_analysis
     from dashboard_server import fetch_and_analyze_concall
     
     logger.info("🤖 AI Worker Thread Started. Monitoring watchlist for missing caches...")
@@ -37,22 +37,31 @@ def run_worker_loop():
                 
             pending_stocks = df["Stock"].tolist()
             
-            # Read excluded stocks so they are pre-cached if they break out later
-            excluded_csv_path = WATCHLIST_PATH.replace(".parquet", "_excluded.csv")
-            if os.path.exists(excluded_csv_path):
-                try:
-                    df_ex = pd.read_csv(excluded_csv_path)
-                    if "Stock" in df_ex.columns:
-                        pending_stocks.extend(df_ex["Stock"].tolist())
-                except Exception as e:
-                    logger.error(f"Failed to load exclusion list for AI caching: {e}")
-                    
+                    # Read excluded stocks so they are pre-cached if they break out later
+            excluded_csv_paths = [
+                WATCHLIST_PATH.replace('.parquet', '_excluded.csv'),
+                os.path.join(os.path.dirname(WATCHLIST_PATH), 'elite_fundamental_watchlist_excluded.csv'),
+                os.path.join(os.path.dirname(WATCHLIST_PATH), 'elite_fundamental_watchlist-excluded.csv'),
+            ]
+            for excluded_csv_path in excluded_csv_paths:
+                if os.path.exists(excluded_csv_path):
+                    try:
+                        df_ex = pd.read_csv(excluded_csv_path)
+                        if 'Stock' in df_ex.columns:
+                            pending_stocks.extend(df_ex['Stock'].dropna().tolist())
+                    except Exception as e:
+                        logger.warning(f"Failed to load exclusion list {excluded_csv_path}: {e}")
+
             # Deduplicate and sort
             pending_stocks = sorted(list(set(pending_stocks)))
             total_stocks = len(pending_stocks)
-            
+
             db_processed_count = get_total_cached_concalls()
-            upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: None | Total: {total_stocks}")
+            # Store initial boot info in scanner health so UI can show totals quickly
+            try:
+                upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=None)
+            except Exception:
+                logger.exception("Failed to upsert initial AI Worker health")
 
 
             max_retries = 3
@@ -84,8 +93,14 @@ def run_worker_loop():
                             error_msg = result.get('error', 'Unknown Error')
                             logger.warning(f"⚠️ [AI WORKER] Failed to cache {sym}: {error_msg}")
                             db_processed_count = get_total_cached_concalls()
+                            # Record the failure so admin UI can show it per-symbol
+                            try:
+                                upsert_fetch_error('ai', 'AI Worker', sym, None, 'ai_concall', error_msg)
+                            except Exception:
+                                logger.exception("Failed to upsert fetch_error for AI Worker")
+
                             upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
-                            
+
                             # Only retry if it's an API/parsing error, not if it just lacks a transcript on NSE
                             if "No recent concall transcripts" not in error_msg:
                                 failed_stocks.append(sym)
@@ -96,7 +111,6 @@ def run_worker_loop():
                                     global_penalty_idx += 1
                             else:
                                 # Save negative cache so it doesn't infinitely retry on the next 30-min global loop
-                                from database import save_concall_analysis
                                 save_concall_analysis(sym, f"NONE_{sym}", {"error": error_msg})
                             
                         # Sleep 5 seconds between successful fetches to gently pace the API
@@ -117,6 +131,16 @@ def run_worker_loop():
                     time.sleep(60)
                 else:
                     logger.error(f"❌ [AI WORKER] Giving up on {len(failed_stocks)} stocks after {max_retries} attempts.")
+                    # Record final failures into fetch_errors and update scanner health so admin can triage
+                    for fsym in failed_stocks:
+                        try:
+                            upsert_fetch_error('ai', 'AI Worker', fsym, None, 'ai_concall', 'Giving up after retries')
+                        except Exception:
+                            logger.exception(f"Failed to upsert final fetch_error for {fsym}")
+                    try:
+                        upsert_scanner_health('AI Worker', 'OK', last_success=datetime.now().isoformat(), today_alerts=get_total_cached_concalls(), error_msg=f"Failed: {len(failed_stocks)} stocks - last: {failed_stocks[-1] if failed_stocks else 'N/A'}")
+                    except Exception:
+                        logger.exception('Failed to upsert scanner health after final failures')
                     
         except Exception as e:
             logger.error(f"❌ [AI WORKER] Main loop crashed: {e}")
