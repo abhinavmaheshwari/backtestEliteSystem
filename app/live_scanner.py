@@ -155,7 +155,7 @@ def start(run_once=False):
                     if not today_data.empty:
                         nifty_open = float(today_data['Open'].iloc[0])
                         nifty_current = float(today_data['Close'].iloc[-1])
-                        intraday_drop = ((nifty_open - nifty_current) / nifty_open) * 100
+                        intraday_drop = ((nifty_open - nifty_current) / nifty_open) * 100 if nifty_open > 0 else 0.0
                         if intraday_drop > 1.5:
                             logger.warning(f"🚨 REGIME GATE: Nifty is down {intraday_drop:.2f}% today. Suppressing breakouts.")
                             nifty_intraday_down = True

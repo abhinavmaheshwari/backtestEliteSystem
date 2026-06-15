@@ -51,7 +51,7 @@ def fetch_nifty_macro_state() -> tuple[float | None, float | None]:
         if len(hist_6m) >= 2:
             start_price = hist_6m['Close'].iloc[0]
             end_price = hist_6m['Close'].iloc[-1]
-            ret_6m = ((end_price - start_price) / start_price) * 100.0
+            ret_6m = ((end_price - start_price) / start_price) * 100.0 if start_price > 0 else 0.0
         else:
             ret_6m = _nifty_cache["ret_6m"]
             
@@ -89,7 +89,7 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
             hist_6m = hist.tail(126)
             if len(hist_6m) > 0:
                 start_6m = hist_6m['Close'].iloc[0]
-                stock_6m_ret = ((cmp - start_6m) / start_6m) * 100.0
+                stock_6m_ret = ((cmp - start_6m) / start_6m) * 100.0 if start_6m > 0 else 0.0
                 rs_6m = None if nifty_6m_ret is None else stock_6m_ret - nifty_6m_ret
             else:
                 rs_6m = 0.0
