@@ -891,6 +891,18 @@ const SCANNER_META = {
   'BayesianUpdater': {label:'Bayesian Updater', desc:'Machine Learning Feedback Loop'},
 };
 
+// Fetch API errors for a specific scanner
+async function fetchScannerErrors(scannerName) {
+  try {
+    const response = await fetch(`/api/fetch_errors/by_scanner?name=${encodeURIComponent(scannerName)}`);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (e) {
+    console.error(`Failed to fetch errors for ${scannerName}:`, e);
+    return [];
+  }
+}
+
 function renderScannerGrid(scanner_stats) {
   const el = document.getElementById('scannerGrid');
   if (!scanner_stats || !Object.keys(scanner_stats).length) {
@@ -903,115 +915,161 @@ function renderScannerGrid(scanner_stats) {
   const allScanners = new Set([...Object.keys(SCANNER_META), ...Object.keys(scanner_stats)].filter(sc => ALLOWED_SCANNERS.includes(sc)));
   el.innerHTML = '';
 
-  allScanners.forEach(sc => {
-    const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
-    const meta = SCANNER_META[sc] || {label:sc, desc:''};
-    const isAck = data.is_acknowledged !== false;
-    const isDown = data.status === 'DOWN';  // Only compile-level crashes show RED
-    const isIdle = !data.last_success;
-    const statusClass = isDown ? 'status-down' : isIdle ? 'status-idle' : 'status-ok';
-    const badgeClass  = isDown ? 'badge-down'  : isIdle ? 'badge-idle'  : 'badge-ok';
-    const badgeText   = isDown ? '● DOWN'      : isIdle ? '○ IDLE'      : '● LIVE';
-    const alertColor  = data.today_alerts > 0 ? 'green' : 'amber';
+  // Async function to render scanner cards with error loading
+  (async function renderAll() {
+    for (const sc of allScanners) {
+      const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
+      const meta = SCANNER_META[sc] || {label:sc, desc:''};
+      const isAck = data.is_acknowledged !== false;
+      const isDown = data.status === 'DOWN';  // Only compile-level crashes show RED
+      const isIdle = !data.last_success;
+      const statusClass = isDown ? 'status-down' : isIdle ? 'status-idle' : 'status-ok';
+      const badgeClass  = isDown ? 'badge-down'  : isIdle ? 'badge-idle'  : 'badge-ok';
+      const badgeText   = isDown ? '● DOWN'      : isIdle ? '○ IDLE'      : '● LIVE';
+      const alertColor  = data.today_alerts > 0 ? 'green' : 'amber';
 
-    const tooltipRows = (data.today_trades || []).map(t => `
-      <div class="sat-row">
-        <div>
-          <div class="sat-symbol">${t.symbol}</div>
-          <div class="sat-cat">${(t.category||'').replace(' Compounder','').replace(' Quality','')}</div>
-        </div>
-        <div class="sat-signals">${t.signals || '—'}</div>
-        <div>
-          <div class="sat-price ${pctClass(t.pnl_pct)}">${fmt(t.entry_price)}</div>
-          <div class="sat-score">Score: ${t.score??'—'} · ${t.status||'OPEN'}</div>
-        </div>
-      </div>`).join('');
-
-    let tooltipHtml = data.today_alerts > 0 ? `
-      <div class="scanner-alert-tooltip">
-        <div class="sat-header">Today's Alerts — ${sc} (${data.today_alerts})</div>
-        ${tooltipRows}
-      </div>` : `
-      <div class="scanner-alert-tooltip">
-        <div class="sat-empty">No alerts generated today</div>
-      </div>`;
-
-    const isProgressWorker = sc === 'AI Worker' || sc === 'Pledge Worker';
-    const isApi = sc.startsWith('API_');
-    const cardStyle = isProgressWorker ? 'background:rgba(99,102,241,0.05);' : '';
-
-    let alertLabel = "Today's Alerts";
-    let alertHtml = `
-      <div class="scanner-alert-count ${data.today_alerts===0?'zero':''}">
-        ${data.today_alerts}
-        ${data.today_alerts > 0 ? `<span style="font-size:11px;color:var(--muted);font-weight:400"> alerts</span>` : ''}
-      </div>`;
-    let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
-    let dismissBtn = "";
-
-    if (!isAck) {
-      alertLabel = "WARNING";
-      let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${encodeURIComponent(data.raw_source || sc)}` : `/api/scanner_health/acknowledge/${sc}`;
-      dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>doRefresh())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
+      // For RED scanners, fetch error details from fetch_errors table
+      let tooltipHtml = '';
       
-      alertHtml = `
-      <div class="scanner-alert-count" style="color: #ff4d6d;">⚠</div>
-      ${dismissBtn}
-      `;
-      alertSub = 'click to view error trace';
-      tooltipHtml = data.error ? `
-      <div class="scanner-alert-tooltip">
-        <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
-        <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
-      </div>` : '';
-    } else if (isProgressWorker) {
-      // Prefer structured progress fields from the server
-      const prog = data.progress != null ? data.progress : (data.today_alerts || 0);
-      const totalNeeded = data.total_needed != null ? data.total_needed : '—';
-      const lastSym = data.last_processed_symbol || data.last_processed || '';
-      alertLabel = "Processed";
-      alertHtml = `
-      <div class="scanner-alert-count" style="color: #6366f1;">
-        ${prog} <span style="font-size:13px;color:var(--muted);font-weight:400">/ ${totalNeeded}</span>
-      </div>`;
-      alertSub = lastSym ? `${lastSym}` : "Stocks cached";
-      tooltipHtml = '';
-    } else if (isApi) {
-      const fails = data.today_alerts;
-      alertLabel = "Failures";
-      alertHtml = `
-      <div class="scanner-alert-count ${fails===0?'zero':''}">
-        ${fails}
-      </div>`;
-      alertSub = 'system healthy';
-      tooltipHtml = '';
-    }
+      if (isDown && !isAck) {
+        try {
+          const errorDetails = await fetchScannerErrors(sc);
+          if (errorDetails.length > 0) {
+            // Group errors by source + category
+            const groupedBySource = {};
+            errorDetails.forEach(e => {
+              const key = `${e.source_name}::${e.category}`;
+              if (!groupedBySource[key]) {
+                groupedBySource[key] = { source: e.source_name, category: e.category, symbols: new Set(), count: 0, lastError: e.last_error_msg };
+              }
+              groupedBySource[key].count += (e.occurrences || 1);
+              if (e.symbol) groupedBySource[key].symbols.add(e.symbol);
+            });
 
-    el.innerHTML += `
-      <div class="scanner-card ${statusClass}" style="${cardStyle}">
-        <div class="scanner-header">
+            const errorRows = Object.values(groupedBySource).map(g => `
+              <div class="sat-row" style="border-bottom:1px solid var(--border); padding:8px;">
+                <div><div class="sat-symbol">${g.source}</div><div class="sat-cat">${g.category}</div></div>
+                <div style="font-size:12px;">${g.symbols.size} stock${g.symbols.size>1?'s':''}</div>
+                <div style="text-align:right; font-weight:700; color:#ff4d6d;">${g.count}×</div>
+              </div>`).join('');
+
+            tooltipHtml = `
+              <div class="scanner-alert-tooltip">
+                <div class="sat-header" style="color:#ff4d6d">⚠ API Errors (${errorDetails.length})</div>
+                <div style="max-height:200px; overflow-y:auto;">
+                  ${errorRows}
+                </div>
+              </div>`;
+          }
+        } catch (e) {
+          console.error(`Error loading errors for ${sc}:`, e);
+        }
+      }
+
+      const tooltipRows = (data.today_trades || []).map(t => `
+        <div class="sat-row">
           <div>
-            <div class="scanner-name">${meta.label}</div>
-            <div class="scanner-type">${meta.desc}</div>
+            <div class="sat-symbol">${t.symbol}</div>
+            <div class="sat-cat">${(t.category||'').replace(' Compounder','').replace(' Quality','')}</div>
           </div>
-          <span class="scanner-badge ${badgeClass}">${badgeText}</span>
-        </div>
-        <div class="scanner-stats">
-          <button class="scanner-alert-btn" style="position:relative; ${(isProgressWorker && !isDown) ? 'pointer-events:none; cursor:default' : ''}" ${!(isProgressWorker && !isDown) ? `onclick="showScannerDrill('${sc}')"` : ''}>
-            <div class="scanner-stat-label">${alertLabel}</div>
-            ${alertHtml}
-            <div class="scanner-stat-sub">${alertSub}</div>
-            ${tooltipHtml}
-          </button>
-          <div class="scanner-stat-item">
-            <div class="scanner-stat-label">Last Checked</div>
-            <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.updated_at || data.last_success)}</div>
-            <div class="scanner-stat-sub">${fmtTs(data.updated_at || data.last_success)}</div>
+          <div class="sat-signals">${t.signals || '—'}</div>
+          <div>
+            <div class="sat-price ${pctClass(t.pnl_pct)}">${fmt(t.entry_price)}</div>
+            <div class="sat-score">Score: ${t.score??'—'} · ${t.status||'OPEN'}</div>
           </div>
-        </div>
-        ${isDown && data.error && !isApi ? `<div class="scanner-error">⚠ ${data.error}</div>` : ''}
-      </div>`;
-  });
+        </div>`).join('');
+
+      // Use error tooltip if RED and errors exist, otherwise use alerts or default
+      if (!tooltipHtml) {
+        tooltipHtml = data.today_alerts > 0 ? `
+          <div class="scanner-alert-tooltip">
+            <div class="sat-header">Today's Alerts — ${sc} (${data.today_alerts})</div>
+            ${tooltipRows}
+          </div>` : `
+          <div class="scanner-alert-tooltip">
+            <div class="sat-empty">No alerts generated today</div>
+          </div>`;
+      }
+
+      const isProgressWorker = sc === 'AI Worker' || sc === 'Pledge Worker';
+      const isApi = sc.startsWith('API_');
+      const cardStyle = isProgressWorker ? 'background:rgba(99,102,241,0.05);' : '';
+
+      let alertLabel = "Today's Alerts";
+      let alertHtml = `
+        <div class="scanner-alert-count ${data.today_alerts===0?'zero':''}">
+          ${data.today_alerts}
+          ${data.today_alerts > 0 ? `<span style="font-size:11px;color:var(--muted);font-weight:400"> alerts</span>` : ''}
+        </div>`;
+      let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
+      let dismissBtn = "";
+
+      if (!isAck) {
+        alertLabel = "WARNING";
+        let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${encodeURIComponent(data.raw_source || sc)}` : `/api/scanner_health/acknowledge/${sc}`;
+        dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>doRefresh())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
+        
+        alertHtml = `
+        <div class="scanner-alert-count" style="color: #ff4d6d;">⚠</div>
+        ${dismissBtn}
+        `;
+        alertSub = 'click to view error trace';
+        if (!tooltipHtml) {
+          tooltipHtml = data.error ? `
+          <div class="scanner-alert-tooltip">
+            <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
+            <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
+          </div>` : '';
+        }
+      } else if (isProgressWorker) {
+        // Prefer structured progress fields from the server
+        const prog = data.progress != null ? data.progress : (data.today_alerts || 0);
+        const totalNeeded = data.total_needed != null ? data.total_needed : '—';
+        const lastSym = data.last_processed_symbol || data.last_processed || '';
+        alertLabel = "Processed";
+        alertHtml = `
+        <div class="scanner-alert-count" style="color: #6366f1;">
+          ${prog} <span style="font-size:13px;color:var(--muted);font-weight:400">/ ${totalNeeded}</span>
+        </div>`;
+        alertSub = lastSym ? `${lastSym}` : "Stocks cached";
+        tooltipHtml = '';
+      } else if (isApi) {
+        const fails = data.today_alerts;
+        alertLabel = "Failures";
+        alertHtml = `
+        <div class="scanner-alert-count ${fails===0?'zero':''}">
+          ${fails}
+        </div>`;
+        alertSub = 'system healthy';
+        tooltipHtml = '';
+      }
+
+      el.innerHTML += `
+        <div class="scanner-card ${statusClass}" style="${cardStyle}">
+          <div class="scanner-header">
+            <div>
+              <div class="scanner-name">${meta.label}</div>
+              <div class="scanner-type">${meta.desc}</div>
+            </div>
+            <span class="scanner-badge ${badgeClass}">${badgeText}</span>
+          </div>
+          <div class="scanner-stats">
+            <button class="scanner-alert-btn" style="position:relative; ${(isProgressWorker && !isDown) ? 'pointer-events:none; cursor:default' : ''}" ${!(isProgressWorker && !isDown) ? `onclick="showScannerDrill('${sc}')"` : ''}>
+              <div class="scanner-stat-label">${alertLabel}</div>
+              ${alertHtml}
+              <div class="scanner-stat-sub">${alertSub}</div>
+              ${tooltipHtml}
+            </button>
+            <div class="scanner-stat-item">
+              <div class="scanner-stat-label">Last Checked</div>
+              <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.updated_at || data.last_success)}</div>
+              <div class="scanner-stat-sub">${fmtTs(data.updated_at || data.last_success)}</div>
+            </div>
+          </div>
+          ${isDown && data.error && !isApi ? `<div class="scanner-error">⚠ ${data.error}</div>` : ''}
+        </div>`;
+    }
+  })();
 }
 
 // Click on scanner alert count → show in drill panel
