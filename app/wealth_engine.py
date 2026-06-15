@@ -449,6 +449,7 @@ def run_wealth_scan():
             logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
 
         clear_price_cache()
+        rejection_counts = {}
 
         def process_symbol(idx, row):
             try:
@@ -464,7 +465,10 @@ def run_wealth_scan():
                     tech["rs_6m"] = prev_row.get("rs_6m")
                     tech["dist_52w_high"] = prev_row.get("dist_52w_high")
                     tech["liquidity"] = prev_row.get("liquidity", 0.0)
+                    rejection_counts["stale_data"] = rejection_counts.get("stale_data", 0) + 1
                     logger.warning(f"⚠️ YFinance failed for {sym}, using cached technicals from yesterday.")
+                elif tech.get("cmp") is None:
+                    rejection_counts["no_data"] = rejection_counts.get("no_data", 0) + 1
                     
                 tech["Stock"] = sym
                 try:
@@ -490,9 +494,10 @@ def run_wealth_scan():
                 try:
                     from database import upsert_fetch_error
                     upsert_fetch_error('yfinance', 'WEALTH', row.get('Stock', 'UNKNOWN'), '1d', 'processing_error', str(e))
-                except Exception:
-                    logger.exception("Failed to upsert fetch error")
-                # Return minimal empty result so it doesn't crash the thread pool
+                except Exception as e:
+                    logger.exception(f"Failed to process {row['Stock']}: {e}")
+                
+                rejection_counts["processing_error"] = rejection_counts.get("processing_error", 0) + 1
                 return {"Stock": row.get("Stock", "UNKNOWN")}
 
         technicals = []
@@ -617,7 +622,15 @@ def run_wealth_scan():
         buy_count = len(wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)])
         core_count = len(core_capped)
         logger.info(f"✅ [WEALTH ENGINE] Updated | Core: {core_count} | Buys: {buy_count} | Total: {len(wealth_df)}")
-        upsert_scanner_health("Wealth Engine", "OK", last_success=datetime.now().isoformat(), today_alerts=buy_count)
+        
+        # Aggregate data fetch errors for dashboard tracking
+        error_keys = ["no_data", "stale_data", "processing_error"]
+        err_list = [f"{k}: {rejection_counts[k]}" for k in error_keys if rejection_counts.get(k, 0) > 0]
+        
+        status = "DOWN" if err_list else "OK"
+        msg = "Data Errors -> " + " | ".join(err_list) if err_list else None
+        
+        upsert_scanner_health("Wealth Engine", status, last_success=datetime.now().isoformat(), today_alerts=buy_count, error_msg=msg)
 
         # Weekly Telegram Alert (Run on Sunday)
         now = datetime.now()

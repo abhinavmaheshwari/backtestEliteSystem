@@ -477,12 +477,21 @@ def _run_scan():
                 send_telegram_message(msg, scan_type="REVERSAL")
 
     logger.info(f"✅ REVERSAL SCAN DONE | Found {total_alerts} bottoming stocks.")
+    # Aggregate data fetch errors for dashboard tracking
+    error_keys = ["no_data", "missing_col", "stale_data", "processing_error"]
+    err_list = [f"{k}: {rejection_counts[k]}" for k in error_keys if rejection_counts.get(k, 0) > 0]
+    
+    status = "DOWN" if err_list else "OK"
+    msg = "Data Errors -> " + " | ".join(err_list) if err_list else None
+
     try:
         from database import upsert_scanner_health
         upsert_scanner_health(
             scanner_name="REVERSAL",
-            status="OK",
-            last_success=ist_now.strftime("%Y-%m-%d %H:%M:%S")
+            status=status,
+            last_success=ist_now.strftime("%Y-%m-%d %H:%M:%S"),
+            today_alerts=total_alerts,
+            error_msg=msg
         )
     except Exception:
         logger.exception("❌ Failed to update scanner health for REVERSAL")

@@ -964,12 +964,11 @@ function renderScannerGrid(scanner_stats) {
   }
 
   // Ensure all known scanners appear even if not in stats
-  const allScanners = new Set([...Object.keys(SCANNER_META), ...Object.keys(scanner_stats)]);
+  const ALLOWED_SCANNERS = ['DAILY_BUILDER', 'INTRADAY', '1H', 'EOD', 'REVERSAL', 'Wealth Engine'];
+  const allScanners = new Set([...Object.keys(SCANNER_META), ...Object.keys(scanner_stats)].filter(sc => ALLOWED_SCANNERS.includes(sc)));
   el.innerHTML = '';
 
   allScanners.forEach(sc => {
-    if (sc === 'AIWorker') return; // Skip old duplicate database row
-
     const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
     const meta = SCANNER_META[sc] || {label:sc, desc:''};
     const isAck = data.is_acknowledged !== false;
