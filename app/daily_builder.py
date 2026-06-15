@@ -816,6 +816,14 @@ def _main_impl():
         final_df.to_csv(OUTPUT_CSV, index=False)
         final_df.to_parquet(OUTPUT_PARQUET, index=False)
         
+        # Backup to Database to survive server restarts
+        try:
+            from database import upload_parquet_to_db
+            upload_parquet_to_db("daily_builder", OUTPUT_PARQUET)
+            logger.info("☁️ [DAILY BUILDER] Backed up fundamental watchlist to Postgres cache.")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to upload watchlist to Postgres: {e}")
+        
         save_checkpoint({**state, "fundamentals_scored": True})
         state = load_checkpoint()
     else:

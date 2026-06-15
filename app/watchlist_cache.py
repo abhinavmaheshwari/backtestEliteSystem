@@ -27,7 +27,22 @@ def get_watchlist() -> pd.DataFrame:
         logger.info(f"📁 Watchlist loaded into memory cache ({len(df)} symbols)")
         return _watchlist_cache.copy()
     except Exception:
-        # Fallback to trigger build if missing
+        # Try to restore from database first to avoid 2-minute rebuilding on server restarts
+        try:
+            from database import download_parquet_from_db
+            import os
+            
+            # If downloaded successfully, we can just read it normally
+            if download_parquet_from_db("daily_builder", WATCHLIST_PATH) and os.path.exists(WATCHLIST_PATH):
+                df = pd.read_parquet(WATCHLIST_PATH)
+                _watchlist_cache = df
+                _watchlist_date = current_date
+                logger.info(f"☁️ [WATCHLIST CACHE] Restored watchlist from Postgres cache ({len(df)} symbols)")
+                return _watchlist_cache.copy()
+        except Exception as e:
+            logger.warning(f"Failed to restore watchlist from DB: {e}")
+
+        # Fallback to trigger full build if missing
         try:
             from daily_builder import build_watchlist
             build_watchlist()

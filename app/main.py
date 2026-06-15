@@ -123,10 +123,10 @@ def _build_watchlist_background():
         logger.info(f"✅ Watchlist found | {WATCHLIST_PATH}")
         _watchlist_ready.set()
         return
-    logger.info("📋 Watchlist missing | Running daily builder in background thread...")
+    logger.info("📋 Watchlist missing | Attempting to restore or build in background thread...")
     try:
-        from daily_builder import build_watchlist
-        build_watchlist()
+        from watchlist_cache import get_watchlist
+        get_watchlist()
     except Exception:
         logger.exception("❌ Daily builder failed — scanners will rebuild at first scan cycle")
     finally:
@@ -282,7 +282,8 @@ def run_system_scheduler():
     def safe_run_daily_builder():
         try:
             logger.info("🕒 SCHEDULER | Triggering Daily Builder")
-            build_watchlist()
+            from watchlist_cache import get_watchlist
+            get_watchlist()
         except Exception as e:
             logger.exception("❌ SCHEDULER | Daily Builder crashed")
             _telegram_notify(f"🚨 Daily Builder Scheduled Run Failed:\n{e}")

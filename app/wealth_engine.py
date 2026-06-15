@@ -388,192 +388,197 @@ def run_wealth_scan():
 
     try:
         if not os.path.exists(WATCHLIST_PATH):
-            logger.warning("⚠️ Watchlist not found. Wealth Engine skipping scan.")
-            upsert_scanner_health("Wealth Engine", "IDLE", error_msg="Waiting for Watchlist")
-            return
-
-
-            from database import download_parquet_from_db, upload_parquet_to_db
-            
-            # If cold boot (no local file), try to restore from DB instantly so dashboard isn't blank
-            if not os.path.exists(WEALTH_PATH):
-                download_parquet_from_db("wealth_engine", WEALTH_PATH)
-
-            df = pd.read_parquet(WATCHLIST_PATH)
-
-            logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
-
-            nifty_6m_ret, nifty_dist_52w = fetch_nifty_macro_state()
-            if nifty_6m_ret is None:
-                logger.info("Nifty Macro: UNAVAILABLE — suppressing macro gates")
-            else:
-                logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
-
-            clear_price_cache()
-
-            def process_symbol(idx, row):
-                sym = row["Stock"]
-                tech = calculate_wealth_technicals(sym, nifty_6m_ret)
-                tech["Stock"] = sym
-                try:
-                    tech["Promoter_Pledge"] = fetch_promoter_pledge(sym)
-                except Exception as e:
-                    logger.warning(f"Promoter pledge fetch failed for {sym}: {e}")
-                    tech["Promoter_Pledge"] = 0
-                
-                # Extract AI Concall Confidence
-                try:
-                    concall = get_recent_concall_analysis(sym)
-                    if concall and isinstance(concall, dict) and "management_confidence" in concall:
-                        tech["AI_Confidence"] = int(concall["management_confidence"])
-                    else:
-                        tech["AI_Confidence"] = 0
-                except Exception as e:
-                    logger.warning(f"AI Concall fetch failed for {sym}: {e}")
-                    tech["AI_Confidence"] = 0
-
-                return tech
-
-            technicals = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
-                futures = {executor.submit(process_symbol, i, row): i for i, row in df.iterrows()}
-                completed = 0
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        technicals.append(future.result())
-                    except Exception as e:
-                        logger.exception(f"Worker failed unexpectedly: {e}")
-                        # skip or append minimal row handled inside process_symbol
-                    completed += 1
-                    if completed % 50 == 0 or completed == len(df):
-                        logger.info(f"💰 [WEALTH ENGINE] Progress: {completed}/{len(df)} stocks processed...")
-
-            tech_df = pd.DataFrame(technicals)
-            wealth_df = pd.merge(df, tech_df, on="Stock", how="left")
-
-            if "rs_6m" in wealth_df.columns:
-                wealth_df["RS_Rating"] = wealth_df["rs_6m"].rank(pct=True, ascending=True) * 100
-            else:
-                wealth_df["RS_Rating"] = 0
-
-            # Apply 100-point score
-            wealth_df["FM_Score"] = wealth_df.apply(calculate_100_point_score, axis=1)
-            wealth_df["Portfolio_Bucket"] = wealth_df.apply(lambda r: determine_portfolio_bucket(r, nifty_dist_52w), axis=1)
-
-            if nifty_dist_52w is None:
-                logger.warning("Using NO Nifty benchmark — macro gates suppressed")
-
-            # Load manual portfolio to apply tax hold bonuses
-            from database import get_manual_portfolio
+            logger.warning("⚠️ Watchlist not found. Wealth Engine is forcing the Daily Builder to run.")
             try:
-                portfolio = get_manual_portfolio()
-                portfolio_dict = {p['symbol']: p for p in portfolio}
+                from daily_builder import build_watchlist
+                build_watchlist()
             except Exception as e:
-                logger.warning(f"Failed to load manual portfolio: {e}")
-                portfolio_dict = {}
-
-            def apply_hold_score_with_tax(r):
-                base_hold_score = calculate_hold_score(r)
-                sym = r.get("Stock")
-                if sym in portfolio_dict:
-                    p = portfolio_dict[sym]
-                    try:
-                        from datetime import datetime
-                        entry_date = datetime.strptime(p['entry_date'], "%Y-%m-%d").date()
-                        cmp_price = r.get("cmp", p['entry_price']) or p['entry_price']
-                        pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
-                        tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
-                        return min(100, base_hold_score + tax_info['bonus'])
-                    except:
-                        pass
-                return base_hold_score
-
-            # Apply Hold Score evaluation
-            wealth_df["Hold_Score"] = wealth_df.apply(apply_hold_score_with_tax, axis=1)
-
-            # Buy/Sell Signals
-            def get_signal(r):
-                score = r.get("FM_Score", 0)
-                hold_score = r.get("Hold_Score", 0)
-                cmp = r.get("cmp", 0) or 0
-                sma = r.get("sma_200", 0) or 0
-                rs = r.get("rs_6m", 0) or 0
-                sym = r.get("Stock")
-                
-                # Check for Tax-Loss Harvesting signal
-                if sym in portfolio_dict:
-                    p = portfolio_dict[sym]
-                    try:
-                        from datetime import datetime
-                        entry_date = datetime.strptime(p['entry_date'], "%Y-%m-%d").date()
-                        cmp_price = r.get("cmp", p['entry_price']) or p['entry_price']
-                        pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
-                        tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
-                        if tax_info.get("harvest_signal"):
-                            # Only flag if not already a hard sell
-                            if hold_score >= 45 and rs >= -40 and not (sma > 0 and cmp < (0.75 * sma)):
-                                return f"HOLD (Tax-Loss Harvest Opportunity: {pnl_pct:.1f}%)"
-                    except:
-                        pass
-                
-                # Strict Buy rules
-                if score >= 85 and cmp > sma and sma > 0:
-                    if nifty_dist_52w is not None and nifty_dist_52w > 15:
-                        return "SUPPRESS (Macro Bear)"
-                    else:
-                        return f"BUY (Score: {score})"
-                        
-                bucket = r.get("Portfolio_Bucket", "") or ""
-                if "Quality-On-Sale" in bucket and nifty_dist_52w is not None and nifty_dist_52w > 15:
-                    return f"BUY (Deep Value / Bear Market)"
-                    
-                # Exit Logic (The Hold Score Engine)
-                if hold_score < 45:
-                    return f"SELL REVIEW (Hold Score: {hold_score}/100)"
-                    
-                # Catastrophic Trend Breakdown (Only if it's really bad, else hold)
-                if rs < -40:
-                    return f"SELL (Catastrophic RS Collapse)"
-                if sma > 0 and cmp < (0.75 * sma):
-                    return f"SELL (Catastrophic Trend Breakdown)"
-                    
-                return ""
-
-            wealth_df["Signal"] = wealth_df.apply(get_signal, axis=1)
-
-            # Apply sector caps to Core bucket for the dashboard
-            core_capped = apply_sector_cap(wealth_df, "Portfolio_Bucket", "Core", max_stocks=15)
-            core_symbols = set(core_capped["Stock"].tolist()) if not core_capped.empty else set()
-            wealth_df["Core_Selected"] = wealth_df["Stock"].apply(lambda s: s in core_symbols)
+                logger.error(f"❌ Wealth Engine failed to build watchlist: {e}")
+                upsert_scanner_health("Wealth Engine", "IDLE", error_msg="Watchlist build failed")
+                return
 
 
-            wealth_df.to_parquet(WEALTH_PATH, index=False)
-            upload_parquet_to_db("wealth_engine", WEALTH_PATH)
+        from database import download_parquet_from_db, upload_parquet_to_db
+        
+        # If cold boot (no local file), try to restore from DB instantly so dashboard isn't blank
+        if not os.path.exists(WEALTH_PATH):
+            download_parquet_from_db("wealth_engine", WEALTH_PATH)
 
-            buy_count = len(wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)])
-            core_count = len(core_capped)
-            logger.info(f"✅ [WEALTH ENGINE] Updated | Core: {core_count} | Buys: {buy_count} | Total: {len(wealth_df)}")
-            upsert_scanner_health("Wealth Engine", "OK", last_success=datetime.now().isoformat(), today_alerts=buy_count)
+        df = pd.read_parquet(WATCHLIST_PATH)
 
-            # Weekly Telegram Alert (Run on Sunday)
-            now = datetime.now()
-            # Note: Weekly Telegram state tracking moved to the scheduler in main.py
-            if now.weekday() == 6 and now.hour == 4:
+        logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
+
+        nifty_6m_ret, nifty_dist_52w = fetch_nifty_macro_state()
+        if nifty_6m_ret is None:
+            logger.info("Nifty Macro: UNAVAILABLE — suppressing macro gates")
+        else:
+            logger.info(f"💰 [WEALTH ENGINE] Nifty 6M Return: {nifty_6m_ret:.1f}%")
+
+        clear_price_cache()
+
+        def process_symbol(idx, row):
+            sym = row["Stock"]
+            tech = calculate_wealth_technicals(sym, nifty_6m_ret)
+            tech["Stock"] = sym
+            try:
+                tech["Promoter_Pledge"] = fetch_promoter_pledge(sym)
+            except Exception as e:
+                logger.warning(f"Promoter pledge fetch failed for {sym}: {e}")
+                tech["Promoter_Pledge"] = 0
+            
+            # Extract AI Concall Confidence
+            try:
+                concall = get_recent_concall_analysis(sym)
+                if concall and isinstance(concall, dict) and "management_confidence" in concall:
+                    tech["AI_Confidence"] = int(concall["management_confidence"])
+                else:
+                    tech["AI_Confidence"] = 0
+            except Exception as e:
+                logger.warning(f"AI Concall fetch failed for {sym}: {e}")
+                tech["AI_Confidence"] = 0
+
+            return tech
+
+        technicals = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
+            futures = {executor.submit(process_symbol, i, row): i for i, row in df.iterrows()}
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
                 try:
-                    from telegram_engine import send_telegram_message
-                    top_20 = wealth_df.sort_values(by="FM_Score", ascending=False).head(20)
-                    msg = "🏆 <b>Top 20 Long-Term Compounders</b> 🏆\n\n"
-                    for idx, row in top_20.iterrows():
-                        rs = row.get('rs_6m', 0) or 0
-                        fcf = row.get('FCF Margin %')
-                        fcf_str = f"{fcf:.0f}%" if fcf is not None else "N/A"
-                        msg += f"• <b>{row['Stock']}</b> | Score: {row['FM_Score']}\n"
-                        msg += f"  └ ROCE: {row.get('ROCE %', 0):.0f}% | RS: {rs:.0f}% | FCF: {fcf_str}\n"
+                    technicals.append(future.result())
+                except Exception as e:
+                    logger.exception(f"Worker failed unexpectedly: {e}")
+                    # skip or append minimal row handled inside process_symbol
+                completed += 1
+                if completed % 50 == 0 or completed == len(df):
+                    logger.info(f"💰 [WEALTH ENGINE] Progress: {completed}/{len(df)} stocks processed...")
 
-                    send_telegram_message(msg, scan_type="EOD")
-                    logger.info("📤 [WEALTH ENGINE] Weekly Telegram report sent.")
-                except Exception as tg_err:
-                    logger.warning(f"⚠️ [WEALTH ENGINE] Telegram send failed: {tg_err}")
+        tech_df = pd.DataFrame(technicals)
+        wealth_df = pd.merge(df, tech_df, on="Stock", how="left")
+
+        if "rs_6m" in wealth_df.columns:
+            wealth_df["RS_Rating"] = wealth_df["rs_6m"].rank(pct=True, ascending=True) * 100
+        else:
+            wealth_df["RS_Rating"] = 0
+
+        # Apply 100-point score
+        wealth_df["FM_Score"] = wealth_df.apply(calculate_100_point_score, axis=1)
+        wealth_df["Portfolio_Bucket"] = wealth_df.apply(lambda r: determine_portfolio_bucket(r, nifty_dist_52w), axis=1)
+
+        if nifty_dist_52w is None:
+            logger.warning("Using NO Nifty benchmark — macro gates suppressed")
+
+        # Load manual portfolio to apply tax hold bonuses
+        from database import get_manual_portfolio
+        try:
+            portfolio = get_manual_portfolio()
+            portfolio_dict = {p['symbol']: p for p in portfolio}
+        except Exception as e:
+            logger.warning(f"Failed to load manual portfolio: {e}")
+            portfolio_dict = {}
+
+        def apply_hold_score_with_tax(r):
+            base_hold_score = calculate_hold_score(r)
+            sym = r.get("Stock")
+            if sym in portfolio_dict:
+                p = portfolio_dict[sym]
+                try:
+                    from datetime import datetime
+                    entry_date = datetime.strptime(p['entry_date'], "%Y-%m-%d").date()
+                    cmp_price = r.get("cmp", p['entry_price']) or p['entry_price']
+                    pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
+                    tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
+                    return min(100, base_hold_score + tax_info['bonus'])
+                except:
+                    pass
+            return base_hold_score
+
+        # Apply Hold Score evaluation
+        wealth_df["Hold_Score"] = wealth_df.apply(apply_hold_score_with_tax, axis=1)
+
+        # Buy/Sell Signals
+        def get_signal(r):
+            score = r.get("FM_Score", 0)
+            hold_score = r.get("Hold_Score", 0)
+            cmp = r.get("cmp", 0) or 0
+            sma = r.get("sma_200", 0) or 0
+            rs = r.get("rs_6m", 0) or 0
+            sym = r.get("Stock")
+            
+            # Check for Tax-Loss Harvesting signal
+            if sym in portfolio_dict:
+                p = portfolio_dict[sym]
+                try:
+                    from datetime import datetime
+                    entry_date = datetime.strptime(p['entry_date'], "%Y-%m-%d").date()
+                    cmp_price = r.get("cmp", p['entry_price']) or p['entry_price']
+                    pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
+                    tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
+                    if tax_info.get("harvest_signal"):
+                        # Only flag if not already a hard sell
+                        if hold_score >= 45 and rs >= -40 and not (sma > 0 and cmp < (0.75 * sma)):
+                            return f"HOLD (Tax-Loss Harvest Opportunity: {pnl_pct:.1f}%)"
+                except:
+                    pass
+            
+            # Strict Buy rules
+            if score >= 85 and cmp > sma and sma > 0:
+                if nifty_dist_52w is not None and nifty_dist_52w > 15:
+                    return "SUPPRESS (Macro Bear)"
+                else:
+                    return f"BUY (Score: {score})"
+                    
+            bucket = r.get("Portfolio_Bucket", "") or ""
+            if "Quality-On-Sale" in bucket and nifty_dist_52w is not None and nifty_dist_52w > 15:
+                return f"BUY (Deep Value / Bear Market)"
+                
+            # Exit Logic (The Hold Score Engine)
+            if hold_score < 45:
+                return f"SELL REVIEW (Hold Score: {hold_score}/100)"
+                
+            # Catastrophic Trend Breakdown (Only if it's really bad, else hold)
+            if rs < -40:
+                return f"SELL (Catastrophic RS Collapse)"
+            if sma > 0 and cmp < (0.75 * sma):
+                return f"SELL (Catastrophic Trend Breakdown)"
+                
+            return ""
+
+        wealth_df["Signal"] = wealth_df.apply(get_signal, axis=1)
+
+        # Apply sector caps to Core bucket for the dashboard
+        core_capped = apply_sector_cap(wealth_df, "Portfolio_Bucket", "Core", max_stocks=15)
+        core_symbols = set(core_capped["Stock"].tolist()) if not core_capped.empty else set()
+        wealth_df["Core_Selected"] = wealth_df["Stock"].apply(lambda s: s in core_symbols)
+
+
+        wealth_df.to_parquet(WEALTH_PATH, index=False)
+        upload_parquet_to_db("wealth_engine", WEALTH_PATH)
+
+        buy_count = len(wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)])
+        core_count = len(core_capped)
+        logger.info(f"✅ [WEALTH ENGINE] Updated | Core: {core_count} | Buys: {buy_count} | Total: {len(wealth_df)}")
+        upsert_scanner_health("Wealth Engine", "OK", last_success=datetime.now().isoformat(), today_alerts=buy_count)
+
+        # Weekly Telegram Alert (Run on Sunday)
+        now = datetime.now()
+        # Note: Weekly Telegram state tracking moved to the scheduler in main.py
+        if now.weekday() == 6 and now.hour == 4:
+            try:
+                from telegram_engine import send_telegram_message
+                top_20 = wealth_df.sort_values(by="FM_Score", ascending=False).head(20)
+                msg = "🏆 <b>Top 20 Long-Term Compounders</b> 🏆\n\n"
+                for idx, row in top_20.iterrows():
+                    rs = row.get('rs_6m', 0) or 0
+                    fcf = row.get('FCF Margin %')
+                    fcf_str = f"{fcf:.0f}%" if fcf is not None else "N/A"
+                    msg += f"• <b>{row['Stock']}</b> | Score: {row['FM_Score']}\n"
+                    msg += f"  └ ROCE: {row.get('ROCE %', 0):.0f}% | RS: {rs:.0f}% | FCF: {fcf_str}\n"
+
+                send_telegram_message(msg, scan_type="EOD")
+                logger.info("📤 [WEALTH ENGINE] Weekly Telegram report sent.")
+            except Exception as tg_err:
+                logger.warning(f"⚠️ [WEALTH ENGINE] Telegram send failed: {tg_err}")
 
     except Exception as e:
         logger.error(f"❌ [WEALTH ENGINE] Scan crashed: {e}")
