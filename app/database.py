@@ -988,15 +988,80 @@ def get_all_fetch_errors(limit: int = 100) -> list:
                 return []
 
 
-def acknowledge_fetch_error(error_id: int) -> bool:
-    """Mark a fetch_errors row as acknowledged (so it won't keep blinking in UI). Returns True if updated."""
+def get_fetch_errors_for_scanner(scanner_name: str) -> list:
+    """Return all unacknowledged fetch_errors for a specific scanner."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT id, source_name, scanner_name, symbol, interval, category, occurrences, first_seen, last_seen, last_error_msg, is_acknowledged
+                    FROM fetch_errors
+                    WHERE scanner_name = %s AND is_acknowledged = FALSE
+                    ORDER BY occurrences DESC, last_seen DESC
+                """, (scanner_name,))
+                return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                logger.exception(f"❌ get_fetch_errors_for_scanner failed for {scanner_name}")
+                return []
+
+
+def has_unacknowledged_errors(scanner_name: str) -> bool:
+    """Check if a scanner has ANY unacknowledged fetch_errors."""
     init_db()
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
+                cur.execute("""
+                    SELECT 1 FROM fetch_errors
+                    WHERE scanner_name = %s AND is_acknowledged = FALSE
+                    LIMIT 1
+                """, (scanner_name,))
+                return cur.fetchone() is not None
+            except Exception:
+                logger.exception(f"❌ has_unacknowledged_errors failed for {scanner_name}")
+                return False
+
+
+def acknowledge_fetch_error(error_id: int) -> bool:
+    """Mark a fetch_errors row as acknowledged. If all errors for scanner are now acked, clear scanner_health."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                # Mark the fetch error as acknowledged
                 cur.execute("UPDATE fetch_errors SET is_acknowledged = TRUE WHERE id = %s", (error_id,))
+                if cur.rowcount == 0:
+                    return False
+                
+                # Get the scanner_name from this error
+                cur.execute("SELECT scanner_name FROM fetch_errors WHERE id = %s", (error_id,))
+                row = cur.fetchone()
+                if not row:
+                    conn.commit()
+                    return True
+                
+                scanner_name = row[0]
+                
+                # Check if this scanner has ANY remaining unacknowledged errors
+                cur.execute("""
+                    SELECT 1 FROM fetch_errors
+                    WHERE scanner_name = %s AND is_acknowledged = FALSE
+                    LIMIT 1
+                """, (scanner_name,))
+                has_more_errors = cur.fetchone() is not None
+                
+                # If no more errors, clear the scanner_health record (turn green)
+                if not has_more_errors:
+                    cur.execute("""
+                        UPDATE scanner_health
+                        SET status = 'OK', is_acknowledged = TRUE, error_msg = NULL, updated_at = %s
+                        WHERE scanner_name = %s
+                    """, (datetime.now(IST).isoformat(), scanner_name))
+                    logger.info(f"✓ Cleared scanner_health for {scanner_name} (all errors acknowledged)")
+                
                 conn.commit()
-                return cur.rowcount > 0
+                return True
             except Exception:
                 conn.rollback()
                 logger.exception(f"❌ acknowledge_fetch_error failed for id={error_id}")

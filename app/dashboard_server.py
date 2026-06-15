@@ -329,6 +329,21 @@ def api_fetch_errors():
         return jsonify([]), 500
 
 
+@app.route("/api/fetch_errors/by_scanner", methods=["GET"])
+def api_fetch_errors_by_scanner():
+    """Return unacknowledged fetch_errors for a specific scanner."""
+    try:
+        from database import get_fetch_errors_for_scanner
+        scanner_name = request.args.get('name')
+        if not scanner_name:
+            return jsonify({"error": "Missing 'name' parameter"}), 400
+        rows = get_fetch_errors_for_scanner(scanner_name)
+        return jsonify(rows)
+    except Exception:
+        logger.exception("❌ /api/fetch_errors/by_scanner failed")
+        return jsonify([]), 500
+
+
 @app.route("/api/fetch_errors/ack/<int:error_id>", methods=["POST"])
 def api_ack_fetch_error(error_id):
     """Acknowledge a specific fetch error so it stops alerting in UI."""

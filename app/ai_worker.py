@@ -129,7 +129,11 @@ def run_worker_loop():
                         
                     except Exception as e:
                         logger.error(f"❌ [AI WORKER] Error processing {sym}: {e}")
-                        upsert_scanner_health("AI Worker", "DOWN", error_msg=str(e))
+                        # Log to fetch_errors for per-stock error tracking (NOT scanner_health - individual stock failure is non-critical)
+                        try:
+                            upsert_fetch_error('ai', 'AI Worker', sym, None, 'ai_concall_failure', str(e))
+                        except Exception:
+                            logger.exception(f"Failed to upsert fetch_error for {sym}")
                         failed_stocks.append(sym)
                         time.sleep(10) # Sleep a bit longer on error
                 
