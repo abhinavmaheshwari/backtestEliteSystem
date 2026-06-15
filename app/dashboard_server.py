@@ -588,66 +588,67 @@ def api_scanner_status():
                     pass
 
             # Enrich AI/Pledge workers with progress metrics
-        extra = {}
-        try:
-            if sc in ("AI Worker", "Pledge Worker"):
-                # Compute total watchlist size (included + excluded)
-                import pandas as pd
-                total_needed = 0
-                from config import DATA_DIR
-                for f in [
-                    os.path.join(DATA_DIR, 'elite_fundamental_watchlist.csv'),
-                    os.path.join(DATA_DIR, 'elite_fundamental_watchlist_excluded.csv'),
-                ]:
-                    try:
-                        if os.path.exists(f):
-                            dfw = pd.read_csv(f)
-                            if 'Stock' in dfw.columns:
-                                total_needed += dfw['Stock'].dropna().shape[0]
-                    except Exception:
-                        pass
-                from database import get_ai_concall_stats, get_promoter_pledge_stats
-                if sc == 'AI Worker':
-                    stats = get_ai_concall_stats()
-                else:
-                    stats = get_promoter_pledge_stats()
-                extra = {
-                    'progress': stats.get('total_cached', 0),
-                    'total_needed': total_needed,
-                    'last_processed_symbol': stats.get('last_symbol'),
-                    'last_processed_at': stats.get('last_updated')
-                }
-        except Exception:
-            logger.exception('Failed to compute worker progress metrics')
-
-        result[sc] = {
-                "status":        row["status"],
-                "last_success":  row["last_success"],
-                "today_alerts":  row["today_alerts"],
-                "error":         row["error_msg"],
-                "updated_at":    row["updated_at"],
-                "is_acknowledged": row["is_acknowledged"],
-                "today_trades":  [
-                    {
-                        "symbol":       t["symbol"],
-                        "category":     t["category"] or "",
-                        "signals":      t["signals"] or "",
-                        "entry_price":  float(t["entry_price"]) if t["entry_price"] else None,
-                        "entry_time":   t["alert_time"] or "",
-                        "stop_loss":    float(t["stop_loss"]) if t["stop_loss"] else None,
-                        "target_price": float(t["target_price"]) if t["target_price"] else None,
-                        "exit_price":   float(t["exit_price"]) if t["exit_price"] else None,
-                        "closed_at":    t["closed_at"],
-                        "pnl_pct":      float(t["pnl_pct"]) if t["pnl_pct"] is not None else None,
-                        "status":       t["status"] or "OPEN",
-                        "score":        t["score"],
+            # Enrich AI/Pledge workers with progress metrics
+            extra = {}
+            try:
+                if sc in ("AI Worker", "Pledge Worker"):
+                    # Compute total watchlist size (included + excluded)
+                    import pandas as pd
+                    total_needed = 0
+                    from config import DATA_DIR
+                    for f in [
+                        os.path.join(DATA_DIR, 'elite_fundamental_watchlist.csv'),
+                        os.path.join(DATA_DIR, 'elite_fundamental_watchlist_excluded.csv'),
+                    ]:
+                        try:
+                            if os.path.exists(f):
+                                dfw = pd.read_csv(f)
+                                if 'Stock' in dfw.columns:
+                                    total_needed += dfw['Stock'].dropna().shape[0]
+                        except Exception:
+                            pass
+                    from database import get_ai_concall_stats, get_promoter_pledge_stats
+                    if sc == 'AI Worker':
+                        stats = get_ai_concall_stats()
+                    else:
+                        stats = get_promoter_pledge_stats()
+                    extra = {
+                        'progress': stats.get('total_cached', 0),
+                        'total_needed': total_needed,
+                        'last_processed_symbol': stats.get('last_symbol'),
+                        'last_processed_at': stats.get('last_updated')
                     }
-                    for t in today_trades
-                ],
-            }
-        # Merge extras if present
-        if extra:
-            result[sc].update(extra)
+            except Exception:
+                logger.exception('Failed to compute worker progress metrics')
+    
+            result[sc] = {
+                    "status":        row["status"],
+                    "last_success":  row["last_success"],
+                    "today_alerts":  row["today_alerts"],
+                    "error":         row["error_msg"],
+                    "updated_at":    row["updated_at"],
+                    "is_acknowledged": row["is_acknowledged"],
+                    "today_trades":  [
+                        {
+                            "symbol":       t["symbol"],
+                            "category":     t["category"] or "",
+                            "signals":      t["signals"] or "",
+                            "entry_price":  float(t["entry_price"]) if t["entry_price"] else None,
+                            "entry_time":   t["alert_time"] or "",
+                            "stop_loss":    float(t["stop_loss"]) if t["stop_loss"] else None,
+                            "target_price": float(t["target_price"]) if t["target_price"] else None,
+                            "exit_price":   float(t["exit_price"]) if t["exit_price"] else None,
+                            "closed_at":    t["closed_at"],
+                            "pnl_pct":      float(t["pnl_pct"]) if t["pnl_pct"] is not None else None,
+                            "status":       t["status"] or "OPEN",
+                            "score":        t["score"],
+                        }
+                        for t in today_trades
+                    ],
+                }
+            # Merge extras if present
+            if extra:
+                result[sc].update(extra)
         return jsonify(result)
     except Exception as exc:
         logger.exception("❌ /api/scanner_status failed")
