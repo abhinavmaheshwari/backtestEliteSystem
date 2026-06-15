@@ -125,6 +125,9 @@ def start(run_once=False):
                 future_1d  = pool.submit(fetch_watchlist_data, watchlist, "60d", "1d")
                 all_ticker_data = future_15m.result()
                 daily_context_data = future_1d.result()
+
+            if not all_ticker_data:
+                raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
                 
             logger.info(f"📥 Data downloaded | 15m: {len(all_ticker_data)} | Daily: {len(daily_context_data)}")
             

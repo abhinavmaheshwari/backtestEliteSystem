@@ -127,6 +127,9 @@ def start(run_once=False):
                 all_ticker_data = future_1h.result()
                 daily_context_data = future_1d.result()
 
+            if not all_ticker_data:
+                raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+
             try:
                 rotation_result = get_sector_scores()
             except Exception:

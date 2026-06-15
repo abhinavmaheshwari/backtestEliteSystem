@@ -166,6 +166,9 @@ def _run_scan():
     # Pulling 1y data to ensure we catch the 52W High correctly
     all_ticker_data = fetch_watchlist_data(watchlist, period="1y", interval="1d")
 
+    if not all_ticker_data:
+        raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+
     alerts_by_category = {}
     total_alerts = 0
 

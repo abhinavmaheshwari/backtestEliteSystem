@@ -104,6 +104,9 @@ def start():
                 else:
                     all_ticker_data = future.result()
 
+        if not all_ticker_data:
+            raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+
         # FIX: NSE bhavcopy for today may not be published until ~19:00–19:30 IST.
         # If today's file returned empty, fall back to the most recent available trading day.
         if not delivery_map:
