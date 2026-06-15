@@ -14,6 +14,7 @@ without pulling heavy dependencies.
 from datetime import datetime, timezone
 from typing import Optional, Union
 import logging
+import traceback
 
 from database import upsert_data_fetch_health
 
@@ -34,7 +35,10 @@ def mark_success(source_name: str) -> None:
 def mark_failure(source_name: str, error: Optional[Union[Exception, str]] = None) -> None:
     try:
         # Fetch current failures and increment is handled inside DB helper; simply pass a new failure record
-        msg = str(error) if error is not None else None
+        if isinstance(error, Exception):
+            msg = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        else:
+            msg = str(error) if error is not None else None
         upsert_data_fetch_health(source_name, last_failure=_now_iso(), consecutive_failures=None, error_msg=msg)
     except Exception:
         logger.exception(f"Failed to mark failure for data source {source_name}: {error}")

@@ -922,9 +922,9 @@ function renderScannerGrid(scanner_stats) {
         <div class="sat-empty">No alerts generated today</div>
       </div>`;
 
-    const isAiWorker = sc === 'AI Worker';
+    const isProgressWorker = sc === 'AI Worker' || sc === 'Pledge Worker';
     const isApi = sc.startsWith('API_');
-    const cardStyle = isAiWorker ? 'background:rgba(99,102,241,0.05);' : '';
+    const cardStyle = isProgressWorker ? 'background:rgba(99,102,241,0.05);' : '';
 
     let alertLabel = "Today's Alerts";
     let alertHtml = `
@@ -933,11 +933,12 @@ function renderScannerGrid(scanner_stats) {
         ${data.today_alerts > 0 ? `<span style="font-size:11px;color:var(--muted);font-weight:400"> alerts</span>` : ''}
       </div>`;
     let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
+    let dismissBtn = "";
 
     if (!isAck) {
       alertLabel = "WARNING";
-      let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${data.raw_source}` : `/api/scanner_health/acknowledge/${sc}`;
-      let dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>window.location.reload())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
+      let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${encodeURIComponent(data.raw_source || sc)}` : `/api/scanner_health/acknowledge/${sc}`;
+      dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>loadScannerStatus())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
       
       alertHtml = `
       <div class="scanner-alert-count" style="color: #ff4d6d;">⚠</div>
@@ -949,7 +950,7 @@ function renderScannerGrid(scanner_stats) {
         <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
         <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
       </div>` : '';
-    } else if (isAiWorker) {
+    } else if (isProgressWorker) {
       let totalCount = "Total";
       let lastStock = "";
       if (data.error && data.error.includes("Total:")) {
@@ -988,7 +989,7 @@ function renderScannerGrid(scanner_stats) {
           <span class="scanner-badge ${badgeClass}">${badgeText}</span>
         </div>
         <div class="scanner-stats">
-          <button class="scanner-alert-btn" style="position:relative; ${isAiWorker ? 'pointer-events:none; cursor:default' : ''}" ${!isAiWorker ? `onclick="showScannerDrill('${sc}')"` : ''}>
+          <button class="scanner-alert-btn" style="position:relative; ${(isProgressWorker && !isDown) ? 'pointer-events:none; cursor:default' : ''}" ${!(isProgressWorker && !isDown) ? `onclick="showScannerDrill('${sc}')"` : ''}>
             <div class="scanner-stat-label">${alertLabel}</div>
             ${alertHtml}
             <div class="scanner-stat-sub">${alertSub}</div>
@@ -1015,15 +1016,15 @@ function showScannerDrill(sc) {
   activeKpi = null;
   window.activeScannerDrill = sc;
   
-  if (sc.startsWith('API_')) {
+  if (sc.startsWith('API_') || (data.status === 'DOWN' && data.error && (!data.today_trades || data.today_trades.length === 0))) {
     const fails = data.today_alerts;
     const plural = fails !== 1 ? 's' : '';
     document.getElementById('drill-title').textContent = `${meta.label} — Error Trace`;
     const trace = data.error || 'No error details found.';
-    const suffix = fails > 0 ? `\n\n[System tracked ${fails} consecutive failure${plural} of this exact exception]` : '';
+    const suffix = (fails > 0 && sc.startsWith('API_')) ? `\n\n[System tracked ${fails} consecutive failure${plural} of this exact exception]` : '';
     document.getElementById('drill-body').innerHTML = `<div style="background:var(--card2); border:1px solid rgba(255,77,109,0.3); border-radius:8px; padding:20px; font-family:var(--font-mono); font-size:13px; color:#ff4d6d; white-space:pre-wrap; max-height:500px; overflow-y:auto;">${trace}${suffix}</div>`;
   } else {
-    if (!data.today_trades) return;
+    if (!data.today_trades || data.today_trades.length === 0) return;
     const trades = data.today_trades.map(t => ({
       ...t,
       entry_date: (t.entry_time||'').slice(0,10),
@@ -1035,7 +1036,8 @@ function showScannerDrill(sc) {
   }
 
   document.getElementById('drill-panel').classList.add('open');
-  document.getElementById('drill-panel').scrollIntoView({behavior:'smooth', block:'nearest'});
+  document.getElementById('drill-panel').scrollIntoView({behavior:'smooth', block:'start'});
+  setTimeout(() => { document.getElementById('drill-body').scrollTop = 0; }, 50);
 }
 
 // ── TRADE TABLE

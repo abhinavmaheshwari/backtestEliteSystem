@@ -17,14 +17,16 @@ logger = logging.getLogger(__name__)
 
 def discover_trendlyne_url(symbol: str, api_key: str) -> str:
     """Try to find the correct Trendlyne URL dynamically."""
+    clean_symbol = symbol.replace('.NS', '')
+    
     # Hardcoded fallback list
     fallbacks = {
         'HINDCOPPER': 'https://trendlyne.com/equity/551/HINDCOPPER/hindustan-copper-ltd/',
     }
-    if symbol in fallbacks:
-        return fallbacks[symbol]
+    if clean_symbol in fallbacks:
+        return fallbacks[clean_symbol]
         
-    fast_url = f"https://trendlyne.com/stock/{symbol}/"
+    fast_url = f"https://trendlyne.com/stock/{clean_symbol}/"
     
     # 1. Attempt fast HEAD request
     payload = {'api_key': api_key, 'url': fast_url, 'render': 'false'}
@@ -37,8 +39,8 @@ def discover_trendlyne_url(symbol: str, api_key: str) -> str:
         pass
 
     # 2. If it 404s, use ScraperAPI to search Google for the proper trendlyne URL
-    logger.info(f"🔍 Direct URL failed for {symbol}. Searching Google...")
-    search_url = f"https://www.google.com/search?q=site:trendlyne.com/equity/+{symbol}"
+    logger.info(f"🔍 Direct URL failed for {clean_symbol}. Searching Google...")
+    search_url = f"https://www.google.com/search?q=site:trendlyne.com/equity/+{clean_symbol}"
     payload = {'api_key': api_key, 'url': search_url, 'render': 'false'}
     try:
         res = requests.get('https://api.scraperapi.com/', params=payload, timeout=30)
@@ -47,13 +49,13 @@ def discover_trendlyne_url(symbol: str, api_key: str) -> str:
             for a in soup.find_all('a', href=True):
                 href = a['href']
                 # Check if it looks like a trendlyne equity link and contains the symbol
-                if "trendlyne.com/equity/" in href and symbol.upper() in href.upper():
+                if "trendlyne.com/equity/" in href and clean_symbol.upper() in href.upper():
                     # Extract from google redirect format
                     actual_url = href.split("q=")[-1].split("&")[0] if "/url?q=" in href else href
-                    logger.info(f"✅ Discovered Google URL for {symbol}: {actual_url}")
+                    logger.info(f"✅ Discovered Google URL for {clean_symbol}: {actual_url}")
                     return actual_url
     except Exception as e:
-        logger.warning(f"Google search fallback failed for {symbol}: {e}")
+        logger.warning(f"Google search fallback failed for {clean_symbol}: {e}")
 
     # 3. Fallback to the fast_url so it fails naturally downstream
     return fast_url
@@ -100,12 +102,12 @@ def worker_loop():
                             
             if not stale_symbols:
                 logger.info("✅ All pledges are up-to-date. Sleeping for 4 hours.")
-                upsert_scanner_health("Pledge Worker", "IDLE", error_msg=None, today_alerts=0)
+                upsert_scanner_health("Pledge Worker", "IDLE", error_msg="Last: None | Total: 0", today_alerts=0)
                 time.sleep(4 * 3600)
                 continue
                 
             logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates.")
-            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=len(stale_symbols))
+            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=0, error_msg=f"Last: Starting... | Total: {len(stale_symbols)}")
             
             error_count = 0
             for i, sym in enumerate(stale_symbols):
@@ -140,6 +142,7 @@ def worker_loop():
                                     conn.commit()
                             logger.info(f"✅ Saved pledge for {sym}: {pledge_val}%")
                             mark_success('scraperapi')
+                            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
                         else:
                             logger.warning(f"⚠️ Could not find pledge text on page for {sym}")
                             error_count += 1
@@ -170,8 +173,8 @@ def worker_loop():
                 time.sleep(3) # Rate limit
                 
             # Loop done
-            status = "IDLE" if error_count == 0 else "WARNING"
-            err_msg = f"Failed to fetch {error_count} pledges" if error_count > 0 else None
+            status = "IDLE" if error_count == 0 else "DOWN"
+            err_msg = f"Last: Finished | Total: {len(stale_symbols)} | Failed: {error_count}" if error_count > 0 else f"Last: Finished | Total: {len(stale_symbols)}"
             upsert_scanner_health("Pledge Worker", status, error_msg=err_msg, today_alerts=error_count)
             logger.info("Sleeping 1 hour before next full check...")
             time.sleep(3600)
