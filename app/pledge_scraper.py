@@ -2,8 +2,6 @@ import os
 import requests
 import logging
 from bs4 import BeautifulSoup
-import time
-import random
 import re
 from functools import lru_cache
 from database import get_connection, init_db
@@ -15,13 +13,9 @@ logger = logging.getLogger(__name__)
 def fetch_promoter_pledge(symbol: str):
     """
     Fetches the promoter pledge percentage for a given NSE symbol.
-    Uses ScraperAPI to bypass Cloudflare and scrapes Trendlyne.com.
-    Results are cached in the database for 30 days.
+    Primarily relies on the PostgreSQL cache populated by the pledge_worker.
+    Makes ONE quick fallback attempt if cache is missing.
     """
-    api_key = os.getenv("SCRAPERAPI_KEY")
-    if not api_key:
-        return 0.0
-
     init_db()
 
     # 1. Check DB Cache
@@ -36,25 +30,32 @@ def fetch_promoter_pledge(symbol: str):
                 """, (symbol,))
                 row = cur.fetchone()
                 if row:
-                    logger.debug(f"📊 Cached Pledge for {symbol}: {row[0]}%")
                     return float(row[0])
     except Exception as e:
         logger.warning(f"Database error checking pledge cache for {symbol}: {e}")
 
-    # 2. Not in cache (or expired), fetch via ScraperAPI
-    target_url = f"https://trendlyne.com/stock/{symbol}/"
+    # 2. Fast Fallback Attempt (One-Time)
+    # The pledge_worker will properly resolve broken URLs asynchronously.
+    api_key = os.getenv("SCRAPERAPI_KEY")
+    if not api_key:
+        return 0.0
+
+    fallback_urls = {
+        'HINDCOPPER': 'https://trendlyne.com/equity/551/HINDCOPPER/hindustan-copper-ltd/'
+    }
+    
+    target_url = fallback_urls.get(symbol, f"https://trendlyne.com/stock/{symbol}/")
+    
     payload = {
         'api_key': api_key,
         'url': target_url,
         'render': 'false'
     }
     
-    # Rate limiting sleep
-    time.sleep(random.uniform(1.5, 3.0))
-    
     pledge_val = None
     try:
-        res = requests.get('https://api.scraperapi.com/', params=payload, timeout=45)
+        # Extremely short timeout to prevent blocking wealth engine
+        res = requests.get('https://api.scraperapi.com/', params=payload, timeout=10)
         if res.status_code == 200:
             match = re.search(r'pledge[^\d]{1,30}?(\d+\.?\d*)\s*%', res.text, re.IGNORECASE)
             if match:
@@ -70,33 +71,19 @@ def fetch_promoter_pledge(symbol: str):
             try:
                 mark_success('scraperapi')
             except Exception:
-                logger.exception('Failed to report success for scraperapi')
+                pass
         else:
             try:
-                mark_failure('scraperapi', f'status_code={res.status_code} URL={target_url}')
+                mark_failure('scraperapi', f'Fast fetch 404/Failed for {symbol} URL={target_url}')
             except Exception:
-                logger.exception('Failed to report failure for scraperapi (non-200)')
+                pass
     except Exception as e:
-        logger.warning(f"Failed to scrape pledge for {symbol}: {e}")
+        logger.debug(f"Fast pledge fetch failed for {symbol}: {e}")
         try:
-            mark_failure('scraperapi', f"Exception: {e} URL={target_url}")
+            mark_failure('scraperapi', f"Fast fetch Exception: {e} URL={target_url}")
         except Exception:
-            logger.exception('Failed to report scraperapi exception')
-        return None
+            pass
 
-    # 3. Save to Cache
-    if pledge_val is not None:
-        try:
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO promoter_pledge_cache (symbol, pledge_pct, updated_at)
-                        VALUES (%s, %s, NOW())
-                        ON CONFLICT (symbol) DO UPDATE 
-                        SET pledge_pct = EXCLUDED.pledge_pct, updated_at = NOW()
-                    """, (symbol, pledge_val))
-                    conn.commit()
-        except Exception as e:
-            logger.warning(f"Failed to save pledge cache for {symbol}: {e}")
-
+    # We DO NOT save to the database here. 
+    # That is the sole responsibility of pledge_worker.py to prevent race conditions.
     return pledge_val

@@ -350,12 +350,14 @@ def run_system_scheduler():
 
 # Only intraday/live/performance get auto-restarted on crash
 from ai_worker import run_worker_loop
+from pledge_worker import worker_loop as run_pledge_loop
 
 RESTARTABLE_THREADS = {
     "IntradayScanner":    run_intraday_scanner,
     "LiveScanner":        run_live_scanner,
     "PerformanceTracker": run_performance_tracker,
     "AI Worker":          run_worker_loop,
+    "Pledge Worker":      run_pledge_loop,
     "BayesianUpdater":    run_bayesian_loop,
     "SystemScheduler":    run_system_scheduler,
 }
