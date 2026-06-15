@@ -147,8 +147,21 @@ def worker_loop():
                             now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
                             upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
                         else:
-                            logger.warning(f"⚠️ Could not find pledge text on page for {sym}")
-                            error_count += 1
+                            logger.warning(f"⚠️ Could not find pledge text on page for {sym}. Assuming 0.0%")
+                            with get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("""
+                                        INSERT INTO promoter_pledge_cache (symbol, pledge_pct, updated_at)
+                                        VALUES (%s, 0.0, NOW())
+                                        ON CONFLICT (symbol) DO UPDATE 
+                                        SET pledge_pct = EXCLUDED.pledge_pct, updated_at = NOW()
+                                    """, (sym,))
+                                    conn.commit()
+                            mark_success('scraperapi')
+                            from datetime import datetime
+                            from zoneinfo import ZoneInfo
+                            now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
                     elif res.status_code == 404:
                         logger.warning(f"❌ 404 Not Found for {sym} at {target_url}")
                         mark_failure('scraperapi', f"404 Not Found: {target_url}")
