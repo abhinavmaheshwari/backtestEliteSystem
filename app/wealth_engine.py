@@ -451,39 +451,49 @@ def run_wealth_scan():
         clear_price_cache()
 
         def process_symbol(idx, row):
-            sym = row["Stock"]
-            tech = calculate_wealth_technicals(sym, nifty_6m_ret)
-            
-            # Fallback if Yahoo Finance fails
-            if tech.get("cmp") is None and not prev_wealth_df.empty and sym in prev_wealth_df["Stock"].values:
-                prev_row = prev_wealth_df[prev_wealth_df["Stock"] == sym].iloc[0]
-                tech["cmp"] = prev_row.get("cmp")
-                tech["sma_50"] = prev_row.get("sma_50")
-                tech["sma_200"] = prev_row.get("sma_200")
-                tech["rs_6m"] = prev_row.get("rs_6m")
-                tech["dist_52w_high"] = prev_row.get("dist_52w_high")
-                tech["liquidity"] = prev_row.get("liquidity", 0.0)
-                logger.warning(f"⚠️ YFinance failed for {sym}, using cached technicals from yesterday.")
+            try:
+                sym = row["Stock"]
+                tech = calculate_wealth_technicals(sym, nifty_6m_ret)
                 
-            tech["Stock"] = sym
-            try:
-                tech["Promoter_Pledge"] = fetch_promoter_pledge(sym)
-            except Exception as e:
-                logger.warning(f"Promoter pledge fetch failed for {sym}: {e}")
-                tech["Promoter_Pledge"] = 0
-            
-            # Extract AI Concall Confidence
-            try:
-                concall = get_recent_concall_analysis(sym)
-                if concall and isinstance(concall, dict) and "management_confidence" in concall:
-                    tech["AI_Confidence"] = int(concall["management_confidence"])
-                else:
+                # Fallback if Yahoo Finance fails
+                if tech.get("cmp") is None and not prev_wealth_df.empty and sym in prev_wealth_df["Stock"].values:
+                    prev_row = prev_wealth_df[prev_wealth_df["Stock"] == sym].iloc[0]
+                    tech["cmp"] = prev_row.get("cmp")
+                    tech["sma_50"] = prev_row.get("sma_50")
+                    tech["sma_200"] = prev_row.get("sma_200")
+                    tech["rs_6m"] = prev_row.get("rs_6m")
+                    tech["dist_52w_high"] = prev_row.get("dist_52w_high")
+                    tech["liquidity"] = prev_row.get("liquidity", 0.0)
+                    logger.warning(f"⚠️ YFinance failed for {sym}, using cached technicals from yesterday.")
+                    
+                tech["Stock"] = sym
+                try:
+                    tech["Promoter_Pledge"] = fetch_promoter_pledge(sym)
+                except Exception as e:
+                    logger.warning(f"Promoter pledge fetch failed for {sym}: {e}")
+                    tech["Promoter_Pledge"] = 0
+                
+                # Extract AI Concall Confidence
+                try:
+                    concall = get_recent_concall_analysis(sym)
+                    if concall and isinstance(concall, dict) and "management_confidence" in concall:
+                        tech["AI_Confidence"] = int(concall["management_confidence"])
+                    else:
+                        tech["AI_Confidence"] = 0
+                except Exception as e:
+                    logger.warning(f"AI Concall fetch failed for {sym}: {e}")
                     tech["AI_Confidence"] = 0
-            except Exception as e:
-                logger.warning(f"AI Concall fetch failed for {sym}: {e}")
-                tech["AI_Confidence"] = 0
 
-            return tech
+                return tech
+            except Exception as e:
+                logger.exception(f"❌ Error processing {row['Stock']}")
+                try:
+                    from database import upsert_fetch_error
+                    upsert_fetch_error('yfinance', 'WEALTH', row.get('Stock', 'UNKNOWN'), '1d', 'processing_error', str(e))
+                except Exception:
+                    logger.exception("Failed to upsert fetch error")
+                # Return minimal empty result so it doesn't crash the thread pool
+                return {"Stock": row.get("Stock", "UNKNOWN")}
 
         technicals = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:

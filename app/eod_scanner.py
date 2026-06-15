@@ -15,7 +15,7 @@ from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new
+from database import init_db, save_alert_if_new, upsert_fetch_error
 from delivery_data import fetch_delivery_data
 from price_cache import fetch_watchlist_data
 from sl_target_helper import compute_sl_and_target
@@ -488,8 +488,15 @@ def start():
                 })
                 total_alerts += 1
 
-            except Exception:
+            except Exception as e:
                 logger.exception(f"❌ Error processing {symbol}")
+                rejection_counts["indicator_fail"] = rejection_counts.get("indicator_fail", 0) + 1
+                try:
+                    from database import upsert_fetch_error
+                    upsert_fetch_error('yfinance', 'EOD', symbol, '1d', 'processing_error', str(e))
+                except Exception:
+                    logger.exception(f'Failed to upsert fetch error for {symbol}')
+                continue
 
         scan_time = ist_now.strftime("%Y-%m-%d %H:%M:%S")
 

@@ -25,7 +25,7 @@ from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new
+from database import init_db, save_alert_if_new, upsert_fetch_error
 from delivery_data import fetch_previous_day_delivery
 from price_cache import fetch_watchlist_data 
 from sl_target_helper import compute_sl_and_target
@@ -559,8 +559,9 @@ def start(run_once=False):
                     })
                     total_alerts += 1
 
-                except Exception:
+                except Exception as e:
                     logger.exception(f"❌ Error processing {symbol}")
+                    upsert_fetch_error('yfinance', '1H', symbol, '1h', 'processing_error', str(e))
 
             scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 

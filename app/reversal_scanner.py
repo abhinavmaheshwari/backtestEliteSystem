@@ -10,7 +10,7 @@ from datetime import datetime
 from technical_indicators import apply_indicators
 from telegram_engine import send_telegram_message
 from message_formatter import build_message
-from database import init_db, save_alert_if_new
+from database import init_db, save_alert_if_new, upsert_fetch_error
 from price_cache import fetch_watchlist_data
 from watchlist_cache import get_watchlist
 from config import WATCHLIST_PATH, CLIMAX_VOLUME_LOOKBACK, MIN_CANDLE_RANGE_PCT, MIN_STOCK_PRICE
@@ -175,289 +175,294 @@ def _run_scan():
     for _, row in watchlist.iterrows():
         symbol   = row["Stock"]
         category = row["Category"]
+        try:
 
-        if symbol not in all_ticker_data or all_ticker_data[symbol].empty:
-            continue
+            if symbol not in all_ticker_data or all_ticker_data[symbol].empty:
+                continue
 
-        ticker = all_ticker_data[symbol].copy()
-        if isinstance(ticker.columns, pd.MultiIndex):
-            ticker.columns = ticker.columns.get_level_values(0)
-        ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+            ticker = all_ticker_data[symbol].copy()
+            if isinstance(ticker.columns, pd.MultiIndex):
+                ticker.columns = ticker.columns.get_level_values(0)
+            ticker = ticker.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
 
-        if len(ticker) < 100:
-            continue
+            if len(ticker) < 100:
+                continue
 
-        ticker = apply_indicators(ticker, timeframe="1d")
-        if ticker is None or ticker.empty:
-            continue
+            ticker = apply_indicators(ticker, timeframe="1d")
+            if ticker is None or ticker.empty:
+                continue
 
-        latest   = ticker.iloc[-1]
-        required = ["Close", "High", "Low", "Open", "Volume", "RSI", "EMA20", "MACD", "MACD_SIGNAL", "HIGH_52W"]
-        if not all(col in ticker.columns for col in required):
-            continue
-        if pd.isna(latest["RSI"]) or pd.isna(latest["MACD"]):
-            continue
+            latest   = ticker.iloc[-1]
+            required = ["Close", "High", "Low", "Open", "Volume", "RSI", "EMA20", "MACD", "MACD_SIGNAL", "HIGH_52W"]
+            if not all(col in ticker.columns for col in required):
+                continue
+            if pd.isna(latest["RSI"]) or pd.isna(latest["MACD"]):
+                continue
 
-        close_price = float(latest["Close"])
-        high_52w    = float(latest["HIGH_52W"])
+            close_price = float(latest["Close"])
+            high_52w    = float(latest["HIGH_52W"])
 
-        if high_52w <= 0:
-            continue
-        drop_pct = ((high_52w - close_price) / high_52w) * 100
+            if high_52w <= 0:
+                continue
+            drop_pct = ((high_52w - close_price) / high_52w) * 100
 
-        if drop_pct < MIN_DROP_FROM_52W_HIGH or drop_pct > MAX_DROP_FROM_52W_HIGH:
-            continue
+            if drop_pct < MIN_DROP_FROM_52W_HIGH or drop_pct > MAX_DROP_FROM_52W_HIGH:
+                continue
 
-        # ── QUALITY FILTER 1: minimum price ─────────────────────────────────────
-        if close_price < MIN_STOCK_PRICE:
-            continue
+            # ── QUALITY FILTER 1: minimum price ─────────────────────────────────────
+            if close_price < MIN_STOCK_PRICE:
+                continue
 
-        # ── QUALITY FILTER 2: minimum liquidity ─────────────────────────────────
-        avg_vol = float(ticker["Volume"].iloc[-21:-1].mean())
-        if avg_vol < MIN_AVG_DAILY_VOLUME:
-            continue
+            # ── QUALITY FILTER 2: minimum liquidity ─────────────────────────────────
+            avg_vol = float(ticker["Volume"].iloc[-21:-1].mean())
+            if avg_vol < MIN_AVG_DAILY_VOLUME:
+                continue
 
-        # ── QUALITY FILTER 3: not a falling knife — must be within x% of SMA200 ─
-        if "SMA200" in ticker.columns and not pd.isna(latest.get("SMA200")):
-            sma200 = float(latest["SMA200"])
-            if sma200 > 0:
-                pct_below_sma200 = (sma200 - close_price) / sma200 * 100
-                if pct_below_sma200 > MAX_DROP_BELOW_SMA200:
-                    continue
+            # ── QUALITY FILTER 3: not a falling knife — must be within x% of SMA200 ─
+            if "SMA200" in ticker.columns and not pd.isna(latest.get("SMA200")):
+                sma200 = float(latest["SMA200"])
+                if sma200 > 0:
+                    pct_below_sma200 = (sma200 - close_price) / sma200 * 100
+                    if pct_below_sma200 > MAX_DROP_BELOW_SMA200:
+                        continue
 
-        # ── QUALITY FILTER 4: fundamentals (from watchlist columns) ─────────────
-        roe     = row.get("ROE %")
-        yoy_rev = row.get("YOY Revenue %")
-        if roe is not None and not pd.isna(roe):
-            try:
-                if float(roe) < MIN_ROE:
-                    continue
-            except (ValueError, TypeError):
-                pass
-        if yoy_rev is not None and not pd.isna(yoy_rev):
-            try:
-                if float(yoy_rev) < MIN_YOY_REVENUE_GROWTH:
-                    continue
-            except (ValueError, TypeError):
-                pass
+            # ── QUALITY FILTER 4: fundamentals (from watchlist columns) ─────────────
+            roe     = row.get("ROE %")
+            yoy_rev = row.get("YOY Revenue %")
+            if roe is not None and not pd.isna(roe):
+                try:
+                    if float(roe) < MIN_ROE:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            if yoy_rev is not None and not pd.isna(yoy_rev):
+                try:
+                    if float(yoy_rev) < MIN_YOY_REVENUE_GROWTH:
+                        continue
+                except (ValueError, TypeError):
+                    pass
 
-        current_rsi = float(latest["RSI"])
-        past_10_rsi = ticker["RSI"].iloc[-11:-1].min()
+            current_rsi = float(latest["RSI"])
+            past_10_rsi = ticker["RSI"].iloc[-11:-1].min()
 
-        if current_rsi < RSI_CURL_MIN or past_10_rsi > RSI_OVERSOLD_THRESHOLD:
-            continue
+            if current_rsi < RSI_CURL_MIN or past_10_rsi > RSI_OVERSOLD_THRESHOLD:
+                continue
 
-        ema20 = float(latest["EMA20"])
-        if close_price < ema20:
-            continue
+            ema20 = float(latest["EMA20"])
+            if close_price < ema20:
+                continue
 
-        vol_now = float(latest["Volume"])
-        vol_avg = float(ticker["Volume"].iloc[-21:-1].mean())
-        if vol_avg <= 0:
-            continue
+            vol_now = float(latest["Volume"])
+            vol_avg = float(ticker["Volume"].iloc[-21:-1].mean())
+            if vol_avg <= 0:
+                continue
 
-        vol_ratio = vol_now / vol_avg
-        if vol_ratio < MIN_VOLUME_RATIO:
-            continue
+            vol_ratio = vol_now / vol_avg
+            if vol_ratio < MIN_VOLUME_RATIO:
+                continue
 
-        macd     = float(latest["MACD"])
-        macd_sig = float(latest["MACD_SIGNAL"])
-        if macd < macd_sig or macd > 2.0:
-            continue
+            macd     = float(latest["MACD"])
+            macd_sig = float(latest["MACD_SIGNAL"])
+            if macd < macd_sig or macd > 2.0:
+                continue
 
-        reversal_signals = [
-            f"📉 -{drop_pct:.1f}% from 52W High",
-            "📈 RSI Oversold Curl",
-            "🎯 Closed above 20 EMA",
-            "📊 MACD Bullish Cross"
-        ]
+            reversal_signals = [
+                f"📉 -{drop_pct:.1f}% from 52W High",
+                "📈 RSI Oversold Curl",
+                "🎯 Closed above 20 EMA",
+                "📊 MACD Bullish Cross"
+            ]
 
-        today_str  = ist_now.strftime("%Y-%m-%d")
-        dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
+            today_str  = ist_now.strftime("%Y-%m-%d")
+            dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
 
-        candle_range   = float(latest["High"]) - float(latest["Low"])
-        candle_high    = float(latest["High"])
-        candle_low     = float(latest["Low"])
-        atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
+            candle_range   = float(latest["High"]) - float(latest["Low"])
+            candle_high    = float(latest["High"])
+            candle_low     = float(latest["Low"])
+            atr_val        = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
 
-        # ── v5: CLIMAX TOP DISQUALIFIER ───────────────────────────────────────
-        # Operators push beaten-down stocks to a fake bounce high with massive
-        # volume, then dump. Same climax top pattern as breakout scanners.
-        lookback_ct = min(CLIMAX_VOLUME_LOOKBACK, len(ticker) - 1)
-        if lookback_ct >= 5:
-            latest_vol_ct = float(latest["Volume"])
-            max_vol_ct    = float(ticker["Volume"].iloc[-lookback_ct - 1:-1].max())
-            candle_rng_ct = candle_high - candle_low
-            if candle_rng_ct > 0 and latest_vol_ct > max_vol_ct:
-                upper_wick_pct = (candle_high - close_price) / candle_rng_ct
-                close_pos_ct   = (close_price - candle_low) / candle_rng_ct
-                if upper_wick_pct > 0.25 and close_pos_ct < 0.40:
+            # ── v5: CLIMAX TOP DISQUALIFIER ───────────────────────────────────────
+            # Operators push beaten-down stocks to a fake bounce high with massive
+            # volume, then dump. Same climax top pattern as breakout scanners.
+            lookback_ct = min(CLIMAX_VOLUME_LOOKBACK, len(ticker) - 1)
+            if lookback_ct >= 5:
+                latest_vol_ct = float(latest["Volume"])
+                max_vol_ct    = float(ticker["Volume"].iloc[-lookback_ct - 1:-1].max())
+                candle_rng_ct = candle_high - candle_low
+                if candle_rng_ct > 0 and latest_vol_ct > max_vol_ct:
+                    upper_wick_pct = (candle_high - close_price) / candle_rng_ct
+                    close_pos_ct   = (close_price - candle_low) / candle_rng_ct
+                    if upper_wick_pct > 0.25 and close_pos_ct < 0.40:
+                        logger.debug(
+                            f"  ⊘ {symbol} climax top on reversal candle — skipping"
+                        )
+                        continue
+
+            # ── v5: THIN SPREAD TRAP ─────────────────────────────────────────────
+            # Reversal candle with tiny range = no conviction, possible manipulation.
+            if close_price > 0 and candle_range > 0:
+                range_pct = candle_range / close_price
+                if range_pct < MIN_CANDLE_RANGE_PCT:
                     logger.debug(
-                        f"  ⊘ {symbol} climax top on reversal candle — skipping"
+                        f"  ⊘ {symbol} thin spread reversal ({range_pct:.3%}) — skipping"
                     )
                     continue
 
-        # ── v5: THIN SPREAD TRAP ─────────────────────────────────────────────
-        # Reversal candle with tiny range = no conviction, possible manipulation.
-        if close_price > 0 and candle_range > 0:
-            range_pct = candle_range / close_price
-            if range_pct < MIN_CANDLE_RANGE_PCT:
-                logger.debug(
-                    f"  ⊘ {symbol} thin spread reversal ({range_pct:.3%}) — skipping"
-                )
+            # ── Dynamic S/R and Indicator-based SL + Target (REVERSAL mode) ───────
+            # Reversal scanner: targets are mean-reversion levels (EMA20, SMA50),
+            # NOT overhead resistance. SL is widest buffer (anti-trap for volatile stocks).
+            sl_result = compute_sl_and_target(
+                entry_price=close_price,
+                atr=atr_val,
+                candle_range=candle_range,
+                mode="REVERSAL",
+                adx=latest.get("ADX"),
+                rsi=current_rsi,
+                macd_hist=latest.get("MACD_HIST"),
+                atr_pct=latest.get("ATR_PCT"),
+                swing_low=latest.get("SWING_LOW"),
+                swing_high=latest.get("SWING_HIGH"),
+                bb_upper=latest.get("BB_UPPER"),
+                bb_lower=latest.get("BB_LOWER"),
+                bb_mid=latest.get("BB_MID"),
+                s1=latest.get("S1"),
+                s2=latest.get("S2"),
+                r1=latest.get("R1"),
+                r2=latest.get("R2"),
+                swing_low_raw=latest.get("SWING_LOW_RAW"),
+                swing_high_raw=latest.get("SWING_HIGH_RAW"),
+                candle_low=candle_low,
+                vwap=latest.get("VWAP"),
+                # Mean-reversion specific targets
+                ema20=latest.get("EMA20"),
+                sma50=latest.get("SMA50"),
+            )
+            suggested_stop = sl_result["stop_loss"]
+            target_price   = sl_result["target_1"]
+
+            signal_str = ", ".join(reversal_signals)
+
+            # ── DYNAMIC REVERSAL SCORING ──────────────────────────────────────────
+            pct_below_200 = None
+            if "SMA200" in ticker.columns and not pd.isna(latest.get("SMA200")):
+                _sma200 = float(latest["SMA200"])
+                if _sma200 > 0:
+                    pct_below_200 = (_sma200 - close_price) / _sma200 * 100
+
+            # Read OBV trend for scoring bonus
+            obv_trend_val = None
+            if "OBV_TREND" in ticker.columns:
+                try:
+                    obv_trend_val = int(latest.get("OBV_TREND", 0) or 0)
+                except (TypeError, ValueError):
+                    obv_trend_val = 0
+
+            delivery_pct = prev_delivery_map.get(symbol, None)
+
+            reversal_score = _score_reversal(
+                vol_ratio=vol_ratio,
+                drop_pct=drop_pct,
+                current_rsi=current_rsi,
+                past_10_rsi_min=float(past_10_rsi),
+                macd_hist=latest.get("MACD_HIST"),
+                pct_below_sma200=pct_below_200,
+                category=category,
+                rr_ratio=sl_result.get("rr_ratio"),
+                obv_trend=obv_trend_val,
+                delivery_pct=delivery_pct,
+            )
+
+            if reversal_score < MIN_REVERSAL_SCORE:
+                logger.debug(f"  ⊘ {symbol} reversal score {reversal_score} < {MIN_REVERSAL_SCORE} — skipping")
+                continue
+            # ─────────────────────────────────────────────────────────────────────
+
+            above_ema20  = bool(close_price >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
+            above_sma50  = bool(close_price >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
+            golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
+            body_ratio   = round(abs(close_price - float(latest["Open"])) / candle_range * 100) if candle_range > 0 else 0
+
+            context = {
+                "technicals": {
+                    "above_ema20":      above_ema20,
+                    "above_sma50":      above_sma50,
+                    "golden_cross":     golden_cross,
+                    "body_ratio":       round(body_ratio, 2),
+                    "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
+                    "rsi":              round(current_rsi, 1),
+                    "volume_ratio":     round(vol_ratio, 2)
+                },
+                "session": {
+                    "open":             round(float(latest["Open"]), 2),
+                    "day_high":         round(float(latest["High"]), 2),
+                    "day_low":          round(float(latest["Low"]), 2)
+                },
+                "fundamentals": {
+                    "peg":              row.get("PEG Ratio"),
+                    "yoy_rev":          row.get("YOY Revenue %"),
+                    "yoy_profit":       row.get("YOY Profit %"),
+                    "roe":              row.get("ROE %")
+                },
+                "execution": {
+                    "sl_method":        sl_result.get("sl_method"),
+                    "t_method":         sl_result.get("t_method"),
+                    "trail_note":       sl_result.get("trail_note")
+                }
+            }
+
+
+            saved, cap_alloc, shares = save_alert_if_new(
+                symbol,
+                dedup_key,
+                ist_now.strftime("%Y-%m-%d %H:%M:%S"),
+                scanner="REVERSAL",
+                category=category,
+                entry_price=round(close_price, 2),
+                signals=signal_str,
+                score=reversal_score,
+                rsi=round(current_rsi, 1),
+                volume_ratio=round(vol_ratio, 2),
+                stop_loss=suggested_stop,
+                target_price=target_price,
+                context=context,
+            )
+            if not saved:
                 continue
 
-        # ── Dynamic S/R and Indicator-based SL + Target (REVERSAL mode) ───────
-        # Reversal scanner: targets are mean-reversion levels (EMA20, SMA50),
-        # NOT overhead resistance. SL is widest buffer (anti-trap for volatile stocks).
-        sl_result = compute_sl_and_target(
-            entry_price=close_price,
-            atr=atr_val,
-            candle_range=candle_range,
-            mode="REVERSAL",
-            adx=latest.get("ADX"),
-            rsi=current_rsi,
-            macd_hist=latest.get("MACD_HIST"),
-            atr_pct=latest.get("ATR_PCT"),
-            swing_low=latest.get("SWING_LOW"),
-            swing_high=latest.get("SWING_HIGH"),
-            bb_upper=latest.get("BB_UPPER"),
-            bb_lower=latest.get("BB_LOWER"),
-            bb_mid=latest.get("BB_MID"),
-            s1=latest.get("S1"),
-            s2=latest.get("S2"),
-            r1=latest.get("R1"),
-            r2=latest.get("R2"),
-            swing_low_raw=latest.get("SWING_LOW_RAW"),
-            swing_high_raw=latest.get("SWING_HIGH_RAW"),
-            candle_low=candle_low,
-            vwap=latest.get("VWAP"),
-            # Mean-reversion specific targets
-            ema20=latest.get("EMA20"),
-            sma50=latest.get("SMA50"),
-        )
-        suggested_stop = sl_result["stop_loss"]
-        target_price   = sl_result["target_1"]
-
-        signal_str = ", ".join(reversal_signals)
-
-        # ── DYNAMIC REVERSAL SCORING ──────────────────────────────────────────
-        pct_below_200 = None
-        if "SMA200" in ticker.columns and not pd.isna(latest.get("SMA200")):
-            _sma200 = float(latest["SMA200"])
-            if _sma200 > 0:
-                pct_below_200 = (_sma200 - close_price) / _sma200 * 100
-
-        # Read OBV trend for scoring bonus
-        obv_trend_val = None
-        if "OBV_TREND" in ticker.columns:
-            try:
-                obv_trend_val = int(latest.get("OBV_TREND", 0) or 0)
-            except (TypeError, ValueError):
-                obv_trend_val = 0
-
-        delivery_pct = prev_delivery_map.get(symbol, None)
-
-        reversal_score = _score_reversal(
-            vol_ratio=vol_ratio,
-            drop_pct=drop_pct,
-            current_rsi=current_rsi,
-            past_10_rsi_min=float(past_10_rsi),
-            macd_hist=latest.get("MACD_HIST"),
-            pct_below_sma200=pct_below_200,
-            category=category,
-            rr_ratio=sl_result.get("rr_ratio"),
-            obv_trend=obv_trend_val,
-            delivery_pct=delivery_pct,
-        )
-
-        if reversal_score < MIN_REVERSAL_SCORE:
-            logger.debug(f"  ⊘ {symbol} reversal score {reversal_score} < {MIN_REVERSAL_SCORE} — skipping")
-            continue
-        # ─────────────────────────────────────────────────────────────────────
-
-        above_ema20  = bool(close_price >= float(latest["EMA20"])) if "EMA20" in ticker.columns and not pd.isna(latest.get("EMA20")) else None
-        above_sma50  = bool(close_price >= float(latest["SMA50"])) if "SMA50" in ticker.columns and not pd.isna(latest.get("SMA50")) else None
-        golden_cross = bool(float(latest["SMA50"]) >= float(latest["SMA200"])) if ("SMA50" in ticker.columns and "SMA200" in ticker.columns and not pd.isna(latest.get("SMA50")) and not pd.isna(latest.get("SMA200"))) else None
-        body_ratio   = round(abs(close_price - float(latest["Open"])) / candle_range * 100) if candle_range > 0 else 0
-
-        context = {
-            "technicals": {
-                "above_ema20":      above_ema20,
-                "above_sma50":      above_sma50,
-                "golden_cross":     golden_cross,
-                "body_ratio":       round(body_ratio, 2),
-                "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
-                "rsi":              round(current_rsi, 1),
-                "volume_ratio":     round(vol_ratio, 2)
-            },
-            "session": {
+            alerts_by_category.setdefault(category, []).append({
+                "symbol":           symbol,
+                "category":         category,
+                "breakout_signals": reversal_signals,
+                "price":            round(close_price, 2),
                 "open":             round(float(latest["Open"]), 2),
                 "day_high":         round(float(latest["High"]), 2),
-                "day_low":          round(float(latest["Low"]), 2)
-            },
-            "fundamentals": {
-                "peg":              row.get("PEG Ratio"),
-                "yoy_rev":          row.get("YOY Revenue %"),
-                "yoy_profit":       row.get("YOY Profit %"),
-                "roe":              row.get("ROE %")
-            },
-            "execution": {
+                "day_low":          round(float(latest["Low"]), 2),
+                "rsi":              round(current_rsi, 1),
+                "volume_ratio":     round(vol_ratio, 2),
+                "body_ratio":       round(abs(close_price - float(latest["Open"])) / candle_range * 100)
+                                    if candle_range > 0 else 0,
+                "score":            reversal_score,
+                "above_ema20":      True,
+                "atr_stop":         suggested_stop,
+                "target_price":     target_price,
+                "target_2":         sl_result.get("target_2"),
+                "target_3":         sl_result.get("target_3"),
                 "sl_method":        sl_result.get("sl_method"),
                 "t_method":         sl_result.get("t_method"),
-                "trail_note":       sl_result.get("trail_note")
-            }
-        }
+                "rr_ratio":         sl_result.get("rr_ratio"),
+                "trail_note":       sl_result.get("trail_note"),
+                "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
+                "yoy_rev":          row.get("YOY Revenue %"),
+                "yoy_profit":       row.get("YOY Profit %"),
+                "roe":              row.get("ROE %"),
+                "capital_allocated": cap_alloc,
+                "shares_bought":     shares
+            })
+            total_alerts += 1
 
-
-        saved, cap_alloc, shares = save_alert_if_new(
-            symbol,
-            dedup_key,
-            ist_now.strftime("%Y-%m-%d %H:%M:%S"),
-            scanner="REVERSAL",
-            category=category,
-            entry_price=round(close_price, 2),
-            signals=signal_str,
-            score=reversal_score,
-            rsi=round(current_rsi, 1),
-            volume_ratio=round(vol_ratio, 2),
-            stop_loss=suggested_stop,
-            target_price=target_price,
-            context=context,
-        )
-        if not saved:
-            continue
-
-        alerts_by_category.setdefault(category, []).append({
-            "symbol":           symbol,
-            "category":         category,
-            "breakout_signals": reversal_signals,
-            "price":            round(close_price, 2),
-            "open":             round(float(latest["Open"]), 2),
-            "day_high":         round(float(latest["High"]), 2),
-            "day_low":          round(float(latest["Low"]), 2),
-            "rsi":              round(current_rsi, 1),
-            "volume_ratio":     round(vol_ratio, 2),
-            "body_ratio":       round(abs(close_price - float(latest["Open"])) / candle_range * 100)
-                                if candle_range > 0 else 0,
-            "score":            reversal_score,
-            "above_ema20":      True,
-            "atr_stop":         suggested_stop,
-            "target_price":     target_price,
-            "target_2":         sl_result.get("target_2"),
-            "target_3":         sl_result.get("target_3"),
-            "sl_method":        sl_result.get("sl_method"),
-            "t_method":         sl_result.get("t_method"),
-            "rr_ratio":         sl_result.get("rr_ratio"),
-            "trail_note":       sl_result.get("trail_note"),
-            "delivery_pct":     round(delivery_pct, 1) if delivery_pct is not None else None,
-            "yoy_rev":          row.get("YOY Revenue %"),
-            "yoy_profit":       row.get("YOY Profit %"),
-            "roe":              row.get("ROE %"),
-            "capital_allocated": cap_alloc,
-            "shares_bought":     shares
-        })
-        total_alerts += 1
+        except Exception as e:
+            logger.exception(f'❌ Error processing {symbol}')
+            upsert_fetch_error('yfinance', 'REVERSAL', symbol, '1d', 'processing_error', str(e))
 
     if total_alerts > 0:
         for cat in sorted(alerts_by_category.keys()):

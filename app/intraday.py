@@ -584,8 +584,14 @@ def start(run_once=False):
                     })
                     total_alerts += 1
 
-                except Exception:
+                except Exception as e:
                     logger.exception(f"❌ UNHANDLED ERROR processing {symbol}")
+                    rejection_counts["indicator_fail"] = rejection_counts.get("indicator_fail", 0) + 1
+                    try:
+                        upsert_fetch_error('yfinance', 'INTRADAY', symbol, '15m', 'processing_error', str(e))
+                    except Exception:
+                        logger.exception(f'Failed to upsert fetch error for {symbol}')
+                    continue
             
             scan_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
             
