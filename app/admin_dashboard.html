@@ -958,7 +958,7 @@ function renderScannerGrid(scanner_stats) {
     if (!isAck) {
       alertLabel = "WARNING";
       let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${encodeURIComponent(data.raw_source || sc)}` : `/api/scanner_health/acknowledge/${sc}`;
-      dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>loadScannerStatus())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
+      dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>doRefresh())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
       
       alertHtml = `
       <div class="scanner-alert-count" style="color: #ff4d6d;">⚠</div>

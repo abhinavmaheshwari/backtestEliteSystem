@@ -434,7 +434,7 @@ def upsert_scanner_health(
                                     last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
                                     today_alerts = EXCLUDED.today_alerts,
                                     error_msg    = EXCLUDED.error_msg,
-                                    is_acknowledged = FALSE,
+                                    is_acknowledged = CASE WHEN EXCLUDED.error_msg IS DISTINCT FROM scanner_health.error_msg THEN FALSE ELSE scanner_health.is_acknowledged END,
                                     updated_at   = EXCLUDED.updated_at
                         """, (scanner_name, status, last_success, today_alerts, error_msg, now_str, status))
                     else:
@@ -459,7 +459,7 @@ def upsert_scanner_health(
                                 SET status       = COALESCE(%s, scanner_health.status),
                                     last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
                                     error_msg    = EXCLUDED.error_msg,
-                                    is_acknowledged = FALSE,
+                                    is_acknowledged = CASE WHEN EXCLUDED.error_msg IS DISTINCT FROM scanner_health.error_msg THEN FALSE ELSE scanner_health.is_acknowledged END,
                                     updated_at   = EXCLUDED.updated_at
                         """, (scanner_name, status, last_success, error_msg, now_str, status))
                     else:
@@ -784,8 +784,8 @@ def upsert_data_fetch_health(source_name: str, last_success: str = None, last_fa
                         ON CONFLICT (source_name) DO UPDATE
                           SET last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
                               consecutive_failures = COALESCE(data_fetch_health.consecutive_failures, 0) + 1,
+                              is_acknowledged = CASE WHEN EXCLUDED.error_msg IS DISTINCT FROM data_fetch_health.error_msg THEN FALSE ELSE data_fetch_health.is_acknowledged END,
                               error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
-                              is_acknowledged = FALSE,
                               updated_at = EXCLUDED.updated_at
                     """, (source_name, last_success, last_failure, error_msg, now))
                 conn.commit()

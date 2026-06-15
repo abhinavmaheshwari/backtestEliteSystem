@@ -142,7 +142,10 @@ def worker_loop():
                                     conn.commit()
                             logger.info(f"✅ Saved pledge for {sym}: {pledge_val}%")
                             mark_success('scraperapi')
-                            upsert_scanner_health("Pledge Worker", "RUNNING", today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
+                            from datetime import datetime
+                            from zoneinfo import ZoneInfo
+                            now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+                            upsert_scanner_health("Pledge Worker", "RUNNING", last_success=now_str, today_alerts=i+1, error_msg=f"Last: {sym} | Total: {len(stale_symbols)}")
                         else:
                             logger.warning(f"⚠️ Could not find pledge text on page for {sym}")
                             error_count += 1
@@ -174,8 +177,12 @@ def worker_loop():
                 
             # Loop done
             status = "IDLE" if error_count == 0 else "DOWN"
-            err_msg = f"Last: Finished | Total: {len(stale_symbols)} | Failed: {error_count}" if error_count > 0 else f"Last: Finished | Total: {len(stale_symbols)}"
-            upsert_scanner_health("Pledge Worker", status, error_msg=err_msg, today_alerts=error_count)
+            last_sym = stale_symbols[-1] if stale_symbols else "None"
+            err_msg = f"Last: {last_sym} | Total: {len(stale_symbols)} | Failed: {error_count}" if error_count > 0 else f"Last: {last_sym} | Total: {len(stale_symbols)}"
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+            upsert_scanner_health("Pledge Worker", status, last_success=now_str, error_msg=err_msg, today_alerts=len(stale_symbols))
             logger.info("Sleeping 1 hour before next full check...")
             time.sleep(3600)
             
