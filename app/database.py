@@ -242,9 +242,11 @@ def init_db():
                         last_failure TEXT,
                         consecutive_failures INTEGER NOT NULL DEFAULT 0,
                         error_msg TEXT,
+                        is_acknowledged BOOLEAN DEFAULT TRUE,
                         updated_at TEXT NOT NULL
                     )
                 """)
+                cur.execute("ALTER TABLE data_fetch_health ADD COLUMN IF NOT EXISTS is_acknowledged BOOLEAN DEFAULT TRUE")
 
                 # ── Manual Portfolio Tracker ──────────────────────────────────────
                 cur.execute("""
@@ -683,33 +685,65 @@ def upsert_data_fetch_health(source_name: str, last_success: str = None, last_fa
             try:
                 # If consecutive_failures is None, don't overwrite the existing value.
                 if consecutive_failures == 0:
-                    cur.execute("DELETE FROM data_fetch_health WHERE source_name = %s", (source_name,))
+                    if source_name == 'gemini':
+                        # Gemini AI worker resets dynamically
+                        cur.execute("DELETE FROM data_fetch_health WHERE source_name = %s", (source_name,))
+                    else:
+                        # Success for others: Reset consecutive failures, but keep is_acknowledged as-is (requires admin dismissal)
+                        cur.execute("""
+                            INSERT INTO data_fetch_health (source_name, last_success, consecutive_failures, is_acknowledged, updated_at)
+                            VALUES (%s, %s, 0, TRUE, %s)
+                            ON CONFLICT (source_name) DO UPDATE
+                                SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
+                                    consecutive_failures = 0,
+                                    updated_at = EXCLUDED.updated_at
+                        """, (source_name, last_success, now))
                 elif consecutive_failures is not None:
+                    # Specific consecutive_failures provided (uncommon pathway)
                     cur.execute("""
-                        INSERT INTO data_fetch_health (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO data_fetch_health (source_name, last_success, last_failure, consecutive_failures, error_msg, is_acknowledged, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, FALSE, %s)
                         ON CONFLICT (source_name) DO UPDATE
                             SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
                                 last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
                                 consecutive_failures = EXCLUDED.consecutive_failures,
                                 error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
+                                is_acknowledged = FALSE,
                                 updated_at = EXCLUDED.updated_at
                     """, (source_name, last_success, last_failure, consecutive_failures, error_msg, now))
                 else:
+                    # Standard failure reporting
                     cur.execute("""
                         INSERT INTO data_fetch_health 
-                          (source_name, last_success, last_failure, consecutive_failures, error_msg, updated_at)
-                        VALUES (%s, %s, %s, 1, %s, %s)
+                          (source_name, last_success, last_failure, consecutive_failures, error_msg, is_acknowledged, updated_at)
+                        VALUES (%s, %s, %s, 1, %s, FALSE, %s)
                         ON CONFLICT (source_name) DO UPDATE
                           SET last_failure = COALESCE(EXCLUDED.last_failure, data_fetch_health.last_failure),
                               consecutive_failures = COALESCE(data_fetch_health.consecutive_failures, 0) + 1,
                               error_msg = COALESCE(EXCLUDED.error_msg, data_fetch_health.error_msg),
+                              is_acknowledged = FALSE,
                               updated_at = EXCLUDED.updated_at
                     """, (source_name, last_success, last_failure, error_msg, now))
                 conn.commit()
             except Exception:
                 conn.rollback()
                 logger.exception(f"❌ upsert_data_fetch_health failed for {source_name}")
+
+def acknowledge_data_fetch_health(source_name: str):
+    """Admin acknowledgment to clear persistent UI warnings."""
+    init_db()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    UPDATE data_fetch_health 
+                    SET is_acknowledged = TRUE, error_msg = NULL 
+                    WHERE source_name = %s
+                """, (source_name,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception(f"❌ acknowledge_data_fetch_health failed for {source_name}")
 
 
 def get_all_data_fetch_health() -> list:

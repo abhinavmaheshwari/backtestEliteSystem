@@ -427,6 +427,17 @@ def api_data_fetch_health():
         logger.exception("❌ /api/data_fetch_health failed")
         return jsonify([]), 500
 
+@app.route("/api/data_fetch_health/acknowledge/<source_name>", methods=["POST"])
+def api_acknowledge_health(source_name):
+    """Admin endpoint to dismiss persistent API warnings."""
+    try:
+        from database import acknowledge_data_fetch_health
+        acknowledge_data_fetch_health(source_name)
+        return jsonify({"status": "success", "source": source_name})
+    except Exception as e:
+        logger.exception(f"❌ /api/data_fetch_health/acknowledge failed for {source_name}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/wealth")
 def route_wealth():
     from config import BASE_DIR

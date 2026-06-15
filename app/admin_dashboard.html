@@ -695,28 +695,6 @@ async function loadData() {
   return getDemoData();
 }
 
-
-let isAlertActive = false;
-let originalTitle = document.title;
-let alertInterval;
-function triggerAlertNotification() {
-    if(isAlertActive) return;
-    isAlertActive = true;
-    if (typeof playDing === 'function') playDing();
-    let toggle = false;
-    alertInterval = setInterval(() => {
-        document.title = toggle ? '⚠️ NEW ALERT!' : 'System Admin';
-        toggle = !toggle;
-    }, 1000);
-}
-function dismissAlert() {
-    if(!isAlertActive) return;
-    isAlertActive = false;
-    clearInterval(alertInterval);
-    document.title = originalTitle;
-}
-document.addEventListener('click', dismissAlert);
-
 async function loadScannerStatus() {
   let stats = null;
   const urls = [
@@ -737,12 +715,15 @@ async function loadScannerStatus() {
     if (r2.ok) {
       const health = await r2.json();
       health.forEach(f => {
-        const isDown = f.consecutive_failures > 0;
+        const isPersistentWarning = f.is_acknowledged === false;
+        const isDown = f.consecutive_failures > 0 || isPersistentWarning;
         stats[`API_${f.source_name}`] = {
           status: isDown ? 'DOWN' : 'OK',
           updated_at: isDown ? f.last_failure : f.last_success,
           error: f.error_msg,
           today_alerts: f.consecutive_failures,
+          is_acknowledged: f.is_acknowledged,
+          raw_source: f.source_name,
           today_trades: []
         };
         SCANNER_META[`API_${f.source_name}`] = {
@@ -959,13 +940,19 @@ function renderScannerGrid(scanner_stats) {
       tooltipHtml = '';
     } else if (isApi) {
       const fails = data.today_alerts;
-      alertLabel = "Failures";
+      const isAck = data.is_acknowledged !== false;
+      alertLabel = isAck && fails === 0 ? "Failures" : "WARNING";
+      
+      let dismissBtn = !isAck ? `<button onclick="event.stopPropagation(); fetch('/api/data_fetch_health/acknowledge/${data.raw_source}',{method:'POST'}).then(()=>window.location.reload())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>` : '';
+
       alertHtml = `
-      <div class="scanner-alert-count ${fails===0?'zero':''}" style="${fails > 0 ? 'color: #ff4d6d;' : ''}">
-        ${fails > 0 ? '1' : '0'}
-      </div>`;
-      alertSub = fails > 0 ? 'click to view error trace' : 'system healthy';
-      tooltipHtml = fails > 0 && data.error ? `
+      <div class="scanner-alert-count ${isAck && fails===0?'zero':''}" style="${(!isAck || fails > 0) ? 'color: #ff4d6d;' : ''}">
+        ${(!isAck || fails > 0) ? '⚠' : '0'}
+      </div>
+      ${dismissBtn}
+      `;
+      alertSub = (!isAck || fails > 0) ? 'click to view error trace' : 'system healthy';
+      tooltipHtml = (!isAck || fails > 0) && data.error ? `
       <div class="scanner-alert-tooltip">
         <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
         <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
@@ -1837,8 +1824,9 @@ async function initDashboard() {
               currentAlerts += val.today_alerts || 0;
           }
       }
-      if (prevTotalAlerts !== -1 && currentAlerts > prevTotalAlerts) {
-          if (typeof triggerAlertNotification === 'function') triggerAlertNotification();
+      let added = currentAlerts - prevTotalAlerts;
+      if (prevTotalAlerts !== -1 && added > 0) {
+          triggerAlertFlashing();
       }
       prevTotalAlerts = currentAlerts;
       renderScannerGrid(window._scannerStats);

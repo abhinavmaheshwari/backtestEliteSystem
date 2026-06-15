@@ -138,12 +138,21 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
 
 def calculate_100_point_score(r) -> int:
     """Calculates a strict 100-point Fund Manager score for a single stock."""
+    
+    def _safe_float(val, default=0.0):
+        if val is None: return default
+        try:
+            f = float(val)
+            return default if pd.isna(f) else f
+        except (ValueError, TypeError):
+            return default
+
     score = 0
 
     # ── QUALITY (25 pts) ──────────────────────────────────────────────────────
-    roe  = r.get("ROE %", 0) or 0
-    roce = r.get("ROCE %", 0) or 0
-    de   = r.get("Debt/Equity", 0) or 0
+    roe  = _safe_float(r.get("ROE %"), 0)
+    roce = _safe_float(r.get("ROCE %"), 0)
+    de   = _safe_float(r.get("Debt/Equity"), 0)
 
     if roe >= 15:  score += 8
     elif roe >= 10: score += 4
@@ -153,8 +162,8 @@ def calculate_100_point_score(r) -> int:
     elif de <= 0.5:  score += 4
 
     # ── GROWTH (25 pts) ───────────────────────────────────────────────────────
-    yoy_sales  = r.get("YOY Revenue %", 0) or 0
-    yoy_profit = r.get("YOY Profit %", 0) or 0
+    yoy_sales  = _safe_float(r.get("YOY Revenue %"), 0)
+    yoy_profit = _safe_float(r.get("YOY Profit %"), 0)
 
     if yoy_sales >= 20:   score += 13
     elif yoy_sales >= 12:  score += 8
@@ -162,11 +171,11 @@ def calculate_100_point_score(r) -> int:
     elif yoy_profit >= 15: score += 8
 
     # ── MOMENTUM (30 pts) — Highest weight: price leadership matters most ────
-    rs_6m     = r.get("rs_6m", 0) or 0
-    rs_rating = r.get("RS_Rating", 0) or 0
-    dist_52w  = r.get("dist_52w_high", 100) or 100
-    cmp_price = r.get("cmp", 0) or 0
-    sma_200   = r.get("sma_200", 0) or 0
+    rs_6m     = _safe_float(r.get("rs_6m"), 0)
+    rs_rating = _safe_float(r.get("RS_Rating"), 0)
+    dist_52w  = _safe_float(r.get("dist_52w_high"), 100)
+    cmp_price = _safe_float(r.get("cmp"), 0)
+    sma_200   = _safe_float(r.get("sma_200"), 0)
 
     if rs_rating > 90: score += 12
     elif rs_rating > 80: score += 8
@@ -404,6 +413,13 @@ def run_wealth_scan():
         if not os.path.exists(WEALTH_PATH):
             download_parquet_from_db("wealth_engine", WEALTH_PATH)
 
+        prev_wealth_df = pd.DataFrame()
+        if os.path.exists(WEALTH_PATH):
+            try:
+                prev_wealth_df = pd.read_parquet(WEALTH_PATH)
+            except Exception as e:
+                logger.error(f"Failed to load prev_wealth_df: {e}")
+
         df = pd.read_parquet(WATCHLIST_PATH)
 
         logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
@@ -419,6 +435,18 @@ def run_wealth_scan():
         def process_symbol(idx, row):
             sym = row["Stock"]
             tech = calculate_wealth_technicals(sym, nifty_6m_ret)
+            
+            # Fallback if Yahoo Finance fails
+            if tech.get("cmp") is None and not prev_wealth_df.empty and sym in prev_wealth_df["Stock"].values:
+                prev_row = prev_wealth_df[prev_wealth_df["Stock"] == sym].iloc[0]
+                tech["cmp"] = prev_row.get("cmp")
+                tech["sma_50"] = prev_row.get("sma_50")
+                tech["sma_200"] = prev_row.get("sma_200")
+                tech["rs_6m"] = prev_row.get("rs_6m")
+                tech["dist_52w_high"] = prev_row.get("dist_52w_high")
+                tech["liquidity"] = prev_row.get("liquidity", 0.0)
+                logger.warning(f"⚠️ YFinance failed for {sym}, using cached technicals from yesterday.")
+                
             tech["Stock"] = sym
             try:
                 tech["Promoter_Pledge"] = fetch_promoter_pledge(sym)
