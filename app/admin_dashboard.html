@@ -811,7 +811,17 @@ function renderKPIs(s) {
   const mm = String(nowIst.getMonth() + 1).padStart(2, '0');
   const dd = String(nowIst.getDate()).padStart(2, '0');
   const todayStr = `${yy}-${mm}-${dd}`;
-  const todaysCount = ALL_TRADES.filter(t => (t.alert_time||t.entry_date||'').startsWith(todayStr)).length;
+  const mainScanners = ['INTRADAY', '1H', 'EOD', 'REVERSAL', 'Wealth Engine'];
+  let todaysCount = 0;
+  if (window._scannerStats) {
+      for (const sc of mainScanners) {
+          if (window._scannerStats[sc]) {
+              todaysCount += (window._scannerStats[sc].today_alerts || 0);
+          }
+      }
+  } else {
+      todaysCount = ALL_TRADES.filter(t => (t.alert_time||t.entry_date||'').startsWith(todayStr)).length;
+  }
 
   const defs = [
     {id:'today',   label:"Today's Alerts", value:todaysCount,       cls:'blue',   sub:'new today',             filter:t=>(t.alert_time||t.entry_date||'').startsWith(todayStr)},
