@@ -73,13 +73,13 @@ def fetch_promoter_pledge(symbol: str):
                 logger.exception('Failed to report success for scraperapi')
         else:
             try:
-                mark_failure('scraperapi', f'status_code={res.status_code}')
+                mark_failure('scraperapi', f'status_code={res.status_code} URL={target_url}')
             except Exception:
                 logger.exception('Failed to report failure for scraperapi (non-200)')
     except Exception as e:
         logger.warning(f"Failed to scrape pledge for {symbol}: {e}")
         try:
-            mark_failure('scraperapi', e)
+            mark_failure('scraperapi', f"Exception: {e} URL={target_url}")
         except Exception:
             logger.exception('Failed to report scraperapi exception')
         return None

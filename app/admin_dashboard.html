@@ -879,7 +879,8 @@ function renderScannerGrid(scanner_stats) {
 
     const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
     const meta = SCANNER_META[sc] || {label:sc, desc:''};
-    const isDown = data.status === 'DOWN';
+    const isAck = data.is_acknowledged !== false;
+    const isDown = data.status === 'DOWN' || !isAck;
     const isIdle = !data.last_success;
     const statusClass = isDown ? 'status-down' : isIdle ? 'status-idle' : 'status-ok';
     const badgeClass  = isDown ? 'badge-down'  : isIdle ? 'badge-idle'  : 'badge-ok';
@@ -920,7 +921,22 @@ function renderScannerGrid(scanner_stats) {
       </div>`;
     let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
 
-    if (isAiWorker) {
+    if (!isAck) {
+      alertLabel = "WARNING";
+      let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${data.raw_source}` : `/api/scanner_health/acknowledge/${sc}`;
+      let dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>window.location.reload())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
+      
+      alertHtml = `
+      <div class="scanner-alert-count" style="color: #ff4d6d;">⚠</div>
+      ${dismissBtn}
+      `;
+      alertSub = 'click to view error trace';
+      tooltipHtml = data.error ? `
+      <div class="scanner-alert-tooltip">
+        <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
+        <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
+      </div>` : '';
+    } else if (isAiWorker) {
       let totalCount = "Total";
       let lastStock = "";
       if (data.error && data.error.includes("Total:")) {
@@ -940,23 +956,13 @@ function renderScannerGrid(scanner_stats) {
       tooltipHtml = '';
     } else if (isApi) {
       const fails = data.today_alerts;
-      const isAck = data.is_acknowledged !== false;
-      alertLabel = isAck && fails === 0 ? "Failures" : "WARNING";
-      
-      let dismissBtn = !isAck ? `<button onclick="event.stopPropagation(); fetch('/api/data_fetch_health/acknowledge/${data.raw_source}',{method:'POST'}).then(()=>window.location.reload())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>` : '';
-
+      alertLabel = "Failures";
       alertHtml = `
-      <div class="scanner-alert-count ${isAck && fails===0?'zero':''}" style="${(!isAck || fails > 0) ? 'color: #ff4d6d;' : ''}">
-        ${(!isAck || fails > 0) ? '⚠' : '0'}
-      </div>
-      ${dismissBtn}
-      `;
-      alertSub = (!isAck || fails > 0) ? 'click to view error trace' : 'system healthy';
-      tooltipHtml = (!isAck || fails > 0) && data.error ? `
-      <div class="scanner-alert-tooltip">
-        <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
-        <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
-      </div>` : '';
+      <div class="scanner-alert-count ${fails===0?'zero':''}">
+        ${fails}
+      </div>`;
+      alertSub = 'system healthy';
+      tooltipHtml = '';
     }
 
     el.innerHTML += `

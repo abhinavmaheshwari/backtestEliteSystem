@@ -147,9 +147,11 @@ def init_db():
                         last_success  TEXT,
                         today_alerts  INTEGER NOT NULL DEFAULT 0,
                         error_msg     TEXT,
+                        is_acknowledged BOOLEAN DEFAULT TRUE,
                         updated_at    TEXT    NOT NULL
                     )
                 """)
+                cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS is_acknowledged BOOLEAN DEFAULT TRUE")
 
 
                 # ── System state table for dashboard metrics / state caching ───────
@@ -413,33 +415,62 @@ def upsert_scanner_health(
     """
     init_db()
     now_str = datetime.now(IST).isoformat()
+    # If status is DOWN, or we explicitly pass an error_msg, flag as unacknowledged
+    is_ack = False if (status == 'DOWN' or error_msg) else None
+
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
                 if today_alerts is not None:
-                    cur.execute("""
-                        INSERT INTO scanner_health
-                            (scanner_name, status, last_success, today_alerts, error_msg, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (scanner_name) DO UPDATE
-                            SET status       = EXCLUDED.status,
-                                last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                today_alerts = EXCLUDED.today_alerts,
-                                error_msg    = EXCLUDED.error_msg,
-                                updated_at   = EXCLUDED.updated_at
-                    """, (scanner_name, status, last_success, today_alerts, error_msg, now_str))
+                    if is_ack is False:
+                        cur.execute("""
+                            INSERT INTO scanner_health
+                                (scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, FALSE, %s)
+                            ON CONFLICT (scanner_name) DO UPDATE
+                                SET status       = EXCLUDED.status,
+                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
+                                    today_alerts = EXCLUDED.today_alerts,
+                                    error_msg    = EXCLUDED.error_msg,
+                                    is_acknowledged = FALSE,
+                                    updated_at   = EXCLUDED.updated_at
+                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str))
+                    else:
+                        cur.execute("""
+                            INSERT INTO scanner_health
+                                (scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, TRUE, %s)
+                            ON CONFLICT (scanner_name) DO UPDATE
+                                SET status       = EXCLUDED.status,
+                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
+                                    today_alerts = EXCLUDED.today_alerts,
+                                    error_msg    = EXCLUDED.error_msg,
+                                    updated_at   = EXCLUDED.updated_at
+                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str))
                 else:
-                    # Don't overwrite today_alerts when just updating status/error
-                    cur.execute("""
-                        INSERT INTO scanner_health
-                            (scanner_name, status, last_success, today_alerts, error_msg, updated_at)
-                        VALUES (%s, %s, %s, 0, %s, %s)
-                        ON CONFLICT (scanner_name) DO UPDATE
-                            SET status       = EXCLUDED.status,
-                                last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                error_msg    = EXCLUDED.error_msg,
-                                updated_at   = EXCLUDED.updated_at
-                    """, (scanner_name, status, last_success, error_msg, now_str))
+                    if is_ack is False:
+                        cur.execute("""
+                            INSERT INTO scanner_health
+                                (scanner_name, status, last_success, error_msg, is_acknowledged, updated_at)
+                            VALUES (%s, %s, %s, %s, FALSE, %s)
+                            ON CONFLICT (scanner_name) DO UPDATE
+                                SET status       = EXCLUDED.status,
+                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
+                                    error_msg    = EXCLUDED.error_msg,
+                                    is_acknowledged = FALSE,
+                                    updated_at   = EXCLUDED.updated_at
+                        """, (scanner_name, status, last_success, error_msg, now_str))
+                    else:
+                        cur.execute("""
+                            INSERT INTO scanner_health
+                                (scanner_name, status, last_success, error_msg, is_acknowledged, updated_at)
+                            VALUES (%s, %s, %s, %s, TRUE, %s)
+                            ON CONFLICT (scanner_name) DO UPDATE
+                                SET status       = EXCLUDED.status,
+                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
+                                    error_msg    = EXCLUDED.error_msg,
+                                    updated_at   = EXCLUDED.updated_at
+                        """, (scanner_name, status, last_success, error_msg, now_str))
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -685,19 +716,15 @@ def upsert_data_fetch_health(source_name: str, last_success: str = None, last_fa
             try:
                 # If consecutive_failures is None, don't overwrite the existing value.
                 if consecutive_failures == 0:
-                    if source_name == 'gemini':
-                        # Gemini AI worker resets dynamically
-                        cur.execute("DELETE FROM data_fetch_health WHERE source_name = %s", (source_name,))
-                    else:
-                        # Success for others: Reset consecutive failures, but keep is_acknowledged as-is (requires admin dismissal)
-                        cur.execute("""
-                            INSERT INTO data_fetch_health (source_name, last_success, consecutive_failures, is_acknowledged, updated_at)
-                            VALUES (%s, %s, 0, TRUE, %s)
-                            ON CONFLICT (source_name) DO UPDATE
-                                SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
-                                    consecutive_failures = 0,
-                                    updated_at = EXCLUDED.updated_at
-                        """, (source_name, last_success, now))
+                    # Success for API: Reset consecutive failures, but keep is_acknowledged as-is (requires admin dismissal)
+                    cur.execute("""
+                        INSERT INTO data_fetch_health (source_name, last_success, consecutive_failures, is_acknowledged, updated_at)
+                        VALUES (%s, %s, 0, TRUE, %s)
+                        ON CONFLICT (source_name) DO UPDATE
+                            SET last_success = COALESCE(EXCLUDED.last_success, data_fetch_health.last_success),
+                                consecutive_failures = 0,
+                                updated_at = EXCLUDED.updated_at
+                    """, (source_name, last_success, now))
                 elif consecutive_failures is not None:
                     # Specific consecutive_failures provided (uncommon pathway)
                     cur.execute("""
@@ -737,7 +764,7 @@ def acknowledge_data_fetch_health(source_name: str):
             try:
                 cur.execute("""
                     UPDATE data_fetch_health 
-                    SET is_acknowledged = TRUE, error_msg = NULL 
+                    SET is_acknowledged = TRUE, error_msg = NULL, consecutive_failures = 0
                     WHERE source_name = %s
                 """, (source_name,))
                 conn.commit()

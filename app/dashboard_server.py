@@ -438,6 +438,17 @@ def api_acknowledge_health(source_name):
         logger.exception(f"❌ /api/data_fetch_health/acknowledge failed for {source_name}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/scanner_health/acknowledge/<scanner_name>", methods=["POST"])
+def api_acknowledge_scanner_health(scanner_name):
+    """Admin endpoint to dismiss persistent scanner warnings."""
+    try:
+        from database import acknowledge_scanner_health
+        acknowledge_scanner_health(scanner_name)
+        return jsonify({"status": "success", "scanner": scanner_name})
+    except Exception as e:
+        logger.exception(f"❌ /api/scanner_health/acknowledge failed for {scanner_name}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/wealth")
 def route_wealth():
     from config import BASE_DIR
