@@ -4,6 +4,7 @@ import time
 import logging
 import threading
 import pandas as pd
+from typing import Optional, Tuple
 # Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
 try:
     import app.yf_bootstrap
@@ -46,7 +47,7 @@ MAX_SECTOR_PCT = 0.25        # Max 25% of any portfolio bucket can be in one sec
 import time
 _nifty_cache = {"ret_6m": None, "dist_52w": None, "ts": None}
 
-def fetch_nifty_macro_state() -> tuple[float | None, float | None]:
+def fetch_nifty_macro_state() -> Tuple[Optional[float], Optional[float]]:
     """Fetch 6-month return and 52W distance of Nifty 50 for RS and Macro Regime Gate."""
     global _nifty_cache
     try:

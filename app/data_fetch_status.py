@@ -36,7 +36,7 @@ SOURCE_IMPACT_MAP = {
 }
 
 
-def _split_source(source_name: str) -> tuple[str, str | None]:
+def _split_source(source_name: str) -> tuple[str, Optional[str]]:
     """Split a source_name like 'yfinance:15m' into (base, scope).
     scope can be interval e.g., '15m','1h','1d' or a scanner name like 'INTRADAY'."""
     if ':' in source_name:

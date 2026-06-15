@@ -6,6 +6,7 @@ import pandas as pd
 import logging
 from zoneinfo import ZoneInfo
 from datetime import datetime
+from typing import Optional
 
 from technical_indicators import apply_indicators
 from telegram_engine import send_telegram_message
@@ -71,12 +72,12 @@ def _score_reversal(
     drop_pct: float,
     current_rsi: float,
     past_10_rsi_min: float,
-    macd_hist: float | None,
-    pct_below_sma200: float | None,
+    macd_hist: Optional[float],
+    pct_below_sma200: Optional[float],
     category: str,
-    rr_ratio: float | None,
-    obv_trend: int | None = None,
-    delivery_pct: float | None = None,
+    rr_ratio: Optional[float],
+    obv_trend: Optional[int] = None,
+    delivery_pct: Optional[float] = None,
 ) -> int:
     """Score a reversal setup from 0-100 based on quality dimensions."""
     score = 0

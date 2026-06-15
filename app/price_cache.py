@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import pandas as pd
+from typing import Optional
 # Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
 try:
     import app.yf_bootstrap
@@ -71,7 +72,7 @@ def fetch_watchlist_data(watchlist: pd.DataFrame, period: str = "10d", interval:
 def to_yf_sym(sym: str) -> str:
     return sym.replace("_", "-") + ".NS"
 
-def _download_single_ticker(sym: str, period: str, interval: str) -> pd.DataFrame | None:
+def _download_single_ticker(sym: str, period: str, interval: str) -> Optional[pd.DataFrame]:
     """Fallback mechanism if batch downloading repeatedly fails."""
     try:
         ns_sym = to_yf_sym(sym)
