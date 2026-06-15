@@ -25,8 +25,39 @@ def discover_trendlyne_url(symbol: str, api_key: str) -> str:
     if symbol in fallbacks:
         return fallbacks[symbol]
         
-    # Attempt basic shortcut (will likely 404)
-    return f"https://trendlyne.com/stock/{symbol}/"
+    fast_url = f"https://trendlyne.com/stock/{symbol}/"
+    
+    # 1. Attempt fast HEAD request
+    payload = {'api_key': api_key, 'url': fast_url, 'render': 'false'}
+    try:
+        # Note: ScraperAPI sometimes ignores HEAD, so we do a quick GET with a short timeout
+        res = requests.get('https://api.scraperapi.com/', params=payload, timeout=10)
+        if res.status_code == 200:
+            return fast_url
+    except Exception:
+        pass
+
+    # 2. If it 404s, use ScraperAPI to search Google for the proper trendlyne URL
+    logger.info(f"🔍 Direct URL failed for {symbol}. Searching Google...")
+    search_url = f"https://www.google.com/search?q=site:trendlyne.com/equity/+{symbol}"
+    payload = {'api_key': api_key, 'url': search_url, 'render': 'false'}
+    try:
+        res = requests.get('https://api.scraperapi.com/', params=payload, timeout=30)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                # Check if it looks like a trendlyne equity link and contains the symbol
+                if "trendlyne.com/equity/" in href and symbol.upper() in href.upper():
+                    # Extract from google redirect format
+                    actual_url = href.split("q=")[-1].split("&")[0] if "/url?q=" in href else href
+                    logger.info(f"✅ Discovered Google URL for {symbol}: {actual_url}")
+                    return actual_url
+    except Exception as e:
+        logger.warning(f"Google search fallback failed for {symbol}: {e}")
+
+    # 3. Fallback to the fast_url so it fails naturally downstream
+    return fast_url
 
 def worker_loop():
     logger.info("🚀 Starting Pledge Worker Daemon")
@@ -46,12 +77,12 @@ def worker_loop():
                 continue
                 
             df = pd.read_parquet(WATCHLIST_PATH)
-            if "Symbol" not in df.columns:
-                logger.error("Symbol column missing from watchlist")
+            if "Stock" not in df.columns:
+                logger.error("Stock column missing from watchlist")
                 time.sleep(60)
                 continue
                 
-            symbols = df["Symbol"].unique().tolist()
+            symbols = df["Stock"].unique().tolist()
             logger.info(f"Loaded {len(symbols)} symbols from watchlist.")
             
             # 2. Check DB for stale pledges
