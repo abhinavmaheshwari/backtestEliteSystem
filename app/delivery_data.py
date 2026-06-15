@@ -11,6 +11,7 @@ import pandas as pd
 import time
 import random
 import io
+import threading
 from datetime import date, timedelta
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -48,27 +49,29 @@ def _get_robust_session() -> requests.Session:
 
 _delivery_cache = None
 _delivery_cache_date = None
+_delivery_cache_lock = threading.Lock()
 
 def fetch_previous_day_delivery() -> dict[str, float]:
     global _delivery_cache, _delivery_cache_date
     from datetime import datetime as _dt
     today = _dt.now().date()
     
-    if _delivery_cache is not None and _delivery_cache_date == today:
-        return _delivery_cache
+    with _delivery_cache_lock:
+        if _delivery_cache is not None and _delivery_cache_date == today:
+            return _delivery_cache
 
-    from datetime import datetime as _dt
-    today = _dt.now().date()
-    for days_back in range(1, 5):
-        candidate = today - timedelta(days=days_back)
-        while candidate.weekday() >= 5:
-            candidate -= timedelta(days=1)
-        result = fetch_delivery_data(candidate)
-        if result:
-            logger.info(f"📦 Previous-day delivery loaded | Date={candidate}")
-            _delivery_cache = result
-            _delivery_cache_date = today
-            return result
+        from datetime import datetime as _dt
+        today = _dt.now().date()
+        for days_back in range(1, 5):
+            candidate = today - timedelta(days=days_back)
+            while candidate.weekday() >= 5:
+                candidate -= timedelta(days=1)
+            result = fetch_delivery_data(candidate)
+            if result:
+                logger.info(f"📦 Previous-day delivery loaded | Date={candidate}")
+                _delivery_cache = result
+                _delivery_cache_date = today
+                return result
     return {}
 
 def fetch_delivery_data(trading_date: date) -> dict[str, float]:

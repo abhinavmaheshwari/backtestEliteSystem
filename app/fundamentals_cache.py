@@ -105,7 +105,7 @@ def is_stale(cache_entry: dict, tier: str) -> bool:
         entry_date = datetime.strptime(cache_entry["date"], "%Y-%m-%d").date()
         days_old = (date.today() - entry_date).days
         return days_old > FUNDAMENTAL_REFRESH_SCHEDULE.get(tier, 30)
-    except:
+    except Exception:
         return True
 
 def refresh_fundamentals_tiered(universe_df: pd.DataFrame):

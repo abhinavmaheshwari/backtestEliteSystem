@@ -4,6 +4,9 @@ import logging
 import threading
 from datetime import datetime, timezone
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 # Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
 try:
     import app.yf_bootstrap
@@ -30,10 +33,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from database import get_cache_metadata, upsert_cache_metadata, upsert_data_fetch_health, get_all_data_fetch_health
 from data_registry import DATASETS
 
-logger = logging.getLogger(__name__)
-
-# In-memory run cache
+# In-memory run cache with thread-safe access
 _price_cache = {}
+_price_cache_lock = threading.Lock()
 
 # Disk cache directory
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "price_cache")
@@ -131,8 +133,10 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
     lock_path = cache_path + ".lock"
 
     # In-memory run cache quick-hit
-    if use_cache and cache_key in _price_cache:
-        return _price_cache[cache_key].copy()
+    if use_cache:
+        with _price_cache_lock:
+            if cache_key in _price_cache:
+                return _price_cache[cache_key].copy()
 
     # Check persisted metadata
     meta = None
@@ -154,7 +158,8 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             df = _read_cache_file(cache_path)
             if not df.empty:
                 if use_cache:
-                    _price_cache[cache_key] = df.copy()
+                    with _price_cache_lock:
+                        _price_cache[cache_key] = df.copy()
                 return df
 
         # Stale: return stale if allowed and trigger background refresh
@@ -195,7 +200,8 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                 return pd.DataFrame()
 
             if use_cache:
-                _price_cache[cache_key] = df.copy()
+                with _price_cache_lock:
+                    _price_cache[cache_key] = df.copy()
             return df
 
     # No cache or forced refresh — attempt direct fetch (synchronous)
@@ -206,7 +212,8 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             if os.path.exists(cache_path):
                 df = _read_cache_file(cache_path)
                 if use_cache:
-                    _price_cache[cache_key] = df.copy()
+                    with _price_cache_lock:
+                        _price_cache[cache_key] = df.copy()
                 return df
             # wait short period for lock to clear
             waited = 0
@@ -226,7 +233,8 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             from data_fetch_status import mark_success
             mark_success(f"yfinance:{resolution}")
             if use_cache:
-                _price_cache[cache_key] = fetched.copy()
+                with _price_cache_lock:
+                    _price_cache[cache_key] = fetched.copy()
             return fetched
         except Exception as e:
             logger.warning(f"Failed to fetch historical data for {yf_symbol}: {e}")
@@ -237,7 +245,8 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
             if os.path.exists(cache_path) and not is_intraday:
                 df = _read_cache_file(cache_path)
                 if use_cache:
-                    _price_cache[cache_key] = df.copy()
+                    with _price_cache_lock:
+                        _price_cache[cache_key] = df.copy()
                 return df
             # No safe data to serve for this symbol at this cadence — caller should skip
             logger.info(f"No fresh data for {yf_symbol} and cadence indicates intraday; returning empty DataFrame to signal caller to skip this symbol.")
@@ -249,4 +258,5 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
 
 def clear_price_cache():
     """Clears the in-memory price cache. Should be called at the start of a new run."""
-    _price_cache.clear()
+    with _price_cache_lock:
+        _price_cache.clear()

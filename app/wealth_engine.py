@@ -564,7 +564,7 @@ def run_wealth_scan():
                     pnl_pct = ((cmp_price - p['entry_price']) / p['entry_price']) * 100 if p['entry_price'] > 0 else 0
                     tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
                     return min(100, base_hold_score + tax_info['bonus'])
-                except:
+                except Exception:
                     pass
             return base_hold_score
 
@@ -593,7 +593,7 @@ def run_wealth_scan():
                         # Only flag if not already a hard sell
                         if hold_score >= 45 and rs >= -40 and not (sma > 0 and cmp > 0 and cmp < (0.75 * sma)):
                             return f"HOLD (Tax-Loss Harvest Opportunity: {pnl_pct:.1f}%)"
-                except:
+                except Exception:
                     pass
             
             # Strict Buy rules

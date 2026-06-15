@@ -714,7 +714,7 @@ def load_checkpoint() -> dict:
                 if state.get("date") != str(date.today()):
                     return {}
                 return state
-        except:
+        except Exception:
             return {}
     return {}
 
@@ -773,7 +773,7 @@ def _main_impl():
             _INST_BUYS = get_institutional_buys()
             from block_deal_detector import run_fii_detector
             run_fii_detector()
-        except:
+        except Exception:
             pass
 
     if not state.get("fundamentals_refreshed"):

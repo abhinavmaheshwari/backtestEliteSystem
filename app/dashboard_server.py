@@ -808,7 +808,7 @@ def api_all_tickers():
                     df = pd.read_csv(f)
                     if 'Stock' in df.columns:
                         tickers.update(df['Stock'].dropna().unique().tolist())
-                except: pass
+                except Exception: pass
         if tickers:
             return jsonify(sorted(list(tickers)))
         return jsonify([])

@@ -758,7 +758,7 @@ def calculate_score(
                 # Missing fundamental data
                 max_score_cap = 75
                 logger.debug(f"  ○ {tag}Missing fundamentals — capping max score at 75")
-        except:
+        except Exception:
             pass
 
     # ── STEP 2: CATEGORY WEIGHT ──────────────────────────────────────────────────────

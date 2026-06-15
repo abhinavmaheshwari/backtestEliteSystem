@@ -30,7 +30,7 @@ def get_nse_bulk_block_deals():
     # 1. Hit main page to get cookies
     try:
         session.get("https://www.nseindia.com", timeout=10)
-    except:
+    except Exception:
         pass
         
     urls = [
@@ -101,7 +101,7 @@ def get_cached_fii_deals() -> dict:
                 data = json.load(f)
                 if data.get("date") == str(datetime.now().date()):
                     return data.get("deals", {})
-        except:
+        except Exception:
             pass
     return {}
 
