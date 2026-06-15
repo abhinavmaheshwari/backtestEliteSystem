@@ -6,6 +6,8 @@ import re
 from bs4 import BeautifulSoup
 from functools import lru_cache
 import pandas as pd
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from database import get_connection, upsert_scanner_health, init_db
 from data_fetch_status import mark_success, mark_failure
