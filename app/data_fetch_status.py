@@ -28,6 +28,12 @@ def _now_iso() -> str:
 def mark_success(source_name: str) -> None:
     try:
         upsert_data_fetch_health(source_name, last_success=_now_iso(), consecutive_failures=0)
+        # Also clear any external-scanner health flag for this data source
+        try:
+            from database import upsert_scanner_health
+            upsert_scanner_health(f"External:{source_name}", status="OK", last_success=_now_iso(), today_alerts=0, error_msg=None)
+        except Exception:
+            logger.debug(f"Could not update scanner health for External:{source_name}")
     except Exception:
         logger.exception(f"Failed to mark success for data source {source_name}")
 
@@ -40,6 +46,13 @@ def mark_failure(source_name: str, error: Optional[Union[Exception, str]] = None
         else:
             msg = str(error) if error is not None else None
         upsert_data_fetch_health(source_name, last_failure=_now_iso(), consecutive_failures=None, error_msg=msg)
+
+        # Also mark an external scanner health row so the dashboard shows which external provider is failing
+        try:
+            from database import upsert_scanner_health
+            upsert_scanner_health(f"External:{source_name}", status="DOWN", last_success=None, today_alerts=0, error_msg=(msg or 'External data source failure'))
+        except Exception:
+            logger.debug(f"Could not update scanner health for External:{source_name}")
     except Exception:
         logger.exception(f"Failed to mark failure for data source {source_name}: {error}")
 
