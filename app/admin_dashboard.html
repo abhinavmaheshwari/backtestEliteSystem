@@ -726,6 +726,19 @@ async function loadScannerStatus() {
     const r2 = await fetch('/api/data_fetch_health');
     if (r2.ok) {
       const health = await r2.json();
+      // Map of external source -> impacted scanners (keep in sync with server SOURCE_IMPACT_MAP)
+      const SOURCE_IMPACT_MAP_JS = {
+        'yfinance': ['EOD','INTRADAY','1H','REVERSAL','Wealth Engine'],
+        'nse_announcements': ['Wealth Engine','DAILY_BUILDER'],
+        'nse_bhavcopy': ['EOD','DAILY_BUILDER'],
+        'scraperapi': ['Pledge Worker'],
+        'telegram': ['Telegram Engine'],
+        'gemini': ['AI Worker','Wealth Engine']
+      };
+
+      const healthBySource = {};
+      health.forEach(f => healthBySource[f.source_name] = f);
+
       health.forEach(f => {
         const isPersistentWarning = f.is_acknowledged === false;
         const isDown = f.consecutive_failures > 0 || isPersistentWarning;
@@ -742,6 +755,22 @@ async function loadScannerStatus() {
           label: `API: ${f.source_name.toUpperCase()}`,
           desc: 'External data feed connection'
         };
+      });
+
+      // Propagate short error snippet to impacted scanners if they don't already have one
+      Object.entries(SOURCE_IMPACT_MAP_JS).forEach(([src, scanners]) => {
+        const h = healthBySource[src];
+        if (!h || (!h.error_msg && h.consecutive_failures === 0)) return;
+        const snippet = h.error_msg ? (h.error_msg.length > 240 ? h.error_msg.slice(0,240) + '...' : h.error_msg) : `External failure: ${h.consecutive_failures} failures`;
+        scanners.forEach(sc => {
+          if (stats[sc]) {
+            if (!stats[sc].error) {
+              stats[sc].error = snippet;
+              stats[sc].is_acknowledged = h.is_acknowledged;
+              stats[sc].status = 'DOWN';
+            }
+          }
+        });
       });
     }
   } catch {}
