@@ -1058,7 +1058,6 @@ function buildTradeRows(trades, maxAbs, prefix) {
   const mm = String(nowIst.getMonth() + 1).padStart(2, '0');
   const dd = String(nowIst.getDate()).padStart(2, '0');
   const todayStr = `${yy}-${mm}-${dd}`;
-  const clickedIds = JSON.parse(localStorage.getItem('clickedAlerts') || '[]');
 
   return trades.map((t, i) => {
     const id = prefix + i;
@@ -1067,8 +1066,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
     const isOpen = expandedIds.has(id);
     const sc = t.score != null ? `<span class="score-ring ${scoreClass(t.score)}">${t.score}</span>` : '—';
     const key = t.symbol + '|' + (t.alert_time||t.entry_date);
-    const isToday = (t.alert_time||t.entry_date||'').startsWith(todayStr);
-    const isBlinking = isToday && !clickedIds.includes(key);
+    const isBlinking = (t.alert_time||t.entry_date||'').startsWith(todayStr);
 
     return `
     <tr class="main-row${isOpen?' open':''}${isBlinking?' blink-row':''}" id="mr-${id}" onclick="toggleDetail('${id}', '${t.symbol}', '${key}')">
@@ -1169,18 +1167,7 @@ function buildTradeRows(trades, maxAbs, prefix) {
 }
 
 window.NOTICES_CACHE = window.NOTICES_CACHE || {};
-
 function toggleDetail(id, symbol, key) {
-  if (key) {
-    let clickedIds = JSON.parse(localStorage.getItem('clickedAlerts') || '[]');
-    if (!clickedIds.includes(key)) {
-      clickedIds.push(key);
-      localStorage.setItem('clickedAlerts', JSON.stringify(clickedIds));
-    }
-    const mr = document.getElementById('mr-' + id);
-    if (mr) mr.classList.remove('blink-row');
-  }
-
   const mainRow = document.getElementById('mr-' + id);
   const panel   = document.getElementById('dp-' + id);
   if (!panel) return;
