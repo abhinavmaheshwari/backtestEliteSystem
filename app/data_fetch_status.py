@@ -32,6 +32,7 @@ SOURCE_IMPACT_MAP = {
     'nse_bhavcopy': ["EOD", "DAILY_BUILDER"],
     'scraperapi': ["Pledge Worker", "Pledge Worker"],
     'telegram': ["Telegram Engine"],
+    'gemini': ["AI Worker", "Wealth Engine"],
 }
 
 

@@ -851,7 +851,11 @@ def upsert_data_fetch_health(source_name: str, last_success: str = None, last_fa
                 logger.exception(f"❌ upsert_data_fetch_health failed for {source_name}")
 
 def acknowledge_data_fetch_health(source_name: str):
-    """Admin acknowledgment to clear persistent UI warnings."""
+    """Admin acknowledgment to clear persistent UI warnings.
+
+    Also clear corresponding scanner_health rows (External:<source> and impacted scanners)
+    so the UI immediately reflects the dismissal.
+    """
     init_db()
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -865,6 +869,46 @@ def acknowledge_data_fetch_health(source_name: str):
             except Exception:
                 conn.rollback()
                 logger.exception(f"❌ acknowledge_data_fetch_health failed for {source_name}")
+    # Also attempt to clear any scanner_health rows that were set due to this external source
+    try:
+        # Split base and scope if present
+        base = source_name.split(':', 1)[0] if ':' in source_name else source_name
+        scope = source_name.split(':', 1)[1] if ':' in source_name else None
+        cleared = []
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Clear the generic External:<source_name> row (exact)
+                cur.execute("UPDATE scanner_health SET is_acknowledged = TRUE, error_msg = NULL, status = 'OK' WHERE scanner_name = %s", (f'External:{source_name}',))
+                if cur.rowcount:
+                    cleared.append(f'External:{source_name}')
+                # Clear the External:<base> row as well
+                cur.execute("UPDATE scanner_health SET is_acknowledged = TRUE, error_msg = NULL, status = 'OK' WHERE scanner_name = %s", (f'External:{base}',))
+                if cur.rowcount:
+                    cleared.append(f'External:{base}')
+
+                # Try to import mapping from data_fetch_status to know impacted scanners
+                try:
+                    from data_fetch_status import SOURCE_IMPACT_MAP, INTERVAL_TO_SCANNER
+                    impacted = SOURCE_IMPACT_MAP.get(base, [])
+                    targeted = []
+                    if scope:
+                        mapped = INTERVAL_TO_SCANNER.get(scope.lower()) if hasattr(INTERVAL_TO_SCANNER, 'get') else INTERVAL_TO_SCANNER.get(scope.lower())
+                        if mapped:
+                            targeted = [sc for sc in impacted if sc == mapped]
+                        else:
+                            targeted = [sc for sc in impacted if sc.upper() == scope.upper()]
+                    else:
+                        targeted = impacted
+                    for sc in targeted:
+                        cur.execute("UPDATE scanner_health SET is_acknowledged = TRUE, error_msg = NULL, status = 'OK' WHERE scanner_name = %s", (sc,))
+                        if cur.rowcount:
+                            cleared.append(sc)
+                    conn.commit()
+                except Exception:
+                    # If we can't import the mapping, still attempt a best-effort clear of External:base
+                    conn.rollback()
+    except Exception:
+        logger.exception(f"❌ Failed to clear scanner_health rows after acknowledging {source_name}")
 
 def acknowledge_scanner_health(scanner_name: str):
     """Admin acknowledgment to clear persistent UI warnings for scanners."""
