@@ -163,30 +163,17 @@ def run_worker_loop():
             logger.error(f"❌ [AI WORKER] Main loop crashed: {e}")
             upsert_scanner_health("AI Worker", "DOWN", error_msg=str(e))
             
-        # Once we've checked the whole list, sleep for 30 minutes before checking again
+        # Once we've checked the whole list, do a quick recheck in 5 minutes
         db_processed_count = get_total_cached_concalls()
-        logger.info(f"🤖 [AI WORKER] Finished scanning entire universe ({total_stocks} stocks). Sleeping for 30 minutes.")
+        logger.info(f"🤖 [AI WORKER] Finished scanning universe ({total_stocks} stocks). Rechecking in 5 minutes for updates.")
         
         status = "IDLE" if final_failed_count == 0 else "DOWN"
         error_msg = f"Last: Finished | Total: {total_stocks} | Failed: {final_failed_count}" if final_failed_count > 0 else f"Last: Finished | Total: {total_stocks}"
         
         upsert_scanner_health("AI Worker", status, last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=error_msg)
         
-        # Sleep until 1 AM or 5 PM IST
-        from datetime import timedelta
-        from zoneinfo import ZoneInfo
-        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-        t1 = now_ist.replace(hour=1, minute=0, second=0, microsecond=0)
-        t2 = now_ist.replace(hour=17, minute=0, second=0, microsecond=0)
-        if now_ist < t1:
-            next_run = t1
-        elif now_ist < t2:
-            next_run = t2
-        else:
-            next_run = t1 + timedelta(days=1)
-        sleep_secs = (next_run - now_ist).total_seconds()
-        logger.info(f"🤖 [AI WORKER] Sleeping {int(sleep_secs)}s until {next_run.strftime('%Y-%m-%d %H:%M:%S')} IST")
-        time.sleep(sleep_secs)
+        # Sleep for 5 minutes before rechecking (allows watchlist updates)
+        time.sleep(300)
 
 def start_worker():
     """Starts the AI worker in a daemon thread."""

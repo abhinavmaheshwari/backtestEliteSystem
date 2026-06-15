@@ -1073,7 +1073,7 @@ function renderScannerGrid(scanner_stats) {
 }
 
 // Click on scanner alert count → show in drill panel
-function showScannerDrill(sc) {
+async function showScannerDrill(sc) {
   const stats = window._scannerStats || {};
   const data = stats[sc];
   if (!data) return;
@@ -1082,14 +1082,67 @@ function showScannerDrill(sc) {
   activeKpi = null;
   window.activeScannerDrill = sc;
   
-  if (sc.startsWith('API_') || (data.status === 'DOWN' && data.error && (!data.today_trades || data.today_trades.length === 0))) {
+  // If RED scanner, fetch and show error table
+  if (data.status === 'DOWN' && !data.is_acknowledged) {
+    document.getElementById('drill-title').textContent = `${meta.label} — API Errors`;
+    
+    try {
+      const errors = await fetchScannerErrors(sc);
+      if (errors && errors.length > 0) {
+        // Build error table
+        let htmlContent = `
+          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr style="background:rgba(255,77,109,.1); border-bottom:1px solid rgba(255,77,109,.3);">
+                <th style="padding:8px; text-align:left; color:#ff4d6d;">Source</th>
+                <th style="padding:8px; text-align:left; color:#ff4d6d;">Category</th>
+                <th style="padding:8px; text-align:center; color:#ff4d6d;">Stocks</th>
+                <th style="padding:8px; text-align:right; color:#ff4d6d;">Count</th>
+                <th style="padding:8px; text-align:center; color:#ff4d6d;">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+        
+        errors.forEach(e => {
+          const symbolCount = (e.symbol_list || e.symbol || '').split(',').filter(s => s.trim()).length || 1;
+          htmlContent += `
+            <tr style="border-bottom:1px solid rgba(255,77,109,.1);">
+              <td style="padding:8px; color:#ff9ccc;">${e.source_name || 'N/A'}</td>
+              <td style="padding:8px; color:#ff9ccc;">${e.category || 'N/A'}</td>
+              <td style="padding:8px; text-align:center; color:#ff9ccc;">${symbolCount}</td>
+              <td style="padding:8px; text-align:right; color:#ff4d6d; font-weight:700;">${e.occurrences || 1}×</td>
+              <td style="padding:8px; text-align:center;">
+                <button onclick="ackFetchErrorGroup(${e.id}, '${sc}')" 
+                  style="background:rgba(255,77,109,.1); border:1px solid #ff4d6d; color:#ff4d6d; padding:4px 8px; border-radius:3px; cursor:pointer; font-size:11px;">
+                  Acknowledge
+                </button>
+              </td>
+            </tr>
+          `;
+        });
+        
+        htmlContent += `</tbody></table>`;
+        document.getElementById('drill-body').innerHTML = htmlContent;
+      } else {
+        document.getElementById('drill-body').innerHTML = `<div style="padding:20px; color:#ff9ccc;">No errors found for this scanner.</div>`;
+      }
+    } catch (e) {
+      console.error('Failed to load errors:', e);
+      document.getElementById('drill-body').innerHTML = `<div style="padding:20px; color:#ff4d6d;">Error loading error details: ${e.message}</div>`;
+    }
+  } 
+  // If API worker, show error trace
+  else if (sc.startsWith('API_') || (data.status === 'DOWN' && data.error && (!data.today_trades || data.today_trades.length === 0))) {
     const fails = data.today_alerts;
     const plural = fails !== 1 ? 's' : '';
     document.getElementById('drill-title').textContent = `${meta.label} — Error Trace`;
     const trace = data.error || 'No error details found.';
     const suffix = (fails > 0 && sc.startsWith('API_')) ? `\n\n[System tracked ${fails} consecutive failure${plural} of this exact exception]` : '';
     document.getElementById('drill-body').innerHTML = `<div style="background:var(--card2); border:1px solid rgba(255,77,109,0.3); border-radius:8px; padding:20px; font-family:var(--font-mono); font-size:13px; color:#ff4d6d; white-space:pre-wrap; max-height:500px; overflow-y:auto;">${trace}${suffix}</div>`;
-  } else {
+  } 
+  // Otherwise show trades table
+  else {
     if (!data.today_trades || data.today_trades.length === 0) return;
     const trades = data.today_trades.map(t => ({
       ...t,
@@ -1104,6 +1157,22 @@ function showScannerDrill(sc) {
   document.getElementById('drill-panel').classList.add('open');
   document.getElementById('drill-panel').scrollIntoView({behavior:'smooth', block:'start'});
   setTimeout(() => { document.getElementById('drill-body').scrollTop = 0; }, 50);
+}
+
+// Acknowledge a single error group and refresh
+async function ackFetchErrorGroup(errorId, scanner) {
+  try {
+    const response = await fetch(`/api/fetch_errors/ack/${errorId}`, {method: 'POST'});
+    if (response.ok) {
+      // Refresh scanner drill to show updated state
+      await doRefresh();
+      const stats = window._scannerStats || {};
+      const data = stats[scanner];
+      if (data) showScannerDrill(scanner);
+    }
+  } catch (e) {
+    console.error('Failed to acknowledge error:', e);
+  }
 }
 
 // ── TRADE TABLE

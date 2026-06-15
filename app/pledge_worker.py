@@ -131,9 +131,9 @@ def worker_loop():
             processed_base = total_watch - len(stale_symbols)
 
             if not stale_symbols:
-                logger.info(f"✅ All pledges are fresh (updated within 75 days). Sleeping for 4 hours.")
+                logger.info(f"✅ All pledges are fresh (updated within 75 days). Will recheck in 2 hours.")
                 upsert_scanner_health("Pledge Worker", "IDLE", last_success=datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(), today_alerts=total_watch, error_msg=f"Last: None | Total: {total_watch}")
-                time.sleep(4 * 3600)
+                time.sleep(2 * 3600)  # Check every 2 hours instead of 4
                 continue
                 
             logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates (out of {total_watch} total).")
