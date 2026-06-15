@@ -516,7 +516,7 @@ def run_wealth_scan():
                     tax_info = compute_tax_hold_bonus(entry_date, pnl_pct)
                     if tax_info.get("harvest_signal"):
                         # Only flag if not already a hard sell
-                        if hold_score >= 45 and rs >= -40 and not (sma > 0 and cmp < (0.75 * sma)):
+                        if hold_score >= 45 and rs >= -40 and not (sma > 0 and cmp > 0 and cmp < (0.75 * sma)):
                             return f"HOLD (Tax-Loss Harvest Opportunity: {pnl_pct:.1f}%)"
                 except:
                     pass
@@ -539,7 +539,7 @@ def run_wealth_scan():
             # Catastrophic Trend Breakdown (Only if it's really bad, else hold)
             if rs < -40:
                 return f"SELL (Catastrophic RS Collapse)"
-            if sma > 0 and cmp < (0.75 * sma):
+            if sma > 0 and cmp > 0 and cmp < (0.75 * sma):
                 return f"SELL (Catastrophic Trend Breakdown)"
                 
             return ""

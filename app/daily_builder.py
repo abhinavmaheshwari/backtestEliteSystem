@@ -663,7 +663,6 @@ def classify_stock(row: pd.Series) -> dict:
 # =====================================================================================
 
 def main():
-    import os
     from datetime import datetime, time as dt_time
     from zoneinfo import ZoneInfo
     from config import WATCHLIST_PATH, MIN_DAILY_LIQUIDITY_RUPEES_WATCHLIST
@@ -915,7 +914,6 @@ def _main_impl():
     
     # Clean up checkpoint on full success
     try:
-        import os
         if os.path.exists(CHECKPOINT_FILE):
             os.remove(CHECKPOINT_FILE)
             logger.info("✅ Build complete. Checkpoint file removed.")
