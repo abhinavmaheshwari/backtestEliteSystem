@@ -191,7 +191,8 @@
   .scanner-alert-btn:hover .scanner-alert-tooltip { display:block; }
   .scanner-alert-count { font-family:var(--font-mono); font-size:22px; font-weight:700; color:var(--accent); }
   .scanner-alert-count.zero { color:var(--muted); }
-  .scanner-error { font-size:11px; color:var(--warn); margin-top:10px; font-family:var(--font-mono); word-break:break-word; background:var(--warn-dim); padding:8px; border-radius:6px; }
+  .scanner-error { font-size:11px; color:var(--warn); margin-top:10px; font-family:var(--font-mono); word-break:break-word; background:var(--warn-dim); padding:8px; border-radius:6px; cursor:pointer; transition:all .2s; }
+  .scanner-error:hover { background:rgba(225,29,72,0.2); box-shadow:0 0 10px rgba(225,29,72,0.2); }
 
   /* ── SCANNER ALERT TOOLTIP POPUP ── */
   .scanner-alert-tooltip {
@@ -918,10 +919,13 @@ function renderScannerGrid(scanner_stats) {
   // Async function to render scanner cards with error loading
   (async function renderAll() {
     for (const sc of allScanners) {
-      const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[]};
+      const data = scanner_stats[sc] || {today_alerts:0, last_success:null, status:'IDLE', today_trades:[], error_severity:null};
       const meta = SCANNER_META[sc] || {label:sc, desc:''};
       const isAck = data.is_acknowledged !== false;
-      const isDown = data.status === 'DOWN';  // Only compile-level crashes show RED
+      
+      // NEW LOGIC: Only show RED if status=DOWN AND error_severity=CRITICAL AND not acknowledged
+      const isCriticalError = data.status === 'DOWN' && data.error_severity === 'CRITICAL' && !isAck;
+      const isDown = isCriticalError;
       const isIdle = !data.last_success;
       const statusClass = isDown ? 'status-down' : isIdle ? 'status-idle' : 'status-ok';
       const badgeClass  = isDown ? 'badge-down'  : isIdle ? 'badge-idle'  : 'badge-ok';
@@ -1004,8 +1008,9 @@ function renderScannerGrid(scanner_stats) {
       let alertSub = data.today_alerts>0?'hover to preview · click to expand':'no new alerts today';
       let dismissBtn = "";
 
-      if (!isAck) {
-        alertLabel = "WARNING";
+      // CRITICAL ERROR: Show warning with dismiss button
+      if (isDown && !isAck) {
+        alertLabel = "⚠ CRITICAL ERROR";
         let endpoint = isApi ? `/api/data_fetch_health/acknowledge/${encodeURIComponent(data.raw_source || sc)}` : `/api/scanner_health/acknowledge/${sc}`;
         dismissBtn = `<button onclick="event.stopPropagation(); fetch('${endpoint}',{method:'POST'}).then(()=>doRefresh())" style="margin-top:8px;background:rgba(255,77,109,0.1);color:#ff4d6d;border:1px solid #ff4d6d;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Dismiss Warning</button>`;
         
@@ -1018,7 +1023,7 @@ function renderScannerGrid(scanner_stats) {
           tooltipHtml = data.error ? `
           <div class="scanner-alert-tooltip">
             <div class="sat-header" style="color:#ff4d6d">⚠ Error Details</div>
-            <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap;">${data.error}</div>
+            <div class="sat-empty" style="color:#ff4d6d; text-align:left; white-space:pre-wrap; cursor:pointer;" onclick="alert('Error: ' + '${(data.error||'').replace(/'/g, "\\'")}')">${data.error}</div>
           </div>` : '';
         }
       } else if (isProgressWorker) {
@@ -1066,7 +1071,7 @@ function renderScannerGrid(scanner_stats) {
               <div class="scanner-stat-sub">${fmtTs(data.updated_at || data.last_success)}</div>
             </div>
           </div>
-          ${isDown && data.error && !isApi ? `<div class="scanner-error">⚠ ${data.error}</div>` : ''}
+          ${isDown && data.error && !isApi ? `<div class="scanner-error" onclick="alert('Error Details:\\n\\n' + '${(data.error||'').replace(/'/g, "\\'").replace(/\n/g, '\\n')}')" title="Click to see full error">⚠ ${data.error.substring(0, 60)}${data.error.length > 60 ? '...' : ''}</div>` : ''}
         </div>`;
     }
   })();

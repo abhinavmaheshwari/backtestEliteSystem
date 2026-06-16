@@ -152,10 +152,16 @@ def init_db():
                         today_alerts  INTEGER NOT NULL DEFAULT 0,
                         error_msg     TEXT,
                         is_acknowledged BOOLEAN DEFAULT TRUE,
-                        updated_at    TEXT    NOT NULL
+                        updated_at    TEXT    NOT NULL,
+                        error_severity TEXT DEFAULT NULL,
+                        error_count    INTEGER DEFAULT 0,
+                        first_error_at TEXT DEFAULT NULL
                     )
                 """)
                 cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS is_acknowledged BOOLEAN DEFAULT TRUE")
+                cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS error_severity TEXT DEFAULT NULL")
+                cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 0")
+                cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS first_error_at TEXT DEFAULT NULL")
 
 
                 # ── System state table for dashboard metrics / state caching ───────
@@ -430,6 +436,71 @@ def get_all_alerts() -> list[dict]:
 
 # ── Scanner Health API ────────────────────────────────────────────────────────────────
 
+def classify_error_severity(error_msg: str) -> str:
+    """
+    Classify an error as CRITICAL or IGNORABLE.
+    
+    CRITICAL: Code failures, missing config files, compilation errors
+    IGNORABLE: API failures for individual stocks (yfinance, missing stock data)
+    
+    Returns: 'CRITICAL' | 'IGNORABLE'
+    """
+    if not error_msg:
+        return None
+    
+    error_lower = error_msg.lower()
+    
+    # IGNORABLE patterns: missing stock data, API timeouts for specific stocks
+    ignorable_patterns = [
+        'yfinance',
+        'timeout',
+        'connection refused',
+        'no data found',
+        'stock not found',
+        'not available',
+        'api rate limit',
+        'temporarily unavailable',
+        'data not available',
+        'failed to get data for',
+    ]
+    
+    # CRITICAL patterns: code/infrastructure issues
+    critical_patterns = [
+        'syntax error',
+        'import error',
+        'indentation error',
+        'nameerror',
+        'typeerror',
+        'attributeerror',
+        'keyerror',
+        'file not found',
+        'no such file',
+        'cannot open',
+        'permission denied',
+        'assert',
+        'index error',
+        'value error',
+        'runtime error',
+        'null pointer',
+        'undefined',
+        'not defined',
+        'could not import',
+    ]
+    
+    # Check for critical patterns first
+    for pattern in critical_patterns:
+        if pattern in error_lower:
+            return 'CRITICAL'
+    
+    # Check for ignorable patterns
+    for pattern in ignorable_patterns:
+        if pattern in error_lower:
+            return 'IGNORABLE'
+    
+    # Default to CRITICAL for unknown errors (safety first)
+    return 'CRITICAL'
+
+
 def upsert_scanner_health(
     scanner_name: str,
     status: str = None,           # "OK" | "DOWN" | "IDLE" | None (keep existing)
@@ -439,70 +510,78 @@ def upsert_scanner_health(
 ) -> None:
     """
     Insert or update a scanner's health record in the scanner_health table.
-    Called by:
-      • performance_tracker  — status=OK, last_success, today_alerts (every 5 min)
-      • watchdog / _run      — status=DOWN, error_msg
-      • recovery (_clear_down) — status=OK, clears error_msg
+    
+    Auto-recovery logic:
+      • When status='OK': Auto-clear error fields + set is_acknowledged=TRUE (recovery)
+      • When status='DOWN': Classify error severity + set is_acknowledged=FALSE
+      • When status='DOWN' with IGNORABLE error: Still set DOWN but error_severity=IGNORABLE
     """
     init_db()
     now_str = datetime.now(IST).isoformat()
-    # Only flag as unacknowledged when status is explicitly DOWN (compile-level crash).
-    # Informational error_msg strings (e.g. "Last: RELIANCE | Total: 250") should NOT trigger RED.
-    is_ack = False if status == 'DOWN' else None
+    
+    error_severity = None
+    is_ack = None
+    
+    # Classify error severity and set acknowledgement status
+    if status == 'DOWN' and error_msg:
+        error_severity = classify_error_severity(error_msg)
+        is_ack = False  # NEW ERROR: mark unacknowledged
+    elif status == 'OK':
+        # AUTO-RECOVERY: Clear errors and mark as acknowledged
+        error_msg = None
+        error_severity = None
+        is_ack = True
 
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
+                # Build the update/insert query
+                set_clauses = []
+                params = []
+                
+                if status is not None:
+                    set_clauses.append("status = %s")
+                    params.append(status)
+                if last_success is not None:
+                    set_clauses.append("last_success = %s")
+                    params.append(last_success)
                 if today_alerts is not None:
-                    if is_ack is False:
-                        cur.execute("""
-                            INSERT INTO scanner_health
-                                (scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, %s, FALSE, %s)
-                            ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = COALESCE(%s, scanner_health.status),
-                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                    today_alerts = EXCLUDED.today_alerts,
-                                    error_msg    = EXCLUDED.error_msg,
-                                    is_acknowledged = CASE WHEN EXCLUDED.error_msg IS DISTINCT FROM scanner_health.error_msg THEN FALSE ELSE scanner_health.is_acknowledged END,
-                                    updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str, status))
-                    else:
-                        cur.execute("""
-                            INSERT INTO scanner_health
-                                (scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, %s, TRUE, %s)
-                            ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = COALESCE(%s, scanner_health.status),
-                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                    today_alerts = EXCLUDED.today_alerts,
-                                    error_msg    = CASE WHEN %s IS NULL AND %s IS NULL THEN scanner_health.error_msg ELSE EXCLUDED.error_msg END,
-                                    updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, today_alerts, error_msg, now_str, status, status, error_msg))
-                else:
-                    if is_ack is False:
-                        cur.execute("""
-                            INSERT INTO scanner_health
-                                (scanner_name, status, last_success, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, FALSE, %s)
-                            ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = COALESCE(%s, scanner_health.status),
-                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                    error_msg    = EXCLUDED.error_msg,
-                                    is_acknowledged = CASE WHEN EXCLUDED.error_msg IS DISTINCT FROM scanner_health.error_msg THEN FALSE ELSE scanner_health.is_acknowledged END,
-                                    updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, error_msg, now_str, status))
-                    else:
-                        cur.execute("""
-                            INSERT INTO scanner_health
-                                (scanner_name, status, last_success, error_msg, is_acknowledged, updated_at)
-                            VALUES (%s, COALESCE(%s, 'IDLE'), %s, %s, TRUE, %s)
-                            ON CONFLICT (scanner_name) DO UPDATE
-                                SET status       = COALESCE(%s, scanner_health.status),
-                                    last_success = COALESCE(EXCLUDED.last_success, scanner_health.last_success),
-                                    error_msg    = CASE WHEN %s IS NULL AND %s IS NULL THEN scanner_health.error_msg ELSE EXCLUDED.error_msg END,
-                                    updated_at   = EXCLUDED.updated_at
-                        """, (scanner_name, status, last_success, error_msg, now_str, status, status, error_msg))
+                    set_clauses.append("today_alerts = %s")
+                    params.append(today_alerts)
+                if error_msg is not None:
+                    set_clauses.append("error_msg = %s")
+                    params.append(error_msg)
+                elif error_msg is None and status == 'OK':
+                    # Explicitly clear error_msg on recovery
+                    set_clauses.append("error_msg = NULL")
+                if error_severity is not None:
+                    set_clauses.append("error_severity = %s")
+                    params.append(error_severity)
+                elif status == 'OK':
+                    # Clear error_severity on recovery
+                    set_clauses.append("error_severity = NULL")
+                if is_ack is not None:
+                    set_clauses.append("is_acknowledged = %s")
+                    params.append(is_ack)
+                
+                set_clauses.append("updated_at = %s")
+                params.append(now_str)
+                
+                # Always include scanner_name for conflict/insert
+                params.insert(0, scanner_name)
+                if status is None:
+                    status = 'IDLE'
+                params.insert(1, status)
+                params.insert(2, now_str)
+                
+                set_sql = ", ".join(set_clauses)
+                cur.execute(f"""
+                    INSERT INTO scanner_health
+                        (scanner_name, status, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (scanner_name) DO UPDATE
+                        SET {set_sql}
+                """, params)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -516,7 +595,7 @@ def get_all_scanner_health() -> list[dict]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             try:
                 cur.execute("""
-                    SELECT scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at
+                    SELECT scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at, error_severity, error_count, first_error_at
                     FROM scanner_health
                     ORDER BY scanner_name
                 """)
