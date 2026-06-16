@@ -92,6 +92,10 @@ def start():
             time.sleep(300)
             return 0
 
+        if watchlist.empty:
+            logger.info("🛡️ EOD Scanner | Universe is empty (no stocks passed Wealth Engine BUY signals). Exiting cleanly.")
+            return 0
+
         delivery_map: dict[str, float] = {}
         all_ticker_data = {}
 

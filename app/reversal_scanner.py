@@ -163,7 +163,12 @@ def _run_scan():
         watchlist = get_watchlist()
     except Exception:
         logger.error("Failed to load watchlist, skipping run.")
-        return
+        return 0
+
+    if watchlist.empty:
+        logger.info("🛡️ Reversal Scanner | Watchlist is empty. Exiting cleanly.")
+        return 0
+
     # Pulling 1y data to ensure we catch the 52W High correctly
     all_ticker_data = fetch_watchlist_data(watchlist, period="1y", interval="1d")
 
