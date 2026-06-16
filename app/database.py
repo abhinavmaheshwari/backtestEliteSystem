@@ -33,6 +33,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
 
+import pandas as pd
+
 
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
