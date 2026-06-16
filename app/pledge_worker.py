@@ -188,14 +188,14 @@ def worker_loop():
                     elif res.status_code == 404:
                         logger.warning(f"❌ 404 Not Found for {sym} at {target_url}")
                         mark_failure('scraperapi', f"404 Not Found: {target_url}")
-                        # Cache the 404 temporarily so we don't spam it
+                        # Cache the 404 temporarily so we don't spam it, retry tomorrow
                         with get_connection() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("""
                                     INSERT INTO promoter_pledge_cache (symbol, pledge_pct, updated_at)
-                                    VALUES (%s, %s, NOW() - INTERVAL '23 days')
+                                    VALUES (%s, %s, NOW() - INTERVAL '74 days')
                                     ON CONFLICT (symbol) DO UPDATE 
-                                    SET updated_at = NOW() - INTERVAL '23 days'
+                                    SET updated_at = NOW() - INTERVAL '74 days'
                                 """, (sym, 0.0))
                                 conn.commit()
                         return True # Don't retry 404s
@@ -234,6 +234,20 @@ def worker_loop():
                         successful_in_first_pass += 1
                     else:
                         final_error_count += 1
+                        # Save negative cache so it's not retried again today, but tomorrow
+                        try:
+                            with get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("""
+                                        INSERT INTO promoter_pledge_cache (symbol, pledge_pct, updated_at)
+                                        VALUES (%s, 0.0, NOW() - INTERVAL '74 days')
+                                        ON CONFLICT (symbol) DO UPDATE 
+                                        SET updated_at = NOW() - INTERVAL '74 days'
+                                    """, (sym,))
+                                    conn.commit()
+                            logger.info(f"⚠️ Saved temporary failure negative cache for {sym}")
+                        except Exception as cache_err:
+                            logger.error(f"Failed to save failure cache for {sym}: {cache_err}")
                     time.sleep(3)
                     
                     now_str = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
