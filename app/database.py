@@ -1154,3 +1154,119 @@ def download_parquet_from_db(name: str, file_path: str) -> bool:
     except Exception as e:
         logger.error(f"❌ Failed to download {name} from DB: {e}")
         return False
+
+def save_df_to_table(table_name: str, df: pd.DataFrame):
+    """Saves a Pandas DataFrame to a PostgreSQL table dynamically."""
+    if df.empty:
+        return
+    init_db()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # 1. Fetch destination table columns
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s
+            """, (table_name.lower(),))
+            rows = cur.fetchall()
+            db_cols = {row[0].lower(): row[0] for row in rows}
+            
+            if not db_cols:
+                logger.warning(f"⚠️ Table '{table_name}' does not exist in DB or has no columns.")
+                return
+
+            # 2. Identify date column
+            date_col = None
+            for candidate in ["date", "run_date", "created_at", "added_at", "updated_at"]:
+                if candidate in db_cols:
+                    date_col = db_cols[candidate]
+                    break
+
+            # 3. If there is old date data, delete it first
+            if date_col:
+                cur.execute(f"DELETE FROM {table_name} WHERE {date_col} < %s", (today_str,))
+                # Also delete today's data just to be safe from duplicates on retry
+                cur.execute(f"DELETE FROM {table_name} WHERE {date_col} = %s", (today_str,))
+            else:
+                cur.execute(f"TRUNCATE TABLE {table_name}")
+                
+            # 4. Map DataFrame columns to DB columns (case-insensitive)
+            df_cols_mapped = {}
+            for col in df.columns:
+                col_lower = col.lower().replace(" ", "_").replace("%", "pct").replace("yoy", "yoy").replace("qoq", "qoq")
+                if col_lower in db_cols:
+                    df_cols_mapped[col] = db_cols[col_lower]
+                elif col.lower() in db_cols:
+                    df_cols_mapped[col] = db_cols[col.lower()]
+
+            insert_cols = list(df_cols_mapped.values())
+            df_source_cols = list(df_cols_mapped.keys())
+
+            # If there's a date column and it's not mapped from DataFrame, add it to insert
+            add_date_val = False
+            if date_col and date_col not in insert_cols:
+                insert_cols.append(date_col)
+                add_date_val = True
+
+            if not insert_cols:
+                logger.warning(f"⚠️ No matching columns found between DataFrame and table '{table_name}'.")
+                return
+
+            # 5. Insert rows
+            col_list_str = ", ".join(f'"{c}"' for c in insert_cols)
+            val_placeholders = ", ".join(["%s"] * len(insert_cols))
+            insert_query = f"INSERT INTO {table_name} ({col_list_str}) VALUES ({val_placeholders})"
+
+            for _, row in df.iterrows():
+                vals = [row[sc] for sc in df_source_cols]
+                # Convert nan to None for DB
+                vals = [None if pd.isna(v) else v for v in vals]
+                if add_date_val:
+                    vals.append(today_str)
+                cur.execute(insert_query, tuple(vals))
+                
+        conn.commit()
+    logger.info(f"✅ Saved {len(df)} rows to table '{table_name}' in database.")
+
+def check_data_exists_for_today() -> bool:
+    """Checks if the public table 'included' (fundamental watchlist) contains data for today's date."""
+    init_db()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # 1. First check if 'included' table exists
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'included'
+                    )
+                """)
+                if not cur.fetchone()[0]:
+                    return False
+                
+                # 2. Find date column
+                cur.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'included'
+                """)
+                db_cols = [row[0].lower() for row in cur.fetchall()]
+                date_col = None
+                for candidate in ["date", "run_date", "created_at", "added_at"]:
+                    if candidate in db_cols:
+                        date_col = candidate
+                        break
+                
+                if not date_col:
+                    return False
+                
+                # 3. Check row count for today
+                cur.execute(f"SELECT COUNT(*) FROM included WHERE {date_col} = %s", (today_str,))
+                count = cur.fetchone()[0]
+                return count > 0
+    except Exception as e:
+        logger.error(f"Error checking if today's data exists in DB: {e}")
+        return False

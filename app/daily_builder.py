@@ -727,6 +727,15 @@ def save_checkpoint(state: dict):
         json.dump(state, f, indent=2)
 
 def _main_impl():
+    # ── DB RE-RUN GUARD ──
+    try:
+        from database import check_data_exists_for_today
+        if check_data_exists_for_today():
+            logger.info("⏭️ [DAILY BUILDER] Watchlist data already exists in PostgreSQL 'included' table for today's date. Skipping daily builder execution (re-run guard).")
+            return
+    except Exception as e:
+        logger.warning(f"⚠️ DB re-run guard check failed: {e}. Proceeding with daily builder scan.")
+
     state = load_checkpoint()
 
     with _exclusion_lock:
@@ -795,9 +804,12 @@ def _main_impl():
             pd.DataFrame(exclusion_snapshot).to_csv(EXCLUSION_CSV, index=False)
             logger.info(f"📋 Exclusion log saved to {EXCLUSION_CSV} ({len(exclusion_snapshot)} skipped)")
             try:
-                from database import upload_parquet_to_db
+                from database import upload_parquet_to_db, save_df_to_table
                 upload_parquet_to_db("daily_builder_excluded", EXCLUSION_CSV)
                 logger.info("☁️ [DAILY BUILDER] Backed up exclusion log to Postgres cache.")
+                
+                save_df_to_table("excluded", pd.DataFrame(exclusion_snapshot))
+                logger.info("☁️ [DAILY BUILDER] Saved exclusion log to the 'excluded' database table.")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to upload exclusion log to Postgres: {e}")
 
@@ -823,9 +835,12 @@ def _main_impl():
         
         # Backup to Database to survive server restarts
         try:
-            from database import upload_parquet_to_db
+            from database import upload_parquet_to_db, save_df_to_table
             upload_parquet_to_db("daily_builder", OUTPUT_PARQUET)
             logger.info("☁️ [DAILY BUILDER] Backed up fundamental watchlist to Postgres cache.")
+            
+            save_df_to_table("included", final_df)
+            logger.info("☁️ [DAILY BUILDER] Saved fundamental watchlist to the 'included' database table.")
         except Exception as e:
             logger.warning(f"⚠️ Failed to upload watchlist to Postgres: {e}")
         
