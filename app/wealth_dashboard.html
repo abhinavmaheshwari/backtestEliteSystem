@@ -210,7 +210,7 @@
     <div class="section-title" style="margin-top:28px;">Active Buy Signals <span id="buy-count">0</span> <span>Score ≥ 85 · above 200 SMA</span></div>
     <div class="table-container">
       <table id="tbl-buy">
-        <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Bucket</th><th>Sector</th></tr></thead>
+        <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Bucket</th><th>Sector</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -218,7 +218,7 @@
     <div class="section-title" style="margin-top:28px;">Buy on Discount <span id="sale-count">0</span> <span>Weak market entries · PEG &lt; 1</span></div>
     <div class="table-container">
       <table id="tbl-sale">
-        <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>PEG Ratio</th><th>FCF</th><th>Signal</th></tr></thead>
+        <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>PEG Ratio</th><th>FCF</th><th>Signal</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -253,7 +253,7 @@
   <div class="section-title">🏆 Top 20 Compounders <span id="top20-count">0</span></div>
   <div class="table-container">
     <table id="tbl-top20">
-      <thead><tr><th>Rank</th><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Sector</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Rank</th><th>Stock</th><th>CMP</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Sector</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -262,7 +262,7 @@
   <div class="section-title">🛡️ Core Portfolio <span id="core-count" class="tag-green">0 / 15 max</span> <span>Sector-Capped · ₹10K Cr+</span></div>
   <div class="table-container">
     <table id="tbl-core">
-      <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>FCF</th><th>Sector</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>FCF</th><th>Sector</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -271,7 +271,7 @@
   <div class="section-title">🚀 Growth Multipliers <span id="growth-count">0</span> <span>₹2K Cr+ · Emerging Leaders</span></div>
   <div class="table-container">
     <table id="tbl-growth">
-      <thead><tr><th>Stock</th><th>Score</th><th>RS (6M)</th><th>YoY Revenue</th><th>YoY Profit</th><th>FCF</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>RS (6M)</th><th>YoY Revenue</th><th>YoY Profit</th><th>FCF</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -555,6 +555,7 @@
         document.querySelector('#tbl-buy tbody').innerHTML = buys.length ? buys.map(r => `
           <tr>
             <td class="sym">${r.Stock}</td>
+            <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
@@ -564,7 +565,7 @@
             <td>${bucketTag(r.Portfolio_Bucket)}</td>
             <td>${sectorTag(r.Sector)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="9" class="empty">No active buy signals — wait for score ≥ 85 with price above 200 SMA</td></tr>`;
+        `).join('') : `<tr><td colspan="10" class="empty">No active buy signals — wait for score ≥ 85 with price above 200 SMA</td></tr>`;
 
         // Sells Table
         const sells = stocks.filter(s => (s.Signal || "").includes("SELL")).sort((a,b) => (a.FM_Score || 0) - (b.FM_Score || 0));
@@ -592,6 +593,7 @@
           <tr>
             <td class="mono" style="color:var(--muted);">#${i+1}</td>
             <td class="sym">${r.Stock}</td>
+            <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
@@ -601,7 +603,7 @@
             <td>${sectorTag(r.Sector)}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="10" class="empty">No data available</td></tr>`;
+        `).join('') : `<tr><td colspan="11" class="empty">No data available</td></tr>`;
 
         // Core — use Core_Selected flag (already sector-capped by engine)
         const core = stocks.filter(s => s.Core_Selected === true).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
@@ -610,6 +612,7 @@
         document.querySelector('#tbl-core tbody').innerHTML = core.length ? core.map(r => `
           <tr>
             <td class="sym">${r.Stock}</td>
+            <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
@@ -618,7 +621,7 @@
             <td>${sectorTag(r.Sector)}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="8" class="empty">No stocks met Core criteria</td></tr>`;
+        `).join('') : `<tr><td colspan="9" class="empty">No stocks met Core criteria</td></tr>`;
 
         // Growth
         const growth = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Growth")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
@@ -627,6 +630,7 @@
         document.querySelector('#tbl-growth tbody').innerHTML = growth.length ? growth.map(r => `
           <tr>
             <td class="sym">${r.Stock}</td>
+            <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['YOY Revenue %'])}%</td>
@@ -634,7 +638,7 @@
             <td>${getFcfHtml(r['FCF Margin %'])}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="7" class="empty">No stocks met Growth criteria</td></tr>`;
+        `).join('') : `<tr><td colspan="8" class="empty">No stocks met Growth criteria</td></tr>`;
 
         // Quality On Sale
         const sale = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Quality-On-Sale")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
@@ -643,11 +647,15 @@
         document.querySelector('#tbl-sale tbody').innerHTML = sale.length ? sale.map(r => `
           <tr>
             <td class="sym">${r.Stock}</td>
+            <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
             <td class="mono">${fmt(r['PEG Ratio'])}</td>
             <td>${getFcfHtml(r['FCF Margin %'])}</td>
+            <td>${getSigHtml(r.Signal)}</td>
+          </tr>
+        `).join('') : `<tr><td colspan="8" class="empty">No stocks met Quality-On-Sale criteria</td></tr>`;
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
         `).join('') : `<tr><td colspan="7" class="empty">No stocks currently on sale</td></tr>`;
