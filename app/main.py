@@ -63,8 +63,8 @@ def _clear_down(name: str):
 WINDOWS = {
     "intraday": (dt_time(9, 32),  dt_time(15, 30)),
     "live":     (dt_time(10, 17), dt_time(15, 30)),
-    "eod":      (dt_time(18, 30), dt_time(20, 0)),
-    "reversal": (dt_time(18, 30), dt_time(20, 0)),   # same window as EOD
+    "eod":      (dt_time(18, 30), dt_time(23, 59, 59)),
+    "reversal": (dt_time(18, 30), dt_time(23, 59, 59)),
 }
 
 
@@ -198,68 +198,91 @@ def run_performance_tracker():
 # SINGLE-SHOT RUNNERS — EOD & Reversal
 #
 # Rules:
-#   • Run ONCE at 18:30 IST on weekdays.
-#   • If the scan raises an exception  → send Telegram crash alert, do NOT restart.
-#   • If the scan returns 0 alerts     → send Telegram "no alerts" notification.
-#   • Thread exits cleanly either way  → watchdog sees completed_cleanly=True and
-#     removes it from tracking (no restart).
+#   • Runs between 18:30 IST and midnight.
+#   • If the scan raises an exception  → send Telegram crash alert, and RETRY in 5 minutes.
+#   • Once it finishes successfully    → do NOT run again until the next day's window.
 # =====================================================================================
 
 def run_eod_scanner():
-    wait_for_window("eod")
-    scan_date = datetime.now(IST).strftime("%Y-%m-%d")
-    try:
-        import eod_scanner
-        total = eod_scanner.start()   # returns int
-        if total == 0:
+    last_success_date = None
+    while True:
+        wait_for_window("eod")
+        now = datetime.now(IST)
+        today_str = now.strftime("%Y-%m-%d")
+        
+        if last_success_date == today_str:
+            time.sleep(1800)
+            continue
+            
+        try:
+            logger.info(f"📊 EOD SCAN | Starting scan for {today_str}...")
+            import eod_scanner
+            total = eod_scanner.start()   # returns int
+            if total == 0:
+                msg = (
+                    f"📊 EOD SCAN — {today_str}\n"
+                    f"ℹ️ No breakout setups found today.\n"
+                    f"All stocks screened — none passed the filters."
+                )
+                logger.info("📊 EOD | Zero alerts — notifying Telegram")
+                _telegram_notify(msg)
+            else:
+                logger.info(f"📊 EOD | Completed — {total} alert(s) sent")
+            
+            # Successfully finished EOD scan for today
+            last_success_date = today_str
+            
+        except Exception as exc:
+            tb = traceback.format_exc()
             msg = (
-                f"📊 EOD SCAN — {scan_date}\n"
-                f"ℹ️ No breakout setups found today.\n"
-                f"All stocks screened — none passed the filters."
+                f"🚨 EOD SCAN FAILED — {today_str}\n"
+                f"Error: {exc}\n\n"
+                f"{tb[-800:]}"
             )
-            logger.info("📊 EOD | Zero alerts — notifying Telegram")
+            logger.critical(f"💀 EOD scanner crashed: {exc}. Retrying in 5 minutes...")
             _telegram_notify(msg)
-        else:
-            logger.info(f"📊 EOD | Completed — {total} alert(s) sent")
-    except Exception as exc:
-        tb = traceback.format_exc()
-        msg = (
-            f"🚨 EOD SCAN FAILED — {scan_date}\n"
-            f"Error: {exc}\n\n"
-            f"{tb[-800:]}"   # last 800 chars of traceback to stay within Telegram limits
-        )
-        logger.critical(f"💀 EOD scanner crashed: {exc}")
-        _telegram_notify(msg)
-        raise exc
-    # Thread exits — watchdog will NOT restart (completed_cleanly handled in _run wrapper)
+            time.sleep(300)
 
 
 def run_reversal_scanner():
-    wait_for_window("reversal")
-    scan_date = datetime.now(IST).strftime("%Y-%m-%d")
-    try:
-        import reversal_scanner
-        total = reversal_scanner.start()   # returns int
-        if total == 0:
+    last_success_date = None
+    while True:
+        wait_for_window("reversal")
+        now = datetime.now(IST)
+        today_str = now.strftime("%Y-%m-%d")
+        
+        if last_success_date == today_str:
+            time.sleep(1800)
+            continue
+            
+        try:
+            logger.info(f"🔄 REVERSAL SCAN | Starting scan for {today_str}...")
+            import reversal_scanner
+            total = reversal_scanner.start()   # returns int
+            if total == 0:
+                msg = (
+                    f"🔄 REVERSAL SCAN — {today_str}\n"
+                    f"ℹ️ No mean-reversion setups found today.\n"
+                    f"All stocks screened — none passed the filters."
+                )
+                logger.info("🔄 REVERSAL | Zero alerts — notifying Telegram")
+                _telegram_notify(msg)
+            else:
+                logger.info(f"🔄 REVERSAL | Completed — {total} alert(s) sent")
+            
+            # Successfully finished Reversal scan for today
+            last_success_date = today_str
+            
+        except Exception as exc:
+            tb = traceback.format_exc()
             msg = (
-                f"🔄 REVERSAL SCAN — {scan_date}\n"
-                f"ℹ️ No mean-reversion setups found today.\n"
-                f"All stocks screened — none passed the filters."
+                f"🚨 REVERSAL SCAN FAILED — {today_str}\n"
+                f"Error: {exc}\n\n"
+                f"{tb[-800:]}"
             )
-            logger.info("🔄 REVERSAL | Zero alerts — notifying Telegram")
+            logger.critical(f"💀 REVERSAL scanner crashed: {exc}. Retrying in 5 minutes...")
             _telegram_notify(msg)
-        else:
-            logger.info(f"🔄 REVERSAL | Completed — {total} alert(s) sent")
-    except Exception as exc:
-        tb = traceback.format_exc()
-        msg = (
-            f"🚨 REVERSAL SCAN FAILED — {scan_date}\n"
-            f"Error: {exc}\n\n"
-            f"{tb[-800:]}"
-        )
-        logger.critical(f"💀 REVERSAL scanner crashed: {exc}")
-        _telegram_notify(msg)
-        raise exc
+            time.sleep(300)
 
 
 def run_bayesian_loop():
@@ -412,13 +435,12 @@ RESTARTABLE_THREADS = {
     "Pledge Worker":      run_pledge_loop,
     "BayesianUpdater":    run_bayesian_loop,
     "SystemScheduler":    run_system_scheduler,
+    "EODScanner":         run_eod_scanner,
+    "ReversalScanner":    run_reversal_scanner,
 }
 
-# EOD and Reversal are launched once and never restarted
-ONE_SHOT_THREADS = {
-    "EODScanner":      run_eod_scanner,
-    "ReversalScanner": run_reversal_scanner,
-}
+# EOD and Reversal are now restartable since they run continuously
+ONE_SHOT_THREADS = {}
 
 ALL_THREADS = {**RESTARTABLE_THREADS, **ONE_SHOT_THREADS}
 
