@@ -794,6 +794,12 @@ def _main_impl():
                 exclusion_snapshot = list(EXCLUSION_LOG)
             pd.DataFrame(exclusion_snapshot).to_csv(EXCLUSION_CSV, index=False)
             logger.info(f"📋 Exclusion log saved to {EXCLUSION_CSV} ({len(exclusion_snapshot)} skipped)")
+            try:
+                from database import upload_parquet_to_db
+                upload_parquet_to_db("daily_builder_excluded", EXCLUSION_CSV)
+                logger.info("☁️ [DAILY BUILDER] Backed up exclusion log to Postgres cache.")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to upload exclusion log to Postgres: {e}")
 
         if not winners:
             logger.warning("❌ No qualifying stocks after classification")

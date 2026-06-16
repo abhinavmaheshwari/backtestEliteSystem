@@ -34,6 +34,14 @@ def get_watchlist() -> pd.DataFrame:
             
             # If downloaded successfully, we can just read it normally
             if download_parquet_from_db("daily_builder", WATCHLIST_PATH) and os.path.exists(WATCHLIST_PATH):
+                # Restore the exclusion log as well
+                try:
+                    exclusion_path = WATCHLIST_PATH.replace(".parquet", "_excluded.csv")
+                    download_parquet_from_db("daily_builder_excluded", exclusion_path)
+                    logger.info("☁️ [WATCHLIST CACHE] Restored exclusion log from Postgres cache.")
+                except Exception as ex_err:
+                    logger.warning(f"Failed to restore exclusion log from DB: {ex_err}")
+                
                 df = pd.read_parquet(WATCHLIST_PATH)
                 _watchlist_cache = df
                 _watchlist_date = current_date
