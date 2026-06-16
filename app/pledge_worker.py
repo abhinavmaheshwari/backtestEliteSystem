@@ -6,7 +6,7 @@ import re
 from bs4 import BeautifulSoup
 from functools import lru_cache
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from database import get_connection, upsert_scanner_health, init_db
@@ -16,6 +16,21 @@ from config import WATCHLIST_PATH
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+IST_ZONE = ZoneInfo("Asia/Kolkata")
+
+def is_in_window() -> bool:
+    """Check if current time is between 7 PM IST and 7 AM IST."""
+    now = datetime.now(IST_ZONE)
+    return now.hour >= 19 or now.hour < 7
+
+def wait_until_next_window() -> float:
+    """Calculate seconds until the next 7 PM IST."""
+    now = datetime.now(IST_ZONE)
+    target = now.replace(hour=19, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
 
 def discover_trendlyne_url(symbol: str, api_key: str) -> str:
     """Try to find the correct Trendlyne URL dynamically."""
@@ -72,6 +87,14 @@ def worker_loop():
         return
 
     while True:
+        # Check active scheduling window (7 PM - 7 AM IST)
+        if not is_in_window():
+            sleep_secs = wait_until_next_window()
+            logger.info(f"🕒 [PLEDGE WORKER] Outside active window (7 PM - 7 AM IST). Sleeping {sleep_secs:.1f}s until 7 PM IST...")
+            upsert_scanner_health("Pledge Worker", "IDLE", today_alerts=0, error_msg="Outside active window (7 PM - 7 AM IST)")
+            time.sleep(sleep_secs)
+            continue
+
         try:
             symbols_set = set()
             watchlist_count = 0
@@ -131,9 +154,10 @@ def worker_loop():
             processed_base = total_watch - len(stale_symbols)
 
             if not stale_symbols:
-                logger.info(f"✅ All pledges are fresh (updated within 75 days). Will recheck in 2 hours.")
-                upsert_scanner_health("Pledge Worker", "IDLE", last_success=datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(), today_alerts=total_watch, error_msg=f"Last: None | Total: {total_watch}")
-                time.sleep(2 * 3600)  # Check every 2 hours instead of 4
+                sleep_secs = wait_until_next_window()
+                logger.info(f"✅ [PLEDGE WORKER] All promoter pledges are processed for today. Sleeping {sleep_secs:.1f}s until tomorrow 7 PM IST...")
+                upsert_scanner_health("Pledge Worker", "IDLE", last_success=datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(), today_alerts=total_watch, error_msg=f"All processed | Total: {total_watch}")
+                time.sleep(sleep_secs)
                 continue
                 
             logger.info(f"Found {len(stale_symbols)} symbols needing pledge updates (out of {total_watch} total).")
@@ -270,20 +294,8 @@ def worker_loop():
             
             upsert_scanner_health("Pledge Worker", status, last_success=now_str, today_alerts=current_processed, error_msg=err_msg)
             
-            # Sleep until 1 AM or 5 PM IST
-            from datetime import timedelta
-            now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-            t1 = now_ist.replace(hour=1, minute=0, second=0, microsecond=0)
-            t2 = now_ist.replace(hour=17, minute=0, second=0, microsecond=0)
-            if now_ist < t1:
-                next_run = t1
-            elif now_ist < t2:
-                next_run = t2
-            else:
-                next_run = t1 + timedelta(days=1)
-            sleep_secs = (next_run - now_ist).total_seconds()
-            logger.info(f"🕒 Processed: {current_processed}/{total_watch}. Sleeping {int(sleep_secs)}s until {next_run.strftime('%Y-%m-%d %H:%M:%S')} IST")
-            time.sleep(sleep_secs)
+            # Sleep for 5 minutes before rechecking (allows watchlist updates)
+            time.sleep(300)
             
         except Exception as e:
             logger.exception("Pledge worker loop crashed")

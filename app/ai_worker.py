@@ -3,9 +3,24 @@ import time
 import logging
 import threading
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+IST_ZONE = ZoneInfo("Asia/Kolkata")
+
+def is_in_window() -> bool:
+    """Check if current time is between 7 PM IST and 7 AM IST."""
+    now = datetime.now(IST_ZONE)
+    return now.hour >= 19 or now.hour < 7
+
+def wait_until_next_window() -> float:
+    """Calculate seconds until the next 7 PM IST."""
+    now = datetime.now(IST_ZONE)
+    target = now.replace(hour=19, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
 
 def run_worker_loop():
     """Infinite loop that scans the watchlist CSV and fetches AI concall reports."""
@@ -20,6 +35,14 @@ def run_worker_loop():
     upsert_scanner_health("AI Worker", "IDLE", last_success=None, today_alerts=db_processed_count, error_msg="Status: Booting up")
     
     while True:
+        # Check active scheduling window (7 PM - 7 AM IST)
+        if not is_in_window():
+            sleep_secs = wait_until_next_window()
+            logger.info(f"🤖 [AI WORKER] Outside active window (7 PM - 7 AM IST). Sleeping {sleep_secs:.1f}s until 7 PM IST...")
+            upsert_scanner_health("AI Worker", "IDLE", today_alerts=get_total_cached_concalls(), error_msg="Outside active window (7 PM - 7 AM IST)")
+            time.sleep(sleep_secs)
+            continue
+
         try:
             if not os.path.exists(WATCHLIST_PATH):
                 upsert_scanner_health("AI Worker", "IDLE", today_alerts=get_total_cached_concalls(), error_msg="Status: Waiting for watchlist.parquet")
@@ -65,13 +88,29 @@ def run_worker_loop():
             pending_stocks = sorted(list(set(pending_stocks)))
             total_stocks = len(pending_stocks)
 
-            db_processed_count = get_total_cached_concalls()
-            # Store initial boot info in scanner health so UI can show totals quickly
-            try:
-                upsert_scanner_health("AI Worker", "OK", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=None)
-            except Exception:
-                logger.exception("Failed to upsert initial AI Worker health")
+            # Pre-filter to only those that actually need processing today
+            actual_pending = []
+            for sym in pending_stocks:
+                # Check 60-day valid cache
+                cached = get_recent_concall_analysis(sym, max_age_days=60)
+                if cached and not (isinstance(cached, dict) and "error" in cached):
+                    continue
+                # Check today's negative cache
+                cached_today = get_recent_concall_analysis(sym, max_age_days=1)
+                if cached_today and isinstance(cached_today, dict) and "error" in cached_today:
+                    continue
+                actual_pending.append(sym)
 
+            db_processed_count = get_total_cached_concalls()
+            
+            if not actual_pending:
+                sleep_secs = wait_until_next_window()
+                logger.info(f"🤖 [AI WORKER] All {total_stocks} stocks are already processed today. Sleeping {sleep_secs:.1f}s until tomorrow 7 PM IST...")
+                upsert_scanner_health("AI Worker", "IDLE", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"All processed | Total: {total_stocks}")
+                time.sleep(sleep_secs)
+                continue
+
+            logger.info(f"🤖 [AI WORKER] Found {len(actual_pending)}/{total_stocks} stocks requiring analysis.")
 
             max_retries = 3
             global_penalty_idx = 0
@@ -79,24 +118,10 @@ def run_worker_loop():
             
             for attempt in range(max_retries):
                 failed_stocks = []
-                for i, sym in enumerate(pending_stocks):
+                for i, sym in enumerate(actual_pending):
                     try:
-                        # 1. Check if we already have a cache for this stock
-                        cached = get_recent_concall_analysis(sym, max_age_days=60)
-                        # If a successful cache (without error) exists, skip
-                        if cached and not (isinstance(cached, dict) and "error" in cached):
-                            db_processed_count = get_total_cached_concalls()
-                            upsert_scanner_health("AI Worker", "RUNNING", last_success=datetime.now().isoformat(), today_alerts=db_processed_count, error_msg=f"Last: {sym} | Total: {total_stocks}")
-                            continue
-                            
-                        # If a negative cache (with error) exists from TODAY (max_age_days=1), skip today
-                        cached_today = get_recent_concall_analysis(sym, max_age_days=1)
-                        if cached_today and isinstance(cached_today, dict) and "error" in cached_today:
-                            logger.info(f"🤖 [AI WORKER] Negative cache found from today for {sym} ({cached_today['error']}). Skipping today.")
-                            continue
-                            
-                        # 2. No cache. Fetch it.
-                        logger.info(f"🤖 [AI WORKER] Missing cache for {sym} ({i+1}/{len(pending_stocks)} in batch). Fetching live...")
+                        # Fetch it directly (pre-filtering already skipped cached ones)
+                        logger.info(f"🤖 [AI WORKER] Missing cache for {sym} ({i+1}/{len(actual_pending)} in batch). Fetching live...")
                         result = fetch_and_analyze_concall(sym)
                         
                         if result and "error" not in result:
@@ -147,7 +172,7 @@ def run_worker_loop():
                 if not failed_stocks:
                     break
                 
-                pending_stocks = failed_stocks
+                actual_pending = failed_stocks
                 if attempt < max_retries - 1:
                     logger.info(f"🤖 [AI WORKER] {len(failed_stocks)} stocks failed. Retrying in 60s (Attempt {attempt+2}/{max_retries})...")
                     time.sleep(60)
@@ -158,6 +183,7 @@ def run_worker_loop():
                     for fsym in failed_stocks:
                         try:
                             upsert_fetch_error('ai', 'AI Worker', fsym, None, 'ai_concall', 'Giving up after retries')
+                            save_concall_analysis(fsym, f"NONE_{fsym}", {"error": "Giving up after retries"})
                         except Exception:
                             logger.exception(f"Failed to upsert final fetch_error for {fsym}")
                     
