@@ -1492,22 +1492,38 @@ async function generateAIModal() {
 
 <style>
 .alert-blink{animation: blink 1s step-end infinite; background: rgba(255,235,59,0.08);}
+.today-alert-blink{animation: todayBlink 0.8s step-end infinite; background: rgba(139,92,246,0.12); box-shadow: inset 0 0 8px rgba(139,92,246,0.2);}
 @keyframes blink{50%{opacity:0.3}}
+@keyframes todayBlink{0%{opacity:1; box-shadow: inset 0 0 8px rgba(139,92,246,0.3)}50%{opacity:0.5; box-shadow: inset 0 0 3px rgba(139,92,246,0.1)}100%{opacity:1; box-shadow: inset 0 0 8px rgba(139,92,246,0.3)}}
 </style>
 <script>
 const ALERT_FETCH_INTERVAL = 60 * 1000;
 async function fetchTodaysAlertsAndBlink_User(){
   try{
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0,10);
+    
     const res = await fetch('/api/todays_alerts'); if(!res.ok) return; const data = await res.json();
     data.forEach(alert=>{
       // attach attributes to matching table rows
       document.querySelectorAll('tr').forEach(tr=>{
         if(tr.textContent && tr.textContent.includes(alert.symbol) && !tr.dataset.alertId){
           tr.dataset.alertSymbol = alert.symbol; tr.dataset.alertId = alert.id;
-          if(!alert.seen_by_user) tr.classList.add('alert-blink');
+          
+          // Check if alert is from today
+          const alertDate = (alert.alert_time || alert.entry_date || '').slice(0, 10);
+          const isToday = alertDate === todayStr;
+          
+          // Apply blinking - priority: unseen alerts OR today's alerts
+          if(!alert.seen_by_user) {
+            tr.classList.add('alert-blink');
+          } else if(isToday) {
+            tr.classList.add('today-alert-blink');
+          }
+          
           tr.addEventListener('click', async ()=>{
-            if(tr.classList.contains('alert-blink')){
-              tr.classList.remove('alert-blink');
+            if(tr.classList.contains('alert-blink') || tr.classList.contains('today-alert-blink')){
+              tr.classList.remove('alert-blink', 'today-alert-blink');
               try{ await fetch('/api/alert/mark_seen', {method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({id: alert.id, role: 'user'})}); }catch(e){}
             }
           }, {once:true});

@@ -9,109 +9,266 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Outfit:wght@600;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #09090b; --card: #18181b; --card2: #27272a;
-      --text: #f4f4f5; --muted: #a1a1aa; --border: #27272a; --border2: #3f3f46;
+      --bg: #0a0e27; --surface: #121829; --card: #1a2342; --card2: #232f4a;
+      --text: #f0f4f8; --muted: #a0aec0; --border: rgba(148,163,184,0.2);
       --accent: #8b5cf6; --accent-dim: rgba(139,92,246,0.15); --accent-hover: #7c3aed;
-      --green: #10b981; --red: #ef4444; --amber: #f59e0b; --blue: #3b82f6;
+      --green: #10b981; --green-dim: rgba(16,185,129,0.15); --red: #ef4444; --amber: #f59e0b; --blue: #3b82f6;
       --font-body: 'Inter', sans-serif; --font-mono: 'JetBrains Mono', monospace; --font-head: 'Outfit', sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: var(--font-body); padding: 24px; min-height: 100vh; }
+    body { background: linear-gradient(135deg, var(--bg) 0%, #0f1535 100%); color: var(--text); font-family: var(--font-body); padding: 0; min-height: 100vh; }
 
-    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
-    .title { font-family: var(--font-head); font-size: 28px; letter-spacing: -0.5px; }
-    .title span { color: var(--accent); }
-    .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: var(--font-mono); }
+    /* ═══ STICKY HEADER ═══ */
+    .header {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(18, 24, 41, 0.8); backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid rgba(148,163,184,0.1);
+      padding: 16px 28px;
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .header-left { display: flex; align-items: center; gap: 24px; }
+    .title { font-family: var(--font-head); font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    .title span { background: linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .subtitle { font-size: 12px; color: var(--muted); font-family: var(--font-mono); margin-top: 4px; letter-spacing: 0.5px; }
+    
+    .header-nav { display: flex; gap: 8px; align-items: center; }
+    .nav-btn {
+      background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.3);
+      color: var(--text); padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      font-family: var(--font-body);
+    }
+    .nav-btn:hover {
+      background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.5);
+      transform: translateY(-2px); box-shadow: 0 8px 16px rgba(139,92,246,0.2);
+    }
+    .nav-btn.admin { border-color: rgba(59,130,246,0.3); background: rgba(59,130,246,0.1); }
+    .nav-btn.admin:hover { background: rgba(59,130,246,0.2); box-shadow: 0 8px 16px rgba(59,130,246,0.2); }
 
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }
-    .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; transition: border-color 0.2s; }
-    .kpi-card:hover { border-color: var(--border2); }
-    .kpi-value { font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+    /* ═══ MACRO BADGE ═══ */
+    #macro-state-badge {
+      font-size: 11px; padding: 6px 12px; border-radius: 20px; font-weight: 600;
+      font-family: var(--font-mono); letter-spacing: 0.5px; border: 1px solid rgba(16,185,129,0.3);
+      background: rgba(16,185,129,0.1); animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+    /* ═══ SCORE BAR ═══ */
+    .weight-bar {
+      display: flex; gap: 0; border-radius: 12px; overflow: hidden; height: 32px;
+      margin: 24px 28px; font-size: 11px; font-weight: 700; font-family: var(--font-mono);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3); backdrop-filter: blur(10px);
+    }
+    .weight-bar div {
+      display: flex; align-items: center; justify-content: center; color: #fff;
+      transition: flex 0.3s ease, filter 0.3s ease;
+      cursor: pointer;
+    }
+    .weight-bar div:hover { filter: brightness(1.2); flex: 1.1; }
+
+    /* ═══ KPI GRID ═══ */
+    .kpi-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px;
+      margin: 0 28px 32px; padding: 0;
+    }
+    .kpi-card {
+      background: rgba(26, 35, 66, 0.8); backdrop-filter: blur(10px);
+      border: 1px solid rgba(139,92,246,0.2); border-radius: 12px;
+      padding: 20px; text-align: center;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      cursor: pointer; position: relative; overflow: hidden;
+    }
+    .kpi-card::before {
+      content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+      background: radial-gradient(circle, rgba(139,92,246,0.1) 0%, transparent 70%);
+      opacity: 0; transition: opacity 0.3s ease;
+    }
+    .kpi-card:hover {
+      border-color: rgba(139,92,246,0.4); box-shadow: 0 8px 32px rgba(139,92,246,0.2);
+      transform: translateY(-4px) scale(1.02);
+    }
+    .kpi-card:hover::before { opacity: 1; }
+    .kpi-value {
+      font-family: var(--font-mono); font-size: 32px; font-weight: 700;
+      color: var(--accent); margin-bottom: 8px; transition: transform 0.3s ease;
+    }
+    .kpi-card:hover .kpi-value { transform: scale(1.1); }
     .kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
 
-    .weight-bar { display: flex; gap: 0; border-radius: 8px; overflow: hidden; height: 28px; margin-bottom: 32px; font-size: 11px; font-weight: 700; font-family: var(--font-mono); }
-    .weight-bar div { display: flex; align-items: center; justify-content: center; color: #fff; }
+    /* ═══ TABS ═══ */
+    .tab-bar {
+      display: flex; gap: 8px; margin: 32px 28px 24px;
+      border-bottom: 1px solid rgba(148,163,184,0.1); padding-bottom: 0; flex-wrap: wrap;
+    }
+    .tab-btn {
+      background: transparent; border: none; color: var(--muted);
+      font-family: var(--font-body); font-size: 14px; font-weight: 600;
+      padding: 12px 18px; cursor: pointer; margin-bottom: -1px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+    }
+    .tab-btn::after {
+      content: ''; position: absolute; bottom: -1px; left: 0; width: 0; height: 2px;
+      background: var(--accent); transition: width 0.3s ease;
+    }
+    .tab-btn:hover {
+      color: var(--text); transform: translateY(-2px);
+    }
+    .tab-btn:hover::after { width: 100%; }
+    .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-btn.active::after { width: 100%; }
+    .tab-btn.tab-buy.active { color: var(--green); }
+    .tab-btn.tab-buy.active::after { background: var(--green); }
+    .tab-panel { display: none; padding: 0 28px 28px 28px; }
+     .tab-panel.active { display: block; animation: fadeIn 0.3s ease; }
+     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-    .section-title { font-family: var(--font-head); font-size: 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .section-title span { font-size: 12px; padding: 4px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; color: var(--muted); font-family: var(--font-mono); font-weight: 500; }
-    .section-title .tag-green { color: var(--green); border-color: rgba(16,185,129,0.3); }
+     /* ═══ SECTION TITLES ═══ */
+     .section-title {
+       font-family: var(--font-head); font-size: 18px; font-weight: 700;
+       margin-bottom: 16px; margin-left: 0; margin-right: 0;
+       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+       color: var(--text); transition: all 0.3s ease;
+     }
+     .section-title span {
+       font-size: 12px; padding: 4px 10px; background: rgba(139,92,246,0.1);
+       border: 1px solid rgba(139,92,246,0.2); border-radius: 20px;
+       color: var(--muted); font-family: var(--font-mono); font-weight: 500;
+       transition: all 0.3s ease;
+     }
+     .section-title span:hover {
+       background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.4);
+     }
+     .section-title .tag-red { color: var(--red); border-color: rgba(239,68,68,0.3); }
+     .section-title .tag-red:hover { background: rgba(239,68,68,0.15); }
 
-    .table-container { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; margin-bottom: 32px; }
+     /* ═══ TABLES ═══ */
+    .table-container {
+      background: rgba(26, 35, 66, 0.6); backdrop-filter: blur(10px);
+      border: 1px solid rgba(139,92,246,0.1); border-radius: 12px;
+      overflow-x: auto; margin-bottom: 32px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+      transition: all 0.3s ease;
+    }
+    .table-container:hover {
+      border-color: rgba(139,92,246,0.2); box-shadow: 0 12px 48px rgba(139,92,246,0.15);
+    }
     table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
-    th { background: var(--card2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; cursor: pointer; user-select: none; }
-    th:hover { color: var(--text); }
+    th, td { padding: 14px 16px; border-bottom: 1px solid rgba(148,163,184,0.1); font-size: 13px; white-space: nowrap; }
+    th {
+      background: rgba(35, 47, 74, 0.8); color: var(--muted); font-size: 11px;
+      text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700;
+      cursor: pointer; user-select: none; transition: all 0.2s ease;
+    }
+    th:hover { color: var(--text); background: rgba(35, 47, 74, 1); }
     tr:last-child td { border-bottom: none; }
-    tr:hover { background: rgba(255,255,255,0.02); }
+    tbody tr {
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      border-left: 3px solid transparent;
+    }
+    tbody tr:hover {
+      background: rgba(139,92,246,0.1); border-left-color: var(--accent);
+      transform: translateX(4px);
+    }
+    tbody tr.buy-signal-blink {
+      animation: buySignalBlink 0.7s step-end infinite;
+      background: rgba(16,185,129,0.2); box-shadow: inset 0 2px 8px rgba(16,185,129,0.2);
+    }
 
     .sym { font-family: var(--font-mono); font-weight: 700; color: #fff; font-size: 14px; }
     .mono { font-family: var(--font-mono); }
-    .score-badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-family: var(--font-mono); font-weight: 700; font-size: 12px; min-width: 36px; text-align: center; }
+    .score-badge {
+      display: inline-block; padding: 4px 8px; border-radius: 6px;
+      font-family: var(--font-mono); font-weight: 700; font-size: 12px; min-width: 36px; text-align: center;
+    }
     .score-high { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
     .score-med { background: rgba(245,158,11,0.15); color: var(--amber); border: 1px solid rgba(245,158,11,0.3); }
     .score-low { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
 
-    .signal { font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 600; font-family: var(--font-mono); }
-    .sig-buy { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(139,92,246,0.3); }
-    .sig-sell { background: rgba(239,68,68,0.1); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+    .signal {
+      font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 600;
+      font-family: var(--font-mono); transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    .sig-buy {
+      background: rgba(16,185,129,0.15); color: var(--green);
+      border: 1px solid rgba(16,185,129,0.3);
+    }
+    .sig-buy:hover { background: rgba(16,185,129,0.25); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+    .sig-sell {
+      background: rgba(239,68,68,0.1); color: var(--red);
+      border: 1px solid rgba(239,68,68,0.3);
+    }
+    .sig-sell:hover { background: rgba(239,68,68,0.2); box-shadow: 0 4px 12px rgba(239,68,68,0.3); }
 
-    .rs-pos { color: var(--green); }
-    .rs-neg { color: var(--red); }
-    .fcf-pos { color: var(--green); }
-    .fcf-neg { color: var(--red); }
-    .fcf-na { color: var(--muted); }
-
+    .rs-pos { color: var(--green); font-weight: 600; }
+    .rs-neg { color: var(--red); font-weight: 600; }
     .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 14px; }
 
-    .sector-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; background: var(--card2); color: var(--muted); border: 1px solid var(--border); font-family: var(--font-mono); max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-
-    .tab-bar { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0; }
-    .tab-btn {
-      background: transparent; border: none; border-bottom: 2px solid transparent;
-      color: var(--muted); font-family: var(--font-body); font-size: 14px; font-weight: 600;
-      padding: 10px 18px; cursor: pointer; margin-bottom: -1px; transition: 0.15s;
+    .sector-tag {
+      display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px;
+      background: rgba(59,130,246,0.1); color: var(--blue); border: 1px solid rgba(59,130,246,0.2);
+      font-family: var(--font-mono); max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+      transition: all 0.3s ease;
     }
-    .tab-btn:hover { color: var(--text); }
-    .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
-    .tab-btn.tab-exit.active { border-bottom-color: var(--red); color: var(--red); }
-    .tab-btn.tab-buy.active { border-bottom-color: var(--green); color: var(--green); }
-    .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
+    .sector-tag:hover { background: rgba(59,130,246,0.2); }
+
+    /* ═══ ALERTS ═══ */
+    .alert-toast {
+      position: fixed; top: -100px; left: 50%; transform: translateX(-50%);
+      background: linear-gradient(135deg, #ef4444 0%, #e11d48 100%);
+      color: #fff; padding: 16px 24px; border-radius: 12px;
+      font-weight: 700; z-index: 10000; display: flex; align-items: center; gap: 12px;
+      box-shadow: 0 12px 48px rgba(239,68,68,0.4); transition: top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      cursor: pointer; border: 1px solid rgba(255,255,255,0.2);
+      backdrop-filter: blur(10px);
+    }
+    .alert-toast.show { top: 24px; animation: pulseToast 2s infinite; }
+    .alert-toast-icon { font-size: 24px; animation: spin 2s linear infinite; }
+    @keyframes pulseToast { 0% { box-shadow: 0 12px 48px rgba(239,68,68,0.4); } 70% { box-shadow: 0 12px 48px rgba(239,68,68,0.1); } 100% { box-shadow: 0 12px 48px rgba(239,68,68,0.4); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @keyframes buySignalBlink { 0%{opacity:1; box-shadow: 0 0 12px rgba(16,185,129,0.4)} 50%{opacity:0.4; box-shadow: 0 0 3px rgba(16,185,129,0.1)} 100%{opacity:1; box-shadow: 0 0 12px rgba(16,185,129,0.4)} }
+
     .exit-banner {
       background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
-      border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; color: var(--muted); line-height: 1.5;
+      border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px;
+      color: var(--muted); line-height: 1.5; backdrop-filter: blur(10px);
     }
     .exit-banner strong { color: var(--red); }
-    .tag-red { color: var(--red); border-color: rgba(239,68,68,0.3); }
-    
-  @keyframes pulseToast { 0% {box-shadow: 0 0 0 0 rgba(239,68,68,0.7);} 70% {box-shadow: 0 0 0 15px rgba(239,68,68,0);} 100% {box-shadow: 0 0 0 0 rgba(239,68,68,0);} }
-  .alert-toast { position:fixed; top:-100px; left:50%; transform:translateX(-50%); background:var(--warn, #ef4444); color:#fff; padding:16px 24px; border-radius:8px; font-weight:700; z-index:10000; display:flex; align-items:center; gap:12px; box-shadow:0 10px 25px rgba(239,68,68,0.5); transition:top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); cursor:pointer; }
-  .alert-toast.show { top: 24px; animation: pulseToast 2s infinite; }
-  .alert-toast-icon { font-size: 24px; animation:spin 2s linear infinite; }
-  @keyframes spin { 100% { transform:rotate(360deg); } }
+
+    .alert-blink { animation: blink 1s step-end infinite; background: rgba(255,235,59,0.08); }
+    @keyframes blink { 50%{opacity:0.3} }
+
   </style>
 </head>
 <body>
   <div class="header">
-    <div>
-      <div class="title" style="display:flex; align-items:center; gap:12px;">
-        Fund Manager <span>System v2</span>
-        <div id="macro-state-badge" style="font-size:11px; padding:4px 8px; border-radius:6px; font-weight:600; font-family:var(--font-mono); letter-spacing:0.5px; border:1px solid var(--border);">
-          Loading Regime...
+    <div class="header-left">
+      <div>
+        <div class="title">
+          💎 Fund Manager <span>System v2</span>
         </div>
+        <div class="subtitle">100-Point Institutional Scoring · Sector-Capped · Real-Time Signals</div>
       </div>
-      <div class="subtitle">100-Point Institutional Scoring · Sector-Capped · Cash Flow Verified</div>
     </div>
-    <a href="/" style="color: var(--muted); text-decoration: none; font-size: 13px; border: 1px solid var(--border); padding: 8px 16px; border-radius: 8px; transition: 0.2s;">&larr; Back to Trading Dashboard</a>
+    <div id="macro-state-badge" style="font-size:11px; padding:6px 12px; border-radius:20px; font-weight:600; font-family:var(--font-mono); letter-spacing:0.5px; border:1px solid rgba(16,185,129,0.3); background:rgba(16,185,129,0.1);">
+      Loading Regime...
+    </div>
+    <div class="header-nav">
+      <button class="nav-btn" onclick="goToTrading()" title="Go to Trading Dashboard">📈 Trading Dashboard</button>
+      <button class="nav-btn admin" onclick="goToAdmin()" title="Go to Admin Dashboard">⚙️ Admin Dashboard</button>
+    </div>
   </div>
 
-  <!-- Score Weight Breakdown -->
   <div class="weight-bar">
-    <div style="width:25%; background: #6366f1;">Quality 25</div>
-    <div style="width:25%; background: #8b5cf6;">Growth 25</div>
-    <div style="width:30%; background: #10b981;">Momentum 30</div>
-    <div style="width:10%; background: #3b82f6;">Ownership 10</div>
-    <div style="width:10%; background: #f59e0b;">Cash Flow 10</div>
+    <div style="width:25%; background: linear-gradient(135deg, #6366f1 0%, #7c3aed 100%); cursor: pointer; transition: all 0.3s;" onmouseover="this.style.flex='1.2'" onmouseout="this.style.flex='1'" title="Quality Metrics: 25%">Quality 25</div>
+    <div style="width:25%; background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%); cursor: pointer; transition: all 0.3s;" onmouseover="this.style.flex='1.2'" onmouseout="this.style.flex='1'" title="Growth Metrics: 25%">Growth 25</div>
+    <div style="width:30%; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); cursor: pointer; transition: all 0.3s;" onmouseover="this.style.flex='1.2'" onmouseout="this.style.flex='1'" title="Momentum Metrics: 30%">Momentum 30</div>
+    <div style="width:10%; background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%); cursor: pointer; transition: all 0.3s;" onmouseover="this.style.flex='1.2'" onmouseout="this.style.flex='1'" title="Ownership Metrics: 10%">Ownership 10</div>
+    <div style="width:10%; background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%); cursor: pointer; transition: all 0.3s;" onmouseover="this.style.flex='1.2'" onmouseout="this.style.flex='1'" title="Cash Flow Metrics: 10%">Cash Flow 10</div>
   </div>
 
   <div class="kpi-grid">
@@ -280,7 +437,7 @@
   <div class="section-title">🔄 Opportunistic <span id="opp-count">0</span></div>
   <div class="table-container">
     <table id="tbl-opp">
-      <thead><tr><th>Stock</th><th>Score</th><th>Category</th><th>Signal</th></tr></thead>
+      <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>Category</th><th>Signal</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -528,15 +685,19 @@
 
         const stocks = Array.isArray(data) ? data : (data.data || []);
         
-        // Alert Diffing Logic
+        // Alert Diffing Logic - Track new BUY/SELL signals
+        let newBuySignals = new Set();
+        let newSellSignals = new Set();
         if (ALL_WEALTH_STOCKS.length > 0) {
             const oldKeys = new Set(ALL_WEALTH_STOCKS.filter(s => s.Signal).map(s => s.Stock + '|' + s.Signal));
             let hasNew = false;
             for (const s of stocks) {
                 if (s.Signal && (s.Signal.includes("BUY") || s.Signal.includes("SELL"))) {
-                    if (!oldKeys.has(s.Stock + '|' + s.Signal)) {
+                    const key = s.Stock + '|' + s.Signal;
+                    if (!oldKeys.has(key)) {
                         hasNew = true;
-                        break;
+                        if (s.Signal.includes("BUY")) newBuySignals.add(s.Stock);
+                        if (s.Signal.includes("SELL")) newSellSignals.add(s.Stock);
                     }
                 }
             }
@@ -553,7 +714,7 @@
         document.getElementById('buy-count').textContent = buys.length;
 
         document.querySelector('#tbl-buy tbody').innerHTML = buys.length ? buys.map(r => `
-          <tr>
+          <tr class="${newBuySignals.has(r.Stock) ? 'buy-signal-blink' : ''}">
             <td class="sym">${r.Stock}</td>
             <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
@@ -572,7 +733,7 @@
         document.getElementById('kpi-sells').textContent = sells.length === 0 ? '-' : sells.length;
         document.getElementById('sells-count').textContent = sells.length;
         document.querySelector('#tbl-sells tbody').innerHTML = sells.length ? sells.map(r => `
-          <tr>
+          <tr class="${newSellSignals.has(r.Stock) ? 'buy-signal-blink' : ''}">
             <td class="sym">${r.Stock}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
@@ -656,9 +817,6 @@
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
         `).join('') : `<tr><td colspan="8" class="empty">No stocks met Quality-On-Sale criteria</td></tr>`;
-            <td>${getSigHtml(r.Signal)}</td>
-          </tr>
-        `).join('') : `<tr><td colspan="7" class="empty">No stocks currently on sale</td></tr>`;
 
         // Opportunistic
         const opp = stocks.filter(s => (s.Portfolio_Bucket || "").includes("Opportunistic")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
@@ -666,11 +824,12 @@
         document.querySelector('#tbl-opp tbody').innerHTML = opp.length ? opp.map(r => `
           <tr>
             <td class="sym">${r.Stock}</td>
+            <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
             <td style="font-size:11px; color:var(--muted);">${r.Category || '-'}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="4" class="empty">No turnarounds detected</td></tr>`;
+        `).join('') : `<tr><td colspan="5" class="empty">No turnarounds detected</td></tr>`;
 
       } catch (err) {
         console.error(err);
@@ -743,6 +902,14 @@ async function fetchTodaysAlertsAndBlink_Wealth(){
 }
 setTimeout(fetchTodaysAlertsAndBlink_Wealth, 2000);
 setInterval(fetchTodaysAlertsAndBlink_Wealth, ALERT_FETCH_INTERVAL_WEALTH);
+
+// ═══ INTERACTIVE NAVIGATION ═══
+function goToTrading() {
+  window.location.href = '/';
+}
+function goToAdmin() {
+  window.location.href = '/admin';
+}
 </script>
 </body>
 </html>
