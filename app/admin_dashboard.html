@@ -513,6 +513,15 @@ function playDing() {
     <div class="section-label">Scanner Health</div>
     <div class="scanner-grid" id="scannerGrid" style="margin-bottom:28px"></div>
 
+    <!-- NON-CRITICAL ERRORS TRACKING -->
+    <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+      <span>Non-Critical Errors Tracking</span>
+      <button class="btn btn-sm" onclick="refreshNonCriticalErrors()" style="font-size:12px;">🔄 Refresh</button>
+    </div>
+    <div id="nonCriticalErrorsContainer" style="margin-bottom:28px;">
+      <div class="card" style="padding:16px; text-align:center; color:var(--muted);">Loading errors...</div>
+    </div>
+
     <!-- API HEALTH PANEL -->
     <div id="apiHealthContainer" style="margin-bottom:20px;"></div>
 
@@ -2063,6 +2072,146 @@ async function pingViewer() {
   } catch(e) {}
 }
 
+// ── NON-CRITICAL ERRORS TRACKING
+async function loadNonCriticalErrors() {
+  try {
+    const response = await fetch('/api/fetch_errors');
+    if (!response.ok) {
+      console.warn('Failed to load non-critical errors');
+      return;
+    }
+    const errors = await response.json();
+    renderNonCriticalErrors(errors);
+  } catch (e) {
+    console.error('Error loading non-critical errors:', e);
+  }
+}
+
+function renderNonCriticalErrors(errors) {
+  const container = document.getElementById('nonCriticalErrorsContainer');
+  if (!errors || errors.length === 0) {
+    container.innerHTML = '<div class="card" style="padding:16px; text-align:center; color:var(--muted);">No non-critical errors ✓</div>';
+    return;
+  }
+
+  // Group errors by scanner_name
+  const byScanner = {};
+  errors.forEach(err => {
+    if (!byScanner[err.scanner_name]) {
+      byScanner[err.scanner_name] = [];
+    }
+    byScanner[err.scanner_name].push(err);
+  });
+
+  let html = '<div class="card">';
+  
+  // For each scanner with errors
+  Object.keys(byScanner).sort().forEach(scanner => {
+    const scannerErrors = byScanner[scanner];
+    html += `
+      <div style="margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid var(--border);">
+        <div style="font-weight:600; color:var(--accent); margin-bottom:12px;">📊 ${scanner}</div>
+        <div class="tbl-wrap" style="margin-bottom:0;">
+          <table style="font-size:12px;">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Interval</th>
+                <th>Error Type</th>
+                <th style="text-align:right;">Count</th>
+                <th style="text-align:center;">Last Seen</th>
+                <th style="text-align:center;">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+    `;
+
+    scannerErrors.forEach(err => {
+      const lastSeen = timeAgo(err.last_seen);
+      const count = err.occurrences || 0;
+      const countColor = count > 5 ? 'var(--warn)' : count > 2 ? 'var(--amber)' : 'var(--accent)';
+      
+      html += `
+        <tr>
+          <td style="font-weight:500;">${err.symbol || '—'}</td>
+          <td>${err.interval || '—'}</td>
+          <td style="font-family:var(--font-mono); font-size:11px; color:var(--muted);">${err.category || err.last_error_msg || '—'}</td>
+          <td style="text-align:right; font-weight:600; color:${countColor};">${count}</td>
+          <td style="text-align:center; color:var(--muted);">${lastSeen}</td>
+          <td style="text-align:center;">
+            <button class="btn btn-sm" style="background:var(--warn); color:#fff; border:none; padding:4px 8px; font-size:11px; cursor:pointer; border-radius:4px;" 
+                    onclick="acknowledgeError(${err.id}, '${scanner}')">
+              Ignore
+            </button>
+          </td>
+        </tr>
+        <tr style="display:none;" id="error-detail-${err.id}">
+          <td colspan="6" style="padding:12px; background:var(--card2);">
+            <div style="font-size:11px; color:var(--muted);">
+              <strong>Full Error Message:</strong>
+              <div style="margin-top:4px; font-family:var(--font-mono); color:var(--text); background:var(--bg); padding:8px; border-radius:4px; white-space:pre-wrap; word-break:break-all; max-height:200px; overflow-y:auto;">
+                ${(err.last_error_msg || 'No message').slice(0, 500)}
+              </div>
+              <div style="margin-top:8px; font-size:10px; color:var(--muted2);">
+                First: ${fmtTs(err.first_seen)} | Last: ${fmtTs(err.last_seen)}
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+
+    html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  });
+
+  html += '</div>';
+  container.innerHTML = html;
+
+  // Add click handlers to show/hide error details
+  container.querySelectorAll('button.btn-sm').forEach(btn => {
+    const errorId = btn.getAttribute('onclick').match(/acknowledgeError\((\d+)/)[1];
+    btn.addEventListener('click', () => {
+      const detailRow = document.getElementById(`error-detail-${errorId}`);
+      if (detailRow) {
+        detailRow.style.display = detailRow.style.display === 'none' ? 'table-row' : 'none';
+      }
+    }, true); // Use capture to not interfere with actual click handler
+  });
+}
+
+async function acknowledgeError(errorId, scannerName) {
+  if (!confirm('Mark this error as ignored? Count will reset to 0 and it will reappear if the error occurs again.')) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/fetch_errors/ack/${errorId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'}
+    });
+    
+    if (response.ok) {
+      // Refresh the errors list
+      await loadNonCriticalErrors();
+      console.log(`✓ Error ${errorId} acknowledged`);
+    } else {
+      alert('Failed to acknowledge error');
+    }
+  } catch (e) {
+    console.error('Error acknowledging:', e);
+    alert('Error acknowledging the error');
+  }
+}
+
+function refreshNonCriticalErrors() {
+  loadNonCriticalErrors();
+}
+
 // ── MAIN
 async function initDashboard() {
   const data = await loadData();
@@ -2083,6 +2232,7 @@ async function initDashboard() {
   if (!data.trades || !data.trades.length) {
     document.getElementById('kpis').innerHTML = '<div style="padding:48px;text-align:center;color:var(--muted)">No alert history found.</div>';
     renderScannerGrid(data.scanner_stats);
+    loadNonCriticalErrors();
     return;
   }
 
@@ -2093,6 +2243,7 @@ async function initDashboard() {
   populateFilters(data.trades);
   renderTradeTable();
   renderScannerGrid(data.scanner_stats);
+  loadNonCriticalErrors();
   renderCategoryStats();
   updateSim();
 
@@ -2115,7 +2266,7 @@ async function initDashboard() {
       }
       prevTotalAlerts = currentAlerts;
       renderScannerGrid(window._scannerStats);
-
+      loadNonCriticalErrors();
     }
   }, 60000);
 

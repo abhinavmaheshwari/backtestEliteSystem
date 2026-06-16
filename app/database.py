@@ -441,16 +441,25 @@ def classify_error_severity(error_msg: str) -> str:
     Classify an error as CRITICAL or IGNORABLE.
     
     CRITICAL: Code failures, missing config files, compilation errors
-    IGNORABLE: API failures for individual stocks (yfinance, missing stock data)
+    IGNORABLE: API failures for individual/multiple stocks - scanner rejects them and continues
     
     Returns: 'CRITICAL' | 'IGNORABLE'
+    
+    Key principle: If scanner can handle it by rejecting/skipping the stock and continuing,
+    it's IGNORABLE (keeps scanner GREEN). If scanner crashes entirely, it's CRITICAL.
+    
+    Example: BAJAJ AUTO yfinance timeout
+      → Stock rejected, scan continues with 49 other stocks
+      → Scanner shows GREEN with alerts from successful stocks
+      → Not critical because scanner completed successfully
     """
     if not error_msg:
         return None
     
     error_lower = error_msg.lower()
     
-    # IGNORABLE patterns: missing stock data, API timeouts for specific stocks
+    # IGNORABLE patterns: missing stock data, API timeouts for specific/all stocks
+    # Scanner handles these gracefully by rejecting the stock(s) and continuing
     ignorable_patterns = [
         'yfinance',
         'timeout',
@@ -462,9 +471,10 @@ def classify_error_severity(error_msg: str) -> str:
         'temporarily unavailable',
         'data not available',
         'failed to get data for',
+        'returned 0 data',  # Stock(s) rejected, others continue
     ]
     
-    # CRITICAL patterns: code/infrastructure issues
+    # CRITICAL patterns: code/infrastructure issues that crash the scanner
     critical_patterns = [
         'syntax error',
         'import error',
@@ -1051,7 +1061,10 @@ def upsert_fetch_error(source_name: str, scanner_name: str, symbol: str, interva
 
 
 def get_all_fetch_errors(limit: int = 100) -> list:
-    """Return all non-acknowledged rows from fetch_errors ordered by occurrences desc."""
+    """Return all non-hidden fetch errors (excluding acknowledged with 0 occurrences).
+    
+    Hide errors where is_acknowledged=TRUE AND occurrences=0.
+    """
     init_db()
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1059,7 +1072,7 @@ def get_all_fetch_errors(limit: int = 100) -> list:
                 cur.execute("""
                     SELECT id, source_name, scanner_name, symbol, interval, category, occurrences, first_seen, last_seen, last_error_msg, is_acknowledged
                     FROM fetch_errors
-                    WHERE is_acknowledged = FALSE
+                    WHERE NOT (is_acknowledged = TRUE AND occurrences = 0)
                     ORDER BY occurrences DESC, last_seen DESC
                     LIMIT %s
                 """, (limit,))
@@ -1070,7 +1083,10 @@ def get_all_fetch_errors(limit: int = 100) -> list:
 
 
 def get_fetch_errors_for_scanner(scanner_name: str) -> list:
-    """Return all unacknowledged fetch_errors for a specific scanner."""
+    """Return all non-acknowledged fetch_errors for a specific scanner.
+    
+    Hide errors where is_acknowledged=TRUE AND occurrences=0.
+    """
     init_db()
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1078,7 +1094,8 @@ def get_fetch_errors_for_scanner(scanner_name: str) -> list:
                 cur.execute("""
                     SELECT id, source_name, scanner_name, symbol, interval, category, occurrences, first_seen, last_seen, last_error_msg, is_acknowledged
                     FROM fetch_errors
-                    WHERE scanner_name = %s AND is_acknowledged = FALSE
+                    WHERE scanner_name = %s 
+                      AND NOT (is_acknowledged = TRUE AND occurrences = 0)
                     ORDER BY occurrences DESC, last_seen DESC
                 """, (scanner_name,))
                 return [dict(r) for r in cur.fetchall()]
@@ -1105,13 +1122,21 @@ def has_unacknowledged_errors(scanner_name: str) -> bool:
 
 
 def acknowledge_fetch_error(error_id: int) -> bool:
-    """Mark a fetch_errors row as acknowledged. If all errors for scanner are now acked, clear scanner_health."""
+    """Mark a fetch_errors row as acknowledged and reset counter to 0.
+    
+    When user clicks 'Ignore', this resets occurrences to 0 and sets is_acknowledged=TRUE.
+    If error reoccurs, upsert_fetch_error will set occurrences=1 and is_acknowledged=FALSE.
+    """
     init_db()
     with get_connection() as conn:
         with conn.cursor() as cur:
             try:
-                # Mark the fetch error as acknowledged
-                cur.execute("UPDATE fetch_errors SET is_acknowledged = TRUE WHERE id = %s", (error_id,))
+                # Mark the fetch error as acknowledged AND reset counter to 0
+                cur.execute("""
+                    UPDATE fetch_errors 
+                    SET is_acknowledged = TRUE, occurrences = 0
+                    WHERE id = %s
+                """, (error_id,))
                 if cur.rowcount == 0:
                     return False
                 
