@@ -2201,3 +2201,49 @@ def get_open_symbols() -> list:
     except Exception as e:
         logger.error(f"❌ Failed to fetch open symbols: {e}")
         return []
+
+
+def update_position_current_price(symbol: str, current_price: float) -> bool:
+    """Update current_price for all open positions of a symbol."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE wealth_buy_alert 
+                    SET current_price = %s, status_updated_at = now()::TEXT
+                    WHERE symbol = %s AND is_closed = FALSE
+                """, (current_price, symbol))
+                conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to update current price for {symbol}: {e}")
+        return False
+
+
+def update_position_real_time_prices(symbols_prices: dict) -> int:
+    """Batch update current_price for open positions with real-time prices.
+    
+    Args:
+        symbols_prices: Dict of {symbol: current_price}
+    
+    Returns:
+        Count of updated positions
+    """
+    updated_count = 0
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                for symbol, price in symbols_prices.items():
+                    if symbol and price is not None and price > 0:
+                        cur.execute("""
+                            UPDATE wealth_buy_alert 
+                            SET current_price = %s, status_updated_at = now()::TEXT
+                            WHERE symbol = %s AND is_closed = FALSE
+                        """, (price, symbol))
+                        updated_count += cur.rowcount
+                conn.commit()
+        logger.info(f"✅ Updated {updated_count} position(s) with real-time prices")
+        return updated_count
+    except Exception as e:
+        logger.error(f"❌ Failed to update real-time prices: {e}")
+        return 0

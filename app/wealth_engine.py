@@ -628,7 +628,7 @@ def run_wealth_scan():
 
         # Save BUY signals to wealth_buy_alert table for historical tracking
         try:
-            from database import save_wealth_buy_alert, close_position
+            from database import save_wealth_buy_alert, close_position, update_position_real_time_prices
             buy_signals = wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)]
             for _, row in buy_signals.iterrows():
                 symbol = row.get("Stock")
@@ -637,6 +637,28 @@ def run_wealth_scan():
                 breakout = "Strength" if row.get("dist_52w_high", 100) > 5 else "Value"
                 if symbol and cmp:
                     save_wealth_buy_alert(symbol, cmp, breakout_type=breakout, fm_score=fm_score)
+            
+            # Fetch REAL-TIME prices for all open positions (for accurate P&L calculation)
+            try:
+                open_symbols = wealth_df["Stock"].unique().tolist()
+                realtime_prices = {}
+                if open_symbols:
+                    # Fetch all prices in parallel using yfinance
+                    for symbol in open_symbols:
+                        try:
+                            ticker = yf.Ticker(f"{symbol}.NS")
+                            info = ticker.info
+                            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+                            if current_price and current_price > 0:
+                                realtime_prices[symbol] = current_price
+                        except Exception:
+                            pass  # Skip symbols that fail price fetch
+                
+                # Update all open positions with real-time prices
+                if realtime_prices:
+                    update_position_real_time_prices(realtime_prices)
+            except Exception as e:
+                logger.warning(f"⚠️  Could not fetch real-time prices: {e}")
             
             # Auto-close positions when SELL signal detected
             sell_signals = wealth_df[wealth_df["Signal"].str.contains("SELL", na=False)]
