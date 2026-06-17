@@ -155,13 +155,17 @@ def init_db():
                         updated_at    TEXT    NOT NULL,
                         error_severity TEXT DEFAULT NULL,
                         error_count    INTEGER DEFAULT 0,
-                        first_error_at TEXT DEFAULT NULL
+                        first_error_at TEXT DEFAULT NULL,
+                        retry_count    INTEGER DEFAULT 0,
+                        scheduled_for  TEXT DEFAULT NULL
                     )
                 """)
                 cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS is_acknowledged BOOLEAN DEFAULT TRUE")
                 cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS error_severity TEXT DEFAULT NULL")
                 cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 0")
                 cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS first_error_at TEXT DEFAULT NULL")
+                cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0")
+                cur.execute("ALTER TABLE scanner_health ADD COLUMN IF NOT EXISTS scheduled_for TEXT DEFAULT NULL")
 
 
                 # ── System state table for dashboard metrics / state caching ───────
@@ -517,6 +521,7 @@ def upsert_scanner_health(
     last_success: str = None,     # ISO timestamp of last successful scan
     today_alerts: int = None,     # number of alerts fired today (None = keep existing)
     error_msg: str = None,        # error message when status=DOWN, else None
+    scheduled_for: str = None,    # When this scanner is scheduled to run (e.g., "01:00 IST")
 ) -> None:
     """
     Insert or update a scanner's health record in the scanner_health table.
@@ -573,6 +578,9 @@ def upsert_scanner_health(
                 if is_ack is not None:
                     set_clauses.append("is_acknowledged = %s")
                     params.append(is_ack)
+                if scheduled_for is not None:
+                    set_clauses.append("scheduled_for = %s")
+                    params.append(scheduled_for)
                 
                 set_clauses.append("updated_at = %s")
                 params.append(now_str)
@@ -605,7 +613,7 @@ def get_all_scanner_health() -> list[dict]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             try:
                 cur.execute("""
-                    SELECT scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at, error_severity, error_count, first_error_at
+                    SELECT scanner_name, status, last_success, today_alerts, error_msg, is_acknowledged, updated_at, error_severity, error_count, first_error_at, retry_count, scheduled_for
                     FROM scanner_health
                     ORDER BY scanner_name
                 """)

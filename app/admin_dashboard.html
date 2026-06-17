@@ -1075,10 +1075,18 @@ function renderScannerGrid(scanner_stats) {
               ${tooltipHtml}
             </button>
             <div class="scanner-stat-item">
-              <div class="scanner-stat-label">Last Checked</div>
-              <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.updated_at || data.last_success)}</div>
-              <div class="scanner-stat-sub">${fmtTs(data.updated_at || data.last_success)}</div>
+              <div class="scanner-stat-label">Last Success</div>
+              <div class="scanner-stat-value ${isDown?'red':isIdle?'amber':''}" style="font-size:13px">${timeAgo(data.last_success)}</div>
+              <div class="scanner-stat-sub">${fmtTs(data.last_success)}</div>
             </div>
+            ${data.scheduled_for ? `<div class="scanner-stat-item">
+              <div class="scanner-stat-label">Scheduled</div>
+              <div class="scanner-stat-value" style="font-size:12px">${data.scheduled_for}</div>
+            </div>` : ''}
+            ${data.retry_count > 0 ? `<div class="scanner-stat-item">
+              <div class="scanner-stat-label">Retries</div>
+              <div class="scanner-stat-value" style="font-size:12px; color:orange">${data.retry_count}</div>
+            </div>` : ''}
           </div>
           ${isDown && data.error && !isApi ? `<div class="scanner-error" onclick="alert('Error Details:\\n\\n' + '${(data.error||'').replace(/'/g, "\\'").replace(/\n/g, '\\n')}')" title="Click to see full error">⚠ ${data.error.substring(0, 60)}${data.error.length > 60 ? '...' : ''}</div>` : ''}
         </div>`;

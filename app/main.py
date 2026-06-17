@@ -204,16 +204,19 @@ def run_performance_tracker():
 # =====================================================================================
 
 def run_eod_scanner():
-    last_success_date = None
+    """
+    EOD Scanner:
+    - Wait for 6:30 PM window
+    - Run scan
+    - On SUCCESS: Mark completed and EXIT cleanly
+    - On ERROR: Retry every minute until midnight, then force stop
+    """
+    retry_count = 0
     while True:
         wait_for_window("eod")
         now = datetime.now(IST)
         today_str = now.strftime("%Y-%m-%d")
         
-        if last_success_date == today_str:
-            time.sleep(1800)
-            continue
-            
         try:
             logger.info(f"📊 EOD SCAN | Starting scan for {today_str}...")
             import eod_scanner
@@ -229,32 +232,77 @@ def run_eod_scanner():
             else:
                 logger.info(f"📊 EOD | Completed — {total} alert(s) sent")
             
-            # Successfully finished EOD scan for today
-            last_success_date = today_str
+            # Successfully finished EOD scan for today — MARK COMPLETED AND EXIT
+            from database import upsert_scanner_health
+            upsert_scanner_health(
+                "EOD",
+                status="OK",
+                last_success=datetime.now(IST).isoformat(),
+                today_alerts=total,
+                scheduled_for="06:30 IST"
+            )
+            logger.info("✅ EOD SCANNER | Completed successfully — exiting")
+            # Mark thread as completed cleanly so watchdog doesn't restart
+            import threading
+            threading.current_thread().completed_cleanly = True
+            return
             
         except Exception as exc:
+            retry_count += 1
+            now = datetime.now(IST)
+            
+            # Force stop at midnight
+            if now.hour == 0 or now.hour >= 1:
+                logger.critical(f"⏰ MIDNIGHT PASSED — EOD scanner force-stopping after {retry_count} retries")
+                from database import upsert_scanner_health
+                upsert_scanner_health(
+                    "EOD",
+                    status="DOWN",
+                    error_msg=f"Stopped at midnight after {retry_count} failed attempts",
+                    scheduled_for="06:30 IST"
+                )
+                _telegram_notify(f"🛑 EOD SCAN | Stopped at midnight after {retry_count} retries. Last error: {str(exc)[:200]}")
+                import threading
+                threading.current_thread().completed_cleanly = True
+                return
+            
+            # Retry logic
             tb = traceback.format_exc()
             msg = (
-                f"🚨 EOD SCAN FAILED — {today_str}\n"
+                f"🚨 EOD SCAN FAILED — {now.strftime('%Y-%m-%d')} (Retry #{retry_count})\n"
                 f"Error: {exc}\n\n"
-                f"{tb[-800:]}"
+                f"{tb[-500:]}"
             )
-            logger.critical(f"💀 EOD scanner crashed: {exc}. Retrying in 5 minutes...")
-            _telegram_notify(msg)
-            time.sleep(300)
+            logger.critical(f"💀 EOD scanner crashed (attempt {retry_count}): {exc}. Retrying in 1 minute...")
+            if retry_count == 1:
+                _telegram_notify(msg)  # Only send Telegram on first retry
+            
+            from database import upsert_scanner_health
+            upsert_scanner_health(
+                "EOD",
+                status="DOWN",
+                error_msg=str(exc)[:500],
+                retry_count=retry_count,
+                scheduled_for="06:30 IST"
+            )
+            
+            time.sleep(60)  # Retry every minute
 
 
 def run_reversal_scanner():
-    last_success_date = None
+    """
+    REVERSAL Scanner:
+    - Wait for 6:30 PM window
+    - Run scan
+    - On SUCCESS: Mark completed and EXIT cleanly
+    - On ERROR: Retry every minute until midnight, then force stop
+    """
+    retry_count = 0
     while True:
         wait_for_window("reversal")
         now = datetime.now(IST)
         today_str = now.strftime("%Y-%m-%d")
         
-        if last_success_date == today_str:
-            time.sleep(1800)
-            continue
-            
         try:
             logger.info(f"🔄 REVERSAL SCAN | Starting scan for {today_str}...")
             import reversal_scanner
@@ -270,19 +318,61 @@ def run_reversal_scanner():
             else:
                 logger.info(f"🔄 REVERSAL | Completed — {total} alert(s) sent")
             
-            # Successfully finished Reversal scan for today
-            last_success_date = today_str
+            # Successfully finished Reversal scan for today — MARK COMPLETED AND EXIT
+            from database import upsert_scanner_health
+            upsert_scanner_health(
+                "REVERSAL",
+                status="OK",
+                last_success=datetime.now(IST).isoformat(),
+                today_alerts=total,
+                scheduled_for="06:30 IST"
+            )
+            logger.info("✅ REVERSAL SCANNER | Completed successfully — exiting")
+            # Mark thread as completed cleanly so watchdog doesn't restart
+            import threading
+            threading.current_thread().completed_cleanly = True
+            return
             
         except Exception as exc:
+            retry_count += 1
+            now = datetime.now(IST)
+            
+            # Force stop at midnight
+            if now.hour == 0 or now.hour >= 1:
+                logger.critical(f"⏰ MIDNIGHT PASSED — REVERSAL scanner force-stopping after {retry_count} retries")
+                from database import upsert_scanner_health
+                upsert_scanner_health(
+                    "REVERSAL",
+                    status="DOWN",
+                    error_msg=f"Stopped at midnight after {retry_count} failed attempts",
+                    scheduled_for="06:30 IST"
+                )
+                _telegram_notify(f"🛑 REVERSAL SCAN | Stopped at midnight after {retry_count} retries. Last error: {str(exc)[:200]}")
+                import threading
+                threading.current_thread().completed_cleanly = True
+                return
+            
+            # Retry logic
             tb = traceback.format_exc()
             msg = (
-                f"🚨 REVERSAL SCAN FAILED — {today_str}\n"
+                f"🚨 REVERSAL SCAN FAILED — {now.strftime('%Y-%m-%d')} (Retry #{retry_count})\n"
                 f"Error: {exc}\n\n"
-                f"{tb[-800:]}"
+                f"{tb[-500:]}"
             )
-            logger.critical(f"💀 REVERSAL scanner crashed: {exc}. Retrying in 5 minutes...")
-            _telegram_notify(msg)
-            time.sleep(300)
+            logger.critical(f"💀 REVERSAL scanner crashed (attempt {retry_count}): {exc}. Retrying in 1 minute...")
+            if retry_count == 1:
+                _telegram_notify(msg)  # Only send Telegram on first retry
+            
+            from database import upsert_scanner_health
+            upsert_scanner_health(
+                "REVERSAL",
+                status="DOWN",
+                error_msg=str(exc)[:500],
+                retry_count=retry_count,
+                scheduled_for="06:30 IST"
+            )
+            
+            time.sleep(60)  # Retry every minute
 
 
 def run_bayesian_loop():
@@ -305,43 +395,121 @@ def run_bayesian_loop():
 # TIME-BASED SCHEDULER
 # =====================================================================================
 def run_system_scheduler():
-    import schedule
+    """
+    Custom time-based scheduler (replaces schedule library for reliability).
+    
+    Timing:
+    - 1:00 AM: Daily Builder (fresh watchlist)
+    - 1:05 AM: Wealth Engine (initial setup with fresh watchlist)
+    - 8:30 AM: Verify file readiness
+    - Market hours (9:15 AM - 3:30 PM): Wealth Engine hourly at :05 to generate new buy signals
+    """
     from daily_builder import build_watchlist
     from wealth_engine import run_wealth_scan
     from config import WATCHLIST_PATH, DATA_DIR
+    from database import upsert_scanner_health
     
     WEALTH_PATH = os.path.join(DATA_DIR, "elite_wealth_system.parquet")
+    
+    # Track which tasks have run today
+    daily_builder_ran = False
+    wealth_initial_ran = False
+    verify_scans_ran = False
+    last_wealth_market_run = None  # Track last market-hours wealth run
 
     def safe_run_daily_builder():
+        """Run Daily Builder with success tracking."""
         try:
-            logger.info("🕒 SCHEDULER | Triggering Daily Builder")
+            logger.info("🕒 SCHEDULER | [1:00 AM] Triggering Daily Builder")
             from watchlist_cache import get_watchlist
             get_watchlist()
+            
+            # Mark success
+            now_str = datetime.now(IST).isoformat()
+            upsert_scanner_health(
+                "DAILY_BUILDER",
+                status="OK",
+                last_success=now_str,
+                scheduled_for="01:00 IST"
+            )
+            logger.info("✅ Daily Builder completed successfully")
+            return True
         except Exception as e:
             logger.exception("❌ SCHEDULER | Daily Builder crashed")
             _telegram_notify(f"🚨 Daily Builder Scheduled Run Failed:\n{e}")
+            upsert_scanner_health(
+                "DAILY_BUILDER",
+                status="DOWN",
+                error_msg=str(e)[:500],
+                scheduled_for="01:00 IST"
+            )
+            return False
 
-    def safe_run_wealth_scan():
+    def safe_run_wealth_scan_initial():
+        """Run Wealth Engine at 1:05 AM with fresh watchlist."""
         try:
-            logger.info("🕒 SCHEDULER | Triggering Wealth Engine")
+            logger.info("🕒 SCHEDULER | [1:05 AM] Triggering Wealth Engine (initial setup)")
             run_wealth_scan()
-        except Exception as e:
-            logger.exception("❌ SCHEDULER | Wealth Engine crashed")
             
-    def run_market_hours_wealth_scan():
-        now = datetime.now(IST)
-        # Weekdays only
-        if now.weekday() < 5:
-            # Between 9:15 AM and 3:30 PM
-            if (now.hour == 9 and now.minute >= 15) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 30):
-                safe_run_wealth_scan()
+            # Mark success
+            now_str = datetime.now(IST).isoformat()
+            upsert_scanner_health(
+                "Wealth Engine",
+                status="OK",
+                last_success=now_str,
+                scheduled_for="01:05 IST"
+            )
+            logger.info("✅ Wealth Engine (initial) completed successfully")
+            return True
+        except Exception as e:
+            logger.exception("❌ SCHEDULER | Wealth Engine (initial) crashed")
+            upsert_scanner_health(
+                "Wealth Engine",
+                status="DOWN",
+                error_msg=str(e)[:500],
+                scheduled_for="01:05 IST"
+            )
+            return False
+
+    def safe_run_wealth_market_hours():
+        """Run Wealth Engine during market hours (30-min loop from 10:00 AM to 3:30 PM)."""
+        nonlocal last_wealth_market_run
+        try:
+            now = datetime.now(IST)
+            # Only run once per 30 minutes (1800 seconds)
+            if last_wealth_market_run and (now - last_wealth_market_run).total_seconds() < 1800:
+                return False
+            
+            logger.info(f"🕒 SCHEDULER | [{now.strftime('%H:%M')}] Triggering Wealth Engine (market hours - 30min loop)")
+            run_wealth_scan()
+            
+            last_wealth_market_run = now
+            # Mark success
+            now_str = now.isoformat()
+            upsert_scanner_health(
+                "Wealth Engine",
+                status="OK",
+                last_success=now_str,
+                scheduled_for="Every 30min (10:00 AM - 3:30 PM)"
+            )
+            logger.info("✅ Wealth Engine (market hours) completed successfully")
+            return True
+        except Exception as e:
+            logger.exception("❌ SCHEDULER | Wealth Engine (market hours) crashed")
+            upsert_scanner_health(
+                "Wealth Engine",
+                status="DOWN",
+                error_msg=str(e)[:500],
+                scheduled_for="Every 30min (10:00 AM - 3:30 PM)"
+            )
+            return False
 
     def verify_scans():
-        logger.info("🕒 SCHEDULER | Verifying file readiness (08:30 AM)")
+        """Verify file readiness at 8:30 AM."""
+        logger.info("🕒 SCHEDULER | [8:30 AM] Verifying file readiness")
         now = datetime.now(IST)
-        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
-        # 1. Verify Watchlist — use timezone-aware mtime check (compare dates in IST)
+        # 1. Verify Watchlist — use timezone-aware mtime check
         try:
             if not os.path.exists(WATCHLIST_PATH):
                 logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
@@ -349,71 +517,82 @@ def run_system_scheduler():
             else:
                 mtime_ts = os.path.getmtime(WATCHLIST_PATH)
                 mtime = datetime.fromtimestamp(mtime_ts, IST)
-                logger.debug(f"Watchlist mtime: {mtime.isoformat()}")
                 if mtime.date() < now.date():
-                    logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
+                    logger.warning("⚠️ Watchlist stale! Forcing rebuild.")
                     safe_run_daily_builder()
         except Exception:
-            logger.exception("Failed to stat watchlist path; forcing rebuild.")
+            logger.exception("Failed to verify watchlist; forcing rebuild.")
             safe_run_daily_builder()
 
-        # 2. Verify Wealth Engine — try DB restore first, then force run if still missing/stale
+        # 2. Verify Wealth Engine
         try:
             if not os.path.exists(WEALTH_PATH):
-                # Try to restore from DB to avoid an expensive immediate run
                 try:
                     from database import download_parquet_from_db
                     restored = download_parquet_from_db("wealth_engine", WEALTH_PATH)
                     if restored and os.path.exists(WEALTH_PATH):
-                        logger.info("✅ Wealth system restored from DB, skipping forced run.")
+                        logger.info("✅ Wealth system restored from DB.")
                     else:
-                        logger.warning("⚠️ Wealth system missing or stale! Forcing run.")
-                        safe_run_wealth_scan()
+                        logger.warning("⚠️ Wealth system missing! Forcing run.")
+                        safe_run_wealth_scan_initial()
                 except Exception:
                     logger.exception("Failed to restore wealth from DB; forcing run.")
-                    safe_run_wealth_scan()
+                    safe_run_wealth_scan_initial()
             else:
                 mtime_ts = os.path.getmtime(WEALTH_PATH)
                 mtime = datetime.fromtimestamp(mtime_ts, IST)
-                logger.debug(f"Wealth parquet mtime: {mtime.isoformat()}")
                 if mtime.date() < now.date():
-                    # Try DB restore before forcing a full recompute
                     try:
                         from database import download_parquet_from_db
                         restored = download_parquet_from_db("wealth_engine", WEALTH_PATH)
                         if restored and os.path.exists(WEALTH_PATH):
-                            logger.info("✅ Wealth system restored from DB, skipping forced run.")
+                            logger.info("✅ Wealth system restored from DB.")
                         else:
-                            logger.warning("⚠️ Wealth system missing or stale! Forcing run.")
-                            safe_run_wealth_scan()
+                            logger.warning("⚠️ Wealth system stale! Forcing run.")
+                            safe_run_wealth_scan_initial()
                     except Exception:
-                        logger.exception("Failed to restore wealth from DB; forcing run.")
-                        safe_run_wealth_scan()
+                        logger.exception("Failed to restore wealth; forcing run.")
+                        safe_run_wealth_scan_initial()
         except Exception:
-            logger.exception("Failed to stat wealth parquet; forcing run.")
-            safe_run_wealth_scan()
-            
-    def run_sunday_telegram():
-        now = datetime.now(IST)
-        # Weekdays only
-        if now.weekday() == 6:
-            # We trigger the wealth scan at 4 AM which handles the telegram internally
-            pass # handled inside wealth_engine.py
+            logger.exception("Failed to verify wealth system.")
 
-    # Setup core schedule
-    schedule.every().day.at("01:00", "Asia/Kolkata").do(safe_run_daily_builder)
-    schedule.every().day.at("04:00", "Asia/Kolkata").do(safe_run_wealth_scan)
-    schedule.every().day.at("08:30", "Asia/Kolkata").do(verify_scans)
+    logger.info("🕒 SCHEDULER | Started (custom time-based scheduler)")
     
-    # Hourly market-hours check (runs every hour, but only executes if in market hours)
-    schedule.every().hour.at(":05").do(run_market_hours_wealth_scan)
-
-    logger.info("🕒 SCHEDULER | Initialized. Running initial boot verification...")
+    # Run boot verification
     verify_scans()
 
+    # Main scheduler loop
     while True:
-        schedule.run_pending()
-        time.sleep(30)
+        now = datetime.now(IST)
+        
+        # Weekdays only
+        if now.weekday() < 5:  # Mon-Fri
+            # 1:00 AM - Daily Builder
+            if now.hour == 1 and now.minute == 0 and not daily_builder_ran:
+                daily_builder_ran = True
+                safe_run_daily_builder()
+            elif now.hour != 1:
+                daily_builder_ran = False
+            
+            # 1:05 AM - Wealth Engine (initial)
+            if now.hour == 1 and now.minute == 5 and not wealth_initial_ran:
+                wealth_initial_ran = True
+                safe_run_wealth_scan_initial()
+            elif now.hour != 1:
+                wealth_initial_ran = False
+            
+            # 8:30 AM - Verify Scans
+            if now.hour == 8 and now.minute == 30 and not verify_scans_ran:
+                verify_scans_ran = True
+                verify_scans()
+            elif now.hour != 8:
+                verify_scans_ran = False
+            
+            # Market hours: Wealth Engine every 30 minutes from 10:00 AM - 3:30 PM
+            if (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 30):
+                safe_run_wealth_market_hours()
+        
+        time.sleep(30)  # Check every 30 seconds
 
 
 # =====================================================================================
