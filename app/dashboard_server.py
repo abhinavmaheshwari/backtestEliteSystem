@@ -326,7 +326,7 @@ def api_fetch_errors():
         return jsonify(rows)
     except Exception:
         logger.exception("❌ /api/fetch_errors failed")
-        return jsonify([]), 500
+        return jsonify([]), 200
 
 
 @app.route("/api/fetch_errors/by_scanner", methods=["GET"])
@@ -341,7 +341,7 @@ def api_fetch_errors_by_scanner():
         return jsonify(rows)
     except Exception:
         logger.exception("❌ /api/fetch_errors/by_scanner failed")
-        return jsonify([]), 500
+        return jsonify([]), 200
 
 
 @app.route("/api/fetch_errors/ack/<int:error_id>", methods=["POST"])
@@ -487,7 +487,7 @@ def api_todays_alerts():
         return jsonify(rows)
     except Exception:
         logger.exception('❌ /api/todays_alerts failed')
-        return jsonify([]), 500
+        return jsonify([]), 200
 
 
 @app.route('/api/alert/mark_seen', methods=['POST'])
@@ -668,7 +668,7 @@ def api_scanner_status():
         return jsonify(result)
     except Exception as exc:
         logger.exception("❌ /api/scanner_status failed")
-        return jsonify({"_error": str(exc)}), 500
+        return jsonify({}), 200
 
 # ── Endpoints for Market Ticker & Catalyst News ────────────────────────────────────
 

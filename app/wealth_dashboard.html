@@ -306,6 +306,7 @@
     <button type="button" class="tab-btn" data-tab="myport" style="color:var(--accent);">My Portfolio Tracker</button>
     <button type="button" class="tab-btn tab-buy active" data-tab="buy">Buy Signals</button>
     <button type="button" class="tab-btn" data-tab="alert-history">📊 Alert History</button>
+    <button type="button" class="tab-btn" data-tab="closed-positions">📈 Closed Positions</button>
     <button type="button" class="tab-btn" data-tab="buckets">Portfolio Buckets</button>
   </div>
   
@@ -437,7 +438,47 @@
     <div id="alert-history-empty" style="text-align: center; padding: 40px; color: var(--muted); font-size: 14px;">No alerts found</div>
   </div>
 
-  <!-- BUCKETS TAB -->
+  <!-- CLOSED POSITIONS TAB -->
+  <div id="panel-closed-positions" class="tab-panel">
+    <div style="display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600;">Days Back (closed positions)</label>
+        <select id="filter-closed-days" style="width: 100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:10px; border-radius:6px; outline:none;">
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
+          <option value="999999">All Time</option>
+        </select>
+      </div>
+      <div style="display: flex; align-items: flex-end;">
+        <button onclick="loadClosedPositions()" style="padding: 10px 24px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <div style="background: var(--card); padding: 14px; border-radius: 8px; border-left: 4px solid var(--green); margin-bottom: 20px; font-size: 13px; color: var(--text);">
+      <strong>Closed Position Tracking:</strong> Shows all trades that have been closed with SELL signals. Each position displays realized P&L (entry → exit) with profit/loss in ₹ and %. Use this to review trade performance and backtest your signals.
+    </div>
+
+    <div class="table-container">
+      <table id="tbl-closed-positions">
+        <thead><tr>
+          <th>Stock</th>
+          <th>Entry Date</th>
+          <th>Entry Price</th>
+          <th>Exit Date</th>
+          <th>Exit Price</th>
+          <th>Days Held</th>
+          <th>Realized PnL (₹)</th>
+          <th>Realized PnL %</th>
+          <th>Exit Signal</th>
+        </tr></thead>
+        <tbody id="closed-positions-body"></tbody>
+      </table>
+    </div>
+    <div id="closed-positions-empty" style="text-align: center; padding: 40px; color: var(--muted); font-size: 14px;">No closed positions yet</div>
+  </div>
   <div id="panel-buckets" class="tab-panel">
   
   <!-- ALLOCATION GUIDE -->
@@ -986,11 +1027,77 @@
     }
 
 
+    async function loadClosedPositions() {
+      try {
+        const days = document.getElementById('filter-closed-days').value || '30';
+        const res = await fetch(`/api/wealth/closed-positions?days=${days}`);
+        if (!res.ok) throw new Error('Failed to fetch closed positions');
+        const positions = await res.json();
+        renderClosedPositions(positions);
+      } catch (e) {
+        console.error("Failed to load closed positions:", e);
+        const tbody = document.getElementById('closed-positions-body');
+        tbody.innerHTML = '';
+        document.getElementById('closed-positions-empty').style.display = 'block';
+      }
+    }
+
+    function renderClosedPositions(positions) {
+      const tbody = document.getElementById('closed-positions-body');
+      const empty = document.getElementById('closed-positions-empty');
+      
+      if (!positions || positions.length === 0) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      
+      empty.style.display = 'none';
+      tbody.innerHTML = positions.map(pos => {
+        const symbol = pos.symbol || '';
+        const entryDate = pos.alert_date || '-';
+        const entryPrice = parseFloat(pos.alert_price) || 0;
+        const exitDate = pos.exit_date || '-';
+        const exitPrice = parseFloat(pos.exit_price) || 0;
+        const pnlRs = parseFloat(pos.pnl_rs) || 0;
+        const pnlPct = parseFloat(pos.pnl_pct) || 0;
+        const exitSignal = pos.exit_signal || '-';
+        
+        // Calculate days held
+        let daysHeld = '-';
+        if (entryDate && entryDate !== '-' && exitDate && exitDate !== '-') {
+          const entry = new Date(entryDate);
+          const exit = new Date(exitDate);
+          daysHeld = Math.floor((exit - entry) / (1000 * 60 * 60 * 24));
+        }
+        
+        const pnlColor = pnlRs >= 0 ? 'var(--green)' : 'var(--red)';
+        const pnlClass = pnlRs >= 0 ? 'rs-pos' : 'rs-neg';
+        
+        return `
+          <tr>
+            <td class="sym"><strong>${symbol}</strong></td>
+            <td class="mono">${entryDate}</td>
+            <td class="mono">₹${entryPrice.toFixed(2)}</td>
+            <td class="mono">${exitDate}</td>
+            <td class="mono">₹${exitPrice.toFixed(2)}</td>
+            <td class="mono">${daysHeld}</td>
+            <td class="mono ${pnlClass}" style="color: ${pnlColor}; font-weight: 600;">₹${pnlRs.toFixed(2)}</td>
+            <td class="mono ${pnlClass}" style="color: ${pnlColor}; font-weight: 600;">${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%</td>
+            <td style="font-size: 11px; color: var(--muted);">${exitSignal}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+
     loadData();
     loadTickers();
     loadAlertHistory();
+    loadClosedPositions();
     setInterval(loadData, 60000);
     setInterval(loadAlertHistory, 120000);  // Refresh alert history every 2 mins
+    setInterval(loadClosedPositions, 300000);  // Refresh closed positions every 5 mins
   
 let _audioCtx = null;
 function initAudio() {

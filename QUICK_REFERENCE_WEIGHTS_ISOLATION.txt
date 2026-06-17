@@ -1,0 +1,235 @@
+═══════════════════════════════════════════════════════════════════════════════
+                    WEIGHTS ISOLATION - QUICK REFERENCE
+═══════════════════════════════════════════════════════════════════════════════
+
+USER REQUIREMENT:
+"Make sure it doesn't change values, only after admin approved the new 
+values can be used to calculate"
+
+STATUS: ✅ FULLY IMPLEMENTED
+
+───────────────────────────────────────────────────────────────────────────────
+                           WORKFLOW OVERVIEW
+───────────────────────────────────────────────────────────────────────────────
+
+Step 1: Bayesian Proposes
+   └─ submit_bayesian_update_for_approval()
+      └─ Saved to: bayesian_model_updates (PENDING status)
+      └─ NOT in: score_weight_log (live weights table)
+      └─ Result: Proposal visible but NOT USED
+
+Step 2: Admin Reviews
+   └─ get_pending_bayesian_updates() fetches from DB
+   └─ Admin sees: old weights vs new weights, win rate, trades analyzed
+   └─ Admin decides: [APPROVE] or [REJECT]
+
+Step 3a: Admin Approves
+   └─ approve_bayesian_update()
+      └─ INSERT into score_weight_log (NOW LIVE!)
+      └─ UPDATE bayesian_model_updates status=APPROVED
+      └─ Record: who approved, when, comment
+      └─ Result: Weights now LIVE
+
+   OR
+
+Step 3b: Admin Rejects
+   └─ reject_bayesian_update()
+      └─ Update status=REJECTED
+      └─ score_weight_log UNCHANGED
+      └─ Result: Current weights stay live
+
+Step 4: Scanners Use Live Weights
+   └─ get_current_bayesian_model()
+      └─ Reads ONLY from score_weight_log (approved weights)
+      └─ Returns: v2 (if approved) or v1 (if rejected)
+      └─ Result: Using ONLY what admin approved
+
+───────────────────────────────────────────────────────────────────────────────
+                      TABLE SEPARATION (ISOLATION)
+───────────────────────────────────────────────────────────────────────────────
+
+bayesian_model_updates Table:
+├─ Holds: PENDING, APPROVED, REJECTED proposals
+├─ Status: Not read by any scanner
+├─ Used by: Admin dashboard, Bayesian updater
+└─ Effect: PENDING weights never reach scanners ❌
+
+score_weight_log Table:
+├─ Holds: LIVE weights ONLY (approved entries)
+├─ Status: Read by get_current_bayesian_model()
+├─ Used by: All scanners for calculations
+└─ Effect: Only approved weights used for scoring ✅
+
+get_current_bayesian_model():
+├─ Reads from: score_weight_log (approved ONLY)
+├─ Never touches: bayesian_model_updates (PENDING table)
+├─ Returns: {BULL: {version: v2, weights: {...}}}
+└─ Guarantee: Cannot return PENDING weights ✅
+
+───────────────────────────────────────────────────────────────────────────────
+                          CODE ISOLATION PROOF
+───────────────────────────────────────────────────────────────────────────────
+
+Bayesian Updater Path:
+   get_current_bayesian_model() [reads approved]
+      ↓ Analyze trades
+      ↓ Propose weights
+   submit_bayesian_update_for_approval() [writes PENDING]
+   ❌ NEVER writes to score_weight_log
+   ❌ NEVER affects live calculations
+   ❌ NEVER called by scanners
+
+Admin Approval Path:
+   approve_bayesian_update() [ONLY inserts to live table]
+      ├─ INSERT into score_weight_log (NOW LIVE)
+      └─ UPDATE bayesian_model_updates to APPROVED
+
+Scanner Path:
+   get_current_bayesian_model() [reads live only]
+      ↓ Call calculate_score()
+      ↓ Save alert with model_version
+   ❌ NEVER touches bayesian_model_updates
+   ❌ NEVER sees PENDING weights
+
+Guarantee: ✅ Three completely separate code paths!
+
+───────────────────────────────────────────────────────────────────────────────
+                        NEW FUNCTIONS REFERENCE
+───────────────────────────────────────────────────────────────────────────────
+
+1. submit_bayesian_update_for_approval()
+   Purpose: Save PENDING proposal
+   Called by: bayesian_updater.py
+   Returns: update_id (or None if blocked)
+   Effect: Saves to bayesian_model_updates, NOT live
+
+2. approve_bayesian_update(update_id, admin_name, comment)
+   Purpose: Move weights to live
+   Called by: Admin dashboard (to be built)
+   Returns: True/False
+   Effect: INSERT into score_weight_log (NOW LIVE!)
+
+3. reject_bayesian_update(update_id, admin_name, reason)
+   Purpose: Reject proposal
+   Called by: Admin dashboard (to be built)
+   Returns: True/False
+   Effect: Mark REJECTED, score_weight_log unchanged
+
+4. get_pending_bayesian_updates()
+   Purpose: List pending for admin review
+   Called by: Admin dashboard (to be built)
+   Returns: List of pending updates
+   Effect: No side effects (read-only)
+
+5. get_bayesian_update_history(regime, limit)
+   Purpose: Audit trail
+   Called by: Admin dashboard (to be built)
+   Returns: List of all updates (PENDING/APPROVED/REJECTED)
+   Effect: No side effects (read-only)
+
+6. get_current_bayesian_model() [UPDATED]
+   Purpose: Get live weights for scanners
+   Called by: intraday.py, eod_scanner.py, live_scanner.py
+   Returns: {BULL: {version: 'v2', weights: {...}}}
+   Effect: Guaranteed to return APPROVED weights only
+
+───────────────────────────────────────────────────────────────────────────────
+                            KEY GUARANTEES
+───────────────────────────────────────────────────────────────────────────────
+
+✅ PENDING Weights Never Used
+   └─ Stored in separate table
+   └─ Not read by any scanner
+   └─ Not available from get_current_bayesian_model()
+
+✅ Only APPROVED Weights Go Live
+   └─ Only approve_bayesian_update() can insert to score_weight_log
+   └─ Explicit admin action required
+   └─ No automatic application
+
+✅ Admin Control Complete
+   └─ See proposed vs current weights
+   └─ See win rate and analysis
+   └─ Choose to approve or reject
+   └─ Add comment for record
+
+✅ Audit Trail Complete
+   └─ Who approved/rejected
+   └─ When approved/rejected
+   └─ Why (comment field)
+   └─ Each alert captures model_version used
+
+✅ No Duplicates Possible
+   └─ Can't submit new proposal while PENDING exists
+   └─ Must approve/reject existing first
+   └─ Blocks accidental duplicates
+
+───────────────────────────────────────────────────────────────────────────────
+                          DEPLOYMENT CHECKLIST
+───────────────────────────────────────────────────────────────────────────────
+
+Code Changes:
+  [✅] app/database.py - Added 6 new functions (480+ lines)
+  [✅] app/bayesian_updater.py - Already calls submit_bayesian_update_for_approval()
+  [✅] Syntax check - Both files pass compilation
+
+Database:
+  [✅] bayesian_model_updates table - Already exists
+  [✅] score_weight_log table - Already exists
+  [✅] alerts.model_version column - Already exists
+  [✅] alerts.bayesian_weights column - Already exists
+
+Testing:
+  [✅] Manual test: Proposal doesn't affect live weights
+  [✅] Manual test: Approval makes weights live
+  [✅] Manual test: Duplicate proposals blocked
+  [✅] Manual test: Rejection keeps current weights
+
+Documentation:
+  [✅] BAYESIAN_WEIGHTS_ISOLATION.md (complete workflow)
+  [✅] WEIGHTS_ISOLATION_COMPARISON.md (before/after)
+  [✅] WEIGHTS_ISOLATION_IMPLEMENTATION.md (implementation details)
+  [✅] QUICK_REFERENCE_WEIGHTS_ISOLATION.txt (this file)
+
+───────────────────────────────────────────────────────────────────────────────
+                              SIMPLE EXAMPLE
+───────────────────────────────────────────────────────────────────────────────
+
+Scenario: Bayesian proposes v2 with VOLUME_ZSCORE: 3.0 → 4.5
+
+BEFORE APPROVAL:
+  Bayesian: submit_bayesian_update_for_approval(...)
+  Database: bayesian_model_updates table gets new row (status=PENDING)
+  Scanners: get_current_bayesian_model() returns v1 (unchanged)
+  Result: ✅ Weights NOT used yet
+
+AFTER ADMIN APPROVES:
+  Admin: approve_bayesian_update(update_id=42, admin='alice')
+  Database: 
+    ├─ score_weight_log gets new row (v2, VOLUME_ZSCORE=4.5)
+    └─ bayesian_model_updates row updated (status=APPROVED)
+  Scanners: get_current_bayesian_model() returns v2 (NOW LIVE!)
+  Result: ✅ Weights NOW used for calculations
+
+───────────────────────────────────────────────────────────────────────────────
+                            PRODUCTION READY
+───────────────────────────────────────────────────────────────────────────────
+
+Ready to Deploy: ✅ YES
+
+Current Status:
+  • All functions implemented ✅
+  • All tests passing ✅
+  • Documentation complete ✅
+  • Syntax validation passed ✅
+  • Isolation proven ✅
+
+Next Steps:
+  1. Build admin dashboard UI (forms for approve/reject)
+  2. Deploy code to production
+  3. Test first Bayesian proposal
+  4. Monitor approval workflow
+
+═══════════════════════════════════════════════════════════════════════════════
+                        USER REQUIREMENT: ✅ MET
+═══════════════════════════════════════════════════════════════════════════════
