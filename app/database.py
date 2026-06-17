@@ -434,6 +434,10 @@ def init_db():
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS is_closed BOOLEAN DEFAULT FALSE")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_rs REAL")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_pct REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS position_pct REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS position_amount REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS portfolio_bucket TEXT")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS valuation_score REAL")
                 
                 # Create indexes (after columns are guaranteed to exist)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_symbol ON wealth_buy_alert(symbol)")
@@ -2012,8 +2016,10 @@ def get_bayesian_update_history(regime: str = None, limit: int = 20) -> list:
 # ──────────────────────────────────────────────────────────────────────────────────────────
 
 def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = None, 
-                         fm_score: float = None, notes: str = None) -> bool:
-    """Save BUY alert to wealth_buy_alert. Deduplicates by (symbol, alert_date, breakout_type)."""
+                         fm_score: float = None, notes: str = None,
+                         position_pct: float = None, position_amount: float = None,
+                         portfolio_bucket: str = None, valuation_score: float = None) -> bool:
+    """Save BUY alert to wealth_buy_alert with position sizing. Deduplicates by (symbol, alert_date, breakout_type)."""
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
@@ -2028,13 +2034,20 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
                     logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
                     return False  # Duplicate, skip
                 
-                # New alert - insert it (use CURRENT_DATE::TEXT for consistency)
+                # New alert - insert it with position sizing data
                 cur.execute("""
-                    INSERT INTO wealth_buy_alert (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date)
-                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, CURRENT_DATE::TEXT)
-                """, (symbol, alert_price, breakout_type, fm_score, notes))
+                    INSERT INTO wealth_buy_alert 
+                    (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date,
+                     position_pct, position_amount, portfolio_bucket, valuation_score)
+                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, CURRENT_DATE::TEXT, %s, %s, %s, %s)
+                """, (symbol, alert_price, breakout_type, fm_score, notes,
+                      position_pct, position_amount, portfolio_bucket, valuation_score))
                 conn.commit()
-        logger.info(f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type})")
+        
+        msg = f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type}) | Score: {fm_score}"
+        if position_pct:
+            msg += f" | Size: {position_pct}% (₹{int(position_amount or 0)})"
+        logger.info(msg)
         return True
     except Exception as e:
         logger.error(f"❌ Failed to save wealth buy alert: {e}")

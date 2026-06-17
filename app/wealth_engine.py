@@ -130,20 +130,113 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
 
 
 # =====================================================================================
-# 100-POINT SCORING ENGINE (v2 — Reviewed & Improved)
+# 100-POINT SCORING ENGINE (v3 — With Valuation & Drawdown Protection)
 # =====================================================================================
 #
 #   Factor        | Weight | Rationale
 #   --------------|--------|----------------------------------------------------------
 #   Quality       |   25   | ROE, ROCE, Debt — Capital efficiency & safety
 #   Growth        |   25   | YoY Revenue & Profit — Business velocity
-#   Momentum      |   30   | RS vs Nifty, 52W proximity, >200 SMA — Price leadership
+#   Valuation     |   10   | PEG, P/E vs sector — Prevents overpaying (NEW)
+#   Momentum      |   20   | RS vs Nifty, 52W proximity, >200 SMA — Price leadership (reduced from 30)
 #   Ownership     |   10   | Inst Accumulation tags — Smart money footprint
 #   Cash Flow     |   10   | FCF Margin — Catches accounting red flags (Satyam/DHFL)
 #
 #   Total         |  100
 #
 # =====================================================================================
+
+def calculate_valuation_score(r, sector_stats: dict = None) -> int:
+    """
+    Valuation scoring module (10 pts max).
+    Prevents overpaying for quality stocks.
+    
+    Metrics:
+    - PEG Ratio (6 pts max): Ideal < 1.0 (growth justified by valuation)
+    - P/E vs Sector (4 pts max): Discount to sector median = quality value
+    """
+    score = 0
+    
+    def _safe_float(val, default=0.0):
+        if val is None: return default
+        try:
+            f = float(val)
+            return default if pd.isna(f) else f
+        except (ValueError, TypeError):
+            return default
+    
+    peg = _safe_float(r.get("PEG Ratio"), None)
+    pe = _safe_float(r.get("P/E Ratio"), None)
+    
+    # PEG scoring (6 pts max)
+    if peg is not None:
+        if peg < 1.0:
+            score += 6  # Excellent: growth > valuation
+        elif peg < 1.5:
+            score += 3  # Good: growth roughly justified
+        # else: 0 pts (overvalued relative to growth)
+    
+    # P/E vs sector scoring (4 pts max)
+    if pe is not None and sector_stats:
+        sector = str(r.get("Sector", "Unknown"))
+        sector_median_pe = sector_stats.get(sector, {}).get("median_pe", None)
+        
+        if sector_median_pe is not None and sector_median_pe > 0:
+            pe_discount = (sector_median_pe - pe) / sector_median_pe
+            
+            if pe_discount > 0.15:  # 15%+ discount to sector = value opportunity
+                score += 4
+            elif pe_discount > 0.05:  # 5%+ discount
+                score += 2
+            # else: 0 pts (trading at or above sector median)
+    
+    return min(10, score)
+
+
+def position_size_calculator(fm_score: int, portfolio_bucket: str, portfolio_total: float = 10_000_000) -> dict:
+    """
+    Kelly-inspired position sizing formula.
+    
+    Args:
+        fm_score: 0-100 score
+        portfolio_bucket: "Core", "Growth", "Opportunistic", "Quality-On-Sale"
+        portfolio_total: Total portfolio value (default ₹1 Cr)
+    
+    Returns:
+        {
+            "position_pct": 2.5,  # % of portfolio
+            "position_amount": 250000,  # Rupees
+            "kelly_adjusted": True,
+            "rationale": "Score 82 Core = 2.5% allocation"
+        }
+    """
+    base_pct = {
+        "Core": 0.03,                    # 3% base
+        "Growth": 0.04,                  # 4% base
+        "Quality-On-Sale": 0.035,        # 3.5% base
+        "Opportunistic": 0.015,          # 1.5% base (risky)
+    }
+    
+    base = base_pct.get(portfolio_bucket, 0.025)
+    
+    # Kelly multiplier: Adjust by how strong the score is
+    # At FM_Score=60 (minimum): 0.5x multiplier (conservative)
+    # At FM_Score=100 (perfect): 1.0x multiplier (full allocation)
+    kelly_multiplier = max(0.5, (fm_score - 60) / 40)
+    
+    raw_pct = base * kelly_multiplier
+    
+    # Hard cap at 5% per position (risk management)
+    position_pct = min(raw_pct, 0.05)
+    position_amount = position_pct * portfolio_total
+    
+    return {
+        "position_pct": round(position_pct * 100, 2),
+        "position_amount": round(position_amount, 0),
+        "kelly_multiplier": round(kelly_multiplier, 2),
+        "rationale": f"Score {fm_score} {portfolio_bucket} = {round(position_pct * 100, 2)}% (Kelly: {round(kelly_multiplier, 2)}x)"
+    }
+
 
 def calculate_100_point_score(r) -> int:
     """Calculates a strict 100-point Fund Manager score for a single stock."""
@@ -179,7 +272,9 @@ def calculate_100_point_score(r) -> int:
     if yoy_profit >= 20:   score += 12
     elif yoy_profit >= 15: score += 8
 
-    # ── MOMENTUM (30 pts) — Highest weight: price leadership matters most ────
+    # ── VALUATION (10 pts) — NEW: Prevents overpaying for growth (scores PEG & P/E)
+    valuation_score = calculate_valuation_score(r)
+    score += valuation_score
     # Prefer preserving None for unavailable fields so we do not implicitly award/penalize
     rs_6m_raw = r.get("rs_6m")
     rs_6m = None if rs_6m_raw is None else _safe_float(rs_6m_raw, 0)
@@ -192,17 +287,17 @@ def calculate_100_point_score(r) -> int:
 
     # RS Rating buckets (only if available)
     if rs_rating is not None:
-        if rs_rating > 90: score += 12
-        elif rs_rating > 80: score += 8
-        elif rs_rating > 60: score += 4
+        if rs_rating > 90: score += 8   # Reduced from 12
+        elif rs_rating > 80: score += 5  # Reduced from 8
+        elif rs_rating > 60: score += 2  # Reduced from 4
 
-    if dist_52w <= 5:  score += 8
-    elif dist_52w <= 10: score += 5
-    elif dist_52w <= 15: score += 3
+    if dist_52w <= 5:  score += 5    # Reduced from 8
+    elif dist_52w <= 10: score += 3   # Reduced from 5
+    elif dist_52w <= 15: score += 2   # Reduced from 3
 
     # Price > SMA200 only when SMA200 is known
     if sma_200 is not None and cmp_price > sma_200 and sma_200 > 0:
-        score += 10
+        score += 5  # Reduced from 10
 
     # ── OWNERSHIP (10 pts) — Institutional accumulation ──────────────────────
     cats = str(r.get("Category", ""))
@@ -334,11 +429,27 @@ def calculate_hold_score(r: pd.Series) -> int:
     """
     Evaluates existing holdings based on a 100-point exit rubric.
     Score < 45 = SELL REVIEW
+    
+    NEW: Includes drawdown circuit breaker (hard stop at 30% loss).
     """
     score = 0
     
-    # 1. Technical Health (40 pts)
+    # 1. DRAWDOWN CIRCUIT BREAKER (NEW - Added Phase 1)
     cmp = r.get("cmp", 0) or 0
+    entry_price = r.get("entry_price", 0) or 0
+    
+    if entry_price > 0 and cmp > 0:
+        drawdown_pct = ((entry_price - cmp) / entry_price) * 100
+        
+        # CATASTROPHIC STOP: >30% loss
+        if drawdown_pct > 30:
+            return 0  # Instant SELL signal (Hold_Score = 0 < 45)
+        
+        # WARNING: >20% loss  
+        if drawdown_pct > 20:
+            score -= 25  # Force below 45 → SELL REVIEW
+    
+    # 2. Technical Health (40 pts)
     ema20 = r.get("ema_20", 0) or 0
     sma50 = r.get("sma_50", 0) or 0
     sma200 = r.get("sma_200", 0) or 0
@@ -349,7 +460,7 @@ def calculate_hold_score(r: pd.Series) -> int:
     if cmp > sma200 and sma200 > 0: score += 10
     if rs_6m > 0: score += 10
     
-    # 2. Fundamental Integrity (30 pts)
+    # 3. Fundamental Integrity (30 pts)
     # Mapping Piotroski/Fundamentals to our existing FM_Score
     fm_score = r.get("FM_Score", 0) or 0
     if fm_score >= 70: score += 15
@@ -361,13 +472,13 @@ def calculate_hold_score(r: pd.Series) -> int:
     yoy_profit = r.get("YOY Profit %", 0) or 0
     if yoy_profit > 0: score += 5
     
-    # 3. Sector & Momentum Regime (15 pts)
+    # 4. Sector & Momentum Regime (15 pts)
     # Using 6-month RS Rating (Percentile)
     rs_rating = r.get("RS_Rating", 0) or 0
     if rs_rating > 80: score += 15
     elif rs_rating > 50: score += 5
     
-    # 4. Portfolio Context / Alpha Adjustments (15 pts)
+    # 5. Portfolio Context / Alpha Adjustments (15 pts)
     ai_conf = r.get("AI_Confidence", 0) or 0
     if ai_conf >= 7: score += 15
     elif ai_conf >= 4: score += 5
@@ -538,6 +649,9 @@ def run_wealth_scan():
 
         # Apply 100-point score
         wealth_df["FM_Score"] = wealth_df.apply(calculate_100_point_score, axis=1)
+        
+        # Calculate valuation score separately for dashboard visibility
+        wealth_df["Valuation_Score"] = wealth_df.apply(lambda r: calculate_valuation_score(r), axis=1)
         wealth_df["Portfolio_Bucket"] = wealth_df.apply(lambda r: determine_portfolio_bucket(r, nifty_dist_52w), axis=1)
 
         if nifty_dist_52w is None:
@@ -620,6 +734,22 @@ def run_wealth_scan():
             return ""
 
         wealth_df["Signal"] = wealth_df.apply(get_signal, axis=1)
+        
+        # Calculate position sizing for all BUY signals
+        def calculate_position_sizing(r):
+            signal = r.get("Signal", "")
+            if "BUY" in signal:
+                fm_score = r.get("FM_Score", 60)
+                bucket = r.get("Portfolio_Bucket", "Growth")
+                sizing = position_size_calculator(fm_score, bucket)
+                r["position_pct"] = sizing["position_pct"]
+                r["position_amount"] = sizing["position_amount"]
+            else:
+                r["position_pct"] = None
+                r["position_amount"] = None
+            return r
+        
+        wealth_df = wealth_df.apply(calculate_position_sizing, axis=1)
 
         # Apply sector caps to Core bucket for the dashboard
         core_capped = apply_sector_cap(wealth_df, "Portfolio_Bucket", "Core", max_stocks=15)
@@ -635,8 +765,21 @@ def run_wealth_scan():
                 cmp = row.get("cmp")
                 fm_score = row.get("FM_Score")
                 breakout = "Strength" if row.get("dist_52w_high", 100) > 5 else "Value"
+                position_pct = row.get("position_pct")
+                position_amount = row.get("position_amount")
+                portfolio_bucket = row.get("Portfolio_Bucket", "Unknown")
+                valuation_score = row.get("Valuation_Score", 0)
                 if symbol and cmp:
-                    save_wealth_buy_alert(symbol, cmp, breakout_type=breakout, fm_score=fm_score)
+                    save_wealth_buy_alert(
+                        symbol, 
+                        cmp, 
+                        breakout_type=breakout, 
+                        fm_score=fm_score,
+                        position_pct=position_pct,
+                        position_amount=position_amount,
+                        portfolio_bucket=portfolio_bucket,
+                        valuation_score=valuation_score
+                    )
             
             # Fetch REAL-TIME prices for all open positions (for accurate P&L calculation)
             try:
