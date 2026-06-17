@@ -626,6 +626,19 @@ def run_wealth_scan():
         core_symbols = set(core_capped["Stock"].tolist()) if not core_capped.empty else set()
         wealth_df["Core_Selected"] = wealth_df["Stock"].apply(lambda s: s in core_symbols)
 
+        # Save BUY signals to wealth_buy_alert table for historical tracking
+        try:
+            from database import save_wealth_buy_alert
+            buy_signals = wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)]
+            for _, row in buy_signals.iterrows():
+                symbol = row.get("Stock")
+                cmp = row.get("cmp")
+                fm_score = row.get("FM_Score")
+                breakout = "Strength" if row.get("dist_52w_high", 100) > 5 else "Value"
+                if symbol and cmp:
+                    save_wealth_buy_alert(symbol, cmp, breakout_type=breakout, fm_score=fm_score)
+        except Exception as e:
+            logger.warning(f"⚠️  Could not save wealth buy alerts: {e}")
 
         wealth_df.to_parquet(WEALTH_PATH, index=False)
         upload_parquet_to_db("wealth_engine", WEALTH_PATH)

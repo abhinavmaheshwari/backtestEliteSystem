@@ -2258,6 +2258,7 @@ async function initDashboard() {
   // Auto-refresh scanner status every 60s
   
   let prevTotalAlerts = -1;
+  let isFirstScannerCheck = true;  // Skip alert on initial check
   setInterval(async () => {
     const live = await loadScannerStatus();
     if (live) {
@@ -2269,10 +2270,11 @@ async function initDashboard() {
           }
       }
       let added = currentAlerts - prevTotalAlerts;
-      if (prevTotalAlerts !== -1 && added > 0) {
+      if (prevTotalAlerts !== -1 && added > 0 && !isFirstScannerCheck) {
           triggerAlertFlashing();
       }
       prevTotalAlerts = currentAlerts;
+      isFirstScannerCheck = false;
       renderScannerGrid(window._scannerStats);
       loadNonCriticalErrors();
     }

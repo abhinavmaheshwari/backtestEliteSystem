@@ -951,6 +951,75 @@ def api_concall_ai(symbol):
         return jsonify(res), 500 if "extract text" in res.get("error", "") else 404
     return jsonify(res)
 
+# ── Wealth Buy Alerts API ──────────────────────────────────────────────────────────────
+
+@app.route("/api/wealth/alerts", methods=["GET"])
+def get_wealth_alerts():
+    """Retrieve wealth buy alerts (all or filtered by symbol)."""
+    from database import get_wealth_buy_alerts, get_today_wealth_alerts
+    try:
+        symbol = request.args.get("symbol")
+        today_only = request.args.get("today", "").lower() == "true"
+        
+        if today_only:
+            alerts = get_today_wealth_alerts()
+        elif symbol:
+            alerts = get_wealth_buy_alerts(symbol=symbol)
+        else:
+            alerts = get_wealth_buy_alerts()
+        
+        return jsonify(alerts)
+    except Exception as e:
+        logger.error(f"❌ Error fetching wealth alerts: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wealth/save-alert", methods=["POST"])
+def save_wealth_alert():
+    """Save a new wealth buy alert."""
+    from database import save_wealth_buy_alert
+    try:
+        data = request.get_json() or {}
+        symbol = data.get("symbol", "").upper()
+        alert_price = data.get("alert_price")
+        breakout_type = data.get("breakout_type")
+        fm_score = data.get("fm_score")
+        notes = data.get("notes")
+        
+        if not symbol or alert_price is None:
+            return jsonify({"error": "Symbol and alert_price are required"}), 400
+        
+        success = save_wealth_buy_alert(symbol, alert_price, breakout_type, fm_score, notes)
+        if success:
+            return jsonify({"success": True, "message": f"Alert saved for {symbol} @ ₹{alert_price}"})
+        else:
+            return jsonify({"error": "Failed to save alert"}), 500
+    except Exception as e:
+        logger.error(f"❌ Error saving wealth alert: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wealth/update-alert/<int:alert_id>", methods=["POST"])
+def update_wealth_alert(alert_id):
+    """Update status of a wealth buy alert."""
+    from database import update_wealth_alert_status
+    try:
+        data = request.get_json() or {}
+        status = data.get("status", "").upper()
+        current_price = data.get("current_price")
+        
+        if status not in ["ACTIVE", "BUY", "SELL", "HOLD", "CLOSED"]:
+            return jsonify({"error": "Invalid status"}), 400
+        
+        success = update_wealth_alert_status(alert_id, status, current_price)
+        if success:
+            return jsonify({"success": True, "message": f"Alert {alert_id} updated to {status}"})
+        else:
+            return jsonify({"error": "Failed to update alert"}), 500
+    except Exception as e:
+        logger.error(f"❌ Error updating wealth alert: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # ── Scanner DOWN helpers
 
 # ── Scanner DOWN helpers — write to Postgres, not just memory ─────────────────────────

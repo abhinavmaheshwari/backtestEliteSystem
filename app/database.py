@@ -399,6 +399,27 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_telegram_queue_status ON telegram_queue(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_telegram_queue_created ON telegram_queue(created_at)")
 
+                # ── Wealth Buy Alerts table (historical tracking of buy signals) ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS wealth_buy_alert (
+                        id SERIAL PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        alert_price REAL NOT NULL,
+                        alert_date TEXT NOT NULL DEFAULT (CURRENT_DATE::TEXT),
+                        alert_time TEXT NOT NULL DEFAULT (now()::TEXT),
+                        breakout_type TEXT,
+                        fm_score REAL,
+                        status TEXT DEFAULT 'ACTIVE',
+                        current_price REAL,
+                        status_updated_at TEXT DEFAULT (now()::TEXT),
+                        notes TEXT,
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT)
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_symbol ON wealth_buy_alert(symbol)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_date ON wealth_buy_alert(alert_date)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
+
                 conn.commit()
 
         _DB_INITIALIZED = True
@@ -1963,3 +1984,84 @@ def get_bayesian_update_history(regime: str = None, limit: int = 20) -> list:
     except Exception as e:
         logger.error(f"❌ Failed to fetch Bayesian update history: {e}")
         return []
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# WEALTH BUY ALERT TRACKING
+# ──────────────────────────────────────────────────────────────────────────────────────────
+
+def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = None, 
+                         fm_score: float = None, notes: str = None) -> bool:
+    """Save a new buy alert to wealth_buy_alert table."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO wealth_buy_alert (symbol, alert_price, breakout_type, fm_score, status, notes)
+                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s)
+                """, (symbol, alert_price, breakout_type, fm_score, notes))
+                conn.commit()
+        logger.info(f"✅ Wealth buy alert saved: {symbol} @ ₹{alert_price}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to save wealth buy alert: {e}")
+        return False
+
+
+def get_wealth_buy_alerts(symbol: str = None, days_back: int = 30) -> list:
+    """Retrieve wealth buy alerts, optionally filtered by symbol."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if symbol:
+                    cur.execute("""
+                        SELECT * FROM wealth_buy_alert 
+                        WHERE symbol = %s AND alert_date >= (CURRENT_DATE - INTERVAL '%s days')
+                        ORDER BY alert_date DESC, alert_time DESC
+                    """, (symbol, days_back))
+                else:
+                    cur.execute("""
+                        SELECT * FROM wealth_buy_alert 
+                        WHERE alert_date >= (CURRENT_DATE - INTERVAL '%s days')
+                        ORDER BY alert_date DESC, alert_time DESC
+                    """, (days_back,))
+                
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch wealth buy alerts: {e}")
+        return []
+
+
+def update_wealth_alert_status(alert_id: int, status: str, current_price: float = None) -> bool:
+    """Update the status of a wealth buy alert."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE wealth_buy_alert 
+                    SET status = %s, current_price = %s, status_updated_at = now()::TEXT
+                    WHERE id = %s
+                """, (status, current_price, alert_id))
+                conn.commit()
+        logger.info(f"✅ Wealth alert {alert_id} status updated to {status}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to update wealth alert status: {e}")
+        return False
+
+
+def get_today_wealth_alerts() -> list:
+    """Get all wealth buy alerts for today."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM wealth_buy_alert 
+                    WHERE alert_date = CURRENT_DATE::TEXT
+                    ORDER BY alert_time DESC
+                """)
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch today's wealth alerts: {e}")
+        return []
+

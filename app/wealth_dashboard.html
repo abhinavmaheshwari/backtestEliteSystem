@@ -305,6 +305,7 @@
   <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="myport" style="color:var(--accent);">My Portfolio Tracker</button>
     <button type="button" class="tab-btn tab-buy active" data-tab="buy">Buy Signals</button>
+    <button type="button" class="tab-btn" data-tab="alert-history">📊 Alert History</button>
     <button type="button" class="tab-btn" data-tab="buckets">Portfolio Buckets</button>
   </div>
   
@@ -383,6 +384,59 @@
     </div>
   </div>
 
+  <!-- ALERT HISTORY TAB -->
+  <div id="panel-alert-history" class="tab-panel">
+    <div style="display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600;">Filter by Symbol (optional)</label>
+        <input type="text" id="filter-alert-symbol" placeholder="e.g., TCS, INFY" list="alert-tickers" style="width: 100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:10px; border-radius:6px; outline:none; text-transform:uppercase;">
+        <datalist id="alert-tickers"></datalist>
+      </div>
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600;">Date Range (days back)</label>
+        <select id="filter-alert-days" style="width: 100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:10px; border-radius:6px; outline:none;">
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
+        </select>
+      </div>
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600;">Status Filter</label>
+        <select id="filter-alert-status" style="width: 100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:10px; border-radius:6px; outline:none;">
+          <option value="">All Alerts</option>
+          <option value="ACTIVE">Active (ACTIVE)</option>
+          <option value="BUY">Buy Zone (BUY)</option>
+          <option value="SELL">Sell Zone (SELL)</option>
+          <option value="HOLD">Holding (HOLD)</option>
+          <option value="CLOSED">Closed (CLOSED)</option>
+        </select>
+      </div>
+      <div style="display: flex; align-items: flex-end;">
+        <button onclick="applyAlertFilters()" style="padding: 10px 24px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;">🔄 Apply Filters</button>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table id="tbl-alert-history">
+        <thead><tr>
+          <th>Stock</th>
+          <th>Alert Date</th>
+          <th>Alert Price</th>
+          <th>Current Price</th>
+          <th>Return %</th>
+          <th>Type</th>
+          <th>Score</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody id="alert-history-body"></tbody>
+      </table>
+    </div>
+    <div id="alert-history-empty" style="text-align: center; padding: 40px; color: var(--muted); font-size: 14px;">No alerts found</div>
+  </div>
+
   <!-- BUCKETS TAB -->
   <div id="panel-buckets" class="tab-panel">
   
@@ -450,6 +504,7 @@
     let originalTitle = document.title;
     let isAlertActive = false;
     let ALL_WEALTH_STOCKS = [];
+    let isFirstLoad = true;  // Skip alert on initial page load
     
     function triggerAlertFlashing() {
         if(isAlertActive) return;
@@ -690,7 +745,7 @@
         // Alert Diffing Logic - Track new BUY/SELL signals
         let newBuySignals = new Set();
         let newSellSignals = new Set();
-        if (ALL_WEALTH_STOCKS.length > 0) {
+        if (ALL_WEALTH_STOCKS.length > 0 && !isFirstLoad) {
             const oldKeys = new Set(ALL_WEALTH_STOCKS.filter(s => s.Signal).map(s => s.Stock + '|' + s.Signal));
             let hasNew = false;
             for (const s of stocks) {
@@ -707,6 +762,7 @@
                 triggerAlertFlashing();
             }
         }
+        isFirstLoad = false;
         ALL_WEALTH_STOCKS = stocks;
 
         document.getElementById('kpi-total').textContent = stocks.length;
@@ -848,12 +904,93 @@
         if (dl && tickers.length > 0) {
           dl.innerHTML = tickers.map(t => `<option value="${t}">`).join('');
         }
+        // Also populate alert history ticker list
+        const alertDl = document.getElementById('alert-tickers');
+        if (alertDl && tickers.length > 0) {
+          alertDl.innerHTML = tickers.map(t => `<option value="${t}">`).join('');
+        }
       } catch (e) {}
     }
 
+    async function loadAlertHistory() {
+      try {
+        const res = await fetch('/api/wealth/alerts');
+        if (!res.ok) return;
+        const alerts = await res.json();
+        renderAlertHistory(alerts);
+      } catch (e) {
+        console.error("Failed to load alert history:", e);
+      }
+    }
+
+    function applyAlertFilters() {
+      const symbol = document.getElementById('filter-alert-symbol').value.toUpperCase() || null;
+      const days = document.getElementById('filter-alert-days').value || 30;
+      const status = document.getElementById('filter-alert-status').value || null;
+      
+      let url = '/api/wealth/alerts?today=false';
+      if (days) url += `&days=${days}`;
+      if (symbol) url += `&symbol=${symbol}`;
+      
+      fetch(url)
+        .then(r => r.json())
+        .then(alerts => {
+          if (status) {
+            alerts = alerts.filter(a => a.status === status);
+          }
+          renderAlertHistory(alerts);
+        })
+        .catch(e => console.error("Filter error:", e));
+    }
+
+    function renderAlertHistory(alerts) {
+      const tbody = document.getElementById('alert-history-body');
+      const empty = document.getElementById('alert-history-empty');
+      
+      if (!alerts || alerts.length === 0) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      
+      empty.style.display = 'none';
+      tbody.innerHTML = alerts.map(alert => {
+        const symbol = alert.symbol || '';
+        const alertPrice = parseFloat(alert.alert_price) || 0;
+        const currentPrice = parseFloat(alert.current_price) || 0;
+        const returnPct = alertPrice > 0 ? (((currentPrice - alertPrice) / alertPrice) * 100).toFixed(2) : 0;
+        const returnColor = returnPct > 0 ? 'var(--green)' : returnPct < 0 ? 'var(--red)' : 'var(--muted)';
+        const status = alert.status || 'ACTIVE';
+        const statusColor = status === 'BUY' ? 'var(--green)' : status === 'SELL' ? 'var(--red)' : status === 'HOLD' ? 'var(--amber)' : 'var(--muted)';
+        const breakoutType = alert.breakout_type || '-';
+        const fmScore = alert.fm_score ? alert.fm_score.toFixed(1) : '-';
+        const alertDate = alert.alert_date || '-';
+        const alertTime = alert.alert_time ? alert.alert_time.split('T')[1]?.substring(0, 5) : '';
+        
+        return `
+          <tr>
+            <td class="sym"><strong>${symbol}</strong></td>
+            <td class="mono">${alertDate} ${alertTime}</td>
+            <td class="mono">₹${alertPrice.toFixed(2)}</td>
+            <td class="mono">₹${currentPrice > 0 ? currentPrice.toFixed(2) : '-'}</td>
+            <td class="mono" style="color: ${returnColor}; font-weight: 600;">${returnPct}%</td>
+            <td>${breakoutType}</td>
+            <td><span class="score-badge ${getScoreCls(fmScore)}">${fmScore}</span></td>
+            <td><span style="color: ${statusColor}; font-weight: 600;">${status}</span></td>
+            <td style="text-align: center;">
+              <a href="https://www.tradingview.com/chart/?symbol=NSE:${symbol}" target="_blank" rel="noopener noreferrer" style="color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer; transition: all 0.3s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">📊 TV</a>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+
     loadData();
     loadTickers();
+    loadAlertHistory();
     setInterval(loadData, 60000);
+    setInterval(loadAlertHistory, 120000);  // Refresh alert history every 2 mins
   
 let _audioCtx = null;
 function initAudio() {
