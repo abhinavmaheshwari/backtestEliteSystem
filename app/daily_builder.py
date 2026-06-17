@@ -18,6 +18,7 @@ from config import WATCHLIST_PATH
 _DELIVERY_DATA = {}
 _INST_BUYS = {}
 _BLACKLIST_SYMBOLS = set()
+_classify_lock = threading.Lock()  # Prevent race conditions in classify_stock
 
 
 # ── SEND GUARD — persisted in Postgres so restarts never re-send ────────────────────
@@ -650,10 +651,11 @@ def classify_stock(row: pd.Series) -> dict:
     symbol = str(row.get("name", "UNKNOWN"))
     sector = str(row.get("sector", ""))
     try:
-        if _is_financial(sector):
-            return _classify_fin(row, symbol)
-        else:
-            return _classify_nonfin(row, symbol)
+        with _classify_lock:  # Thread-safe access
+            if _is_financial(sector):
+                return _classify_fin(row, symbol)
+            else:
+                return _classify_nonfin(row, symbol)
     except Exception as e:
         logger.error(f"❌ EXCEPTION [{symbol}]: {e}")
         return None

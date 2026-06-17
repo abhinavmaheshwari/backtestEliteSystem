@@ -174,3 +174,117 @@ def _download_all_robust(watchlist: pd.DataFrame, period: str, interval: str) ->
     except Exception:
         logger.exception("Failed to report final yfinance fetch status")
     return all_data
+
+# =====================================================================================
+# ALPHAVANTAGE FALLBACK PROVIDER (when YFinance rate-limited)
+# =====================================================================================
+
+def fetch_alphavantage_data(symbol: str, interval: str) -> Optional[pd.DataFrame]:
+    """
+    Fallback to AlphaVantage API when YFinance is rate-limited.
+    
+    Parameters:
+    -----------
+    symbol : str
+        Stock symbol (e.g., 'RELIANCE')
+    interval : str
+        Timeframe ('1min', '5min', '15min', '60min', 'daily')
+    
+    Returns:
+    --------
+    pd.DataFrame with OHLCV data or None on failure
+    """
+    try:
+        from config import ALPHAVANTAGE_API_KEY, ENABLE_PRICE_FALLBACK
+    except ImportError:
+        logger.warning("⚠️ AlphaVantage config not found")
+        return None
+    
+    if not ENABLE_PRICE_FALLBACK or not ALPHAVANTAGE_API_KEY:
+        logger.debug("AlphaVantage fallback disabled or no API key")
+        return None
+    
+    try:
+        import requests
+        
+        # Map intervals
+        av_interval_map = {
+            '1m': '1min',
+            '5m': '5min',
+            '15m': '15min',
+            '60m': '60min',
+            '1h': '60min',
+            '1d': 'daily',
+        }
+        av_interval = av_interval_map.get(interval, 'daily')
+        
+        # AlphaVantage API call
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_INTRADAY" if av_interval != 'daily' else "TIME_SERIES_DAILY",
+            "symbol": symbol,
+            "interval": av_interval if av_interval != 'daily' else None,
+            "apikey": ALPHAVANTAGE_API_KEY,
+            "outputsize": "full",
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            logger.warning(f"⚠️ AlphaVantage error for {symbol}: {response.status_code}")
+            return None
+        
+        data = response.json()
+        
+        # Check for errors
+        if "Error Message" in data:
+            logger.warning(f"⚠️ AlphaVantage error: {data['Error Message']}")
+            return None
+        if "Note" in data:  # Rate limit message
+            logger.warning(f"⚠️ AlphaVantage rate limited: {data['Note']}")
+            return None
+        
+        # Parse time series data
+        if av_interval == 'daily':
+            ts_key = "Time Series (Daily)"
+        else:
+            ts_key = f"Time Series ({av_interval})"
+        
+        if ts_key not in data:
+            logger.warning(f"⚠️ No time series data for {symbol}")
+            return None
+        
+        ts_data = data[ts_key]
+        if not ts_data:
+            return None
+        
+        # Convert to DataFrame
+        rows = []
+        for timestamp, ohlc in ts_data.items():
+            rows.append({
+                'Datetime': timestamp,
+                'Open': float(ohlc.get('1. open', 0)),
+                'High': float(ohlc.get('2. high', 0)),
+                'Low': float(ohlc.get('3. low', 0)),
+                'Close': float(ohlc.get('4. close', 0)),
+                'Volume': float(ohlc.get('5. volume', 0)),
+            })
+        
+        if not rows:
+            return None
+        
+        df = pd.DataFrame(rows)
+        df['Datetime'] = pd.to_datetime(df['Datetime'])
+        df = df.sort_values('Datetime').reset_index(drop=True)
+        
+        logger.info(f"✅ AlphaVantage fallback successful: {symbol} ({len(df)} candles)")
+        try:
+            upsert_fetch_error('alphavantage', 'PRICE_CACHE', symbol, interval, 'fallback_used', 'YFinance rate-limited, used AlphaVantage instead')
+        except Exception:
+            pass
+        
+        return df
+        
+    except Exception as e:
+        logger.warning(f"⚠️ AlphaVantage fetch failed for {symbol}: {e}")
+        return None

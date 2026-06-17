@@ -105,7 +105,7 @@ DELIVERY_CONVICTION_THRESHOLDS = {
 
 BATCH_DOWNLOAD_SIZE = 30
 YAHOO_TIMEOUT = 30
-PRICE_CACHE_TTL_SECONDS = 180  # Raised to 3 mins to cover slow EOD + 1H tandem scans
+PRICE_CACHE_TTL_SECONDS = 60  # Changed from 180s: Intraday runs every 5min (need fresh cache hit)
 
 
 TELEGRAM_CHUNK_SIZE = 10
@@ -158,4 +158,11 @@ MAX_TARGET_ATR = {
     "1h":  8.0,     # 1H targets capped at 8x ATR
     "1d":  12.0,    # EOD targets capped at 12x ATR
 }
+
+# =====================================================================================
+# FALLBACK PRICE PROVIDER (when YFinance rate-limited)
+# =====================================================================================
+
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "")  # Set via Railway env vars
+ENABLE_PRICE_FALLBACK = os.getenv("ENABLE_PRICE_FALLBACK", "true").lower() == "true"
 

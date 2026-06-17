@@ -154,6 +154,7 @@ def start(run_once=False):
                 "prior_red_candles", "obv_divergence", "gap_fill_risk"
             ]}
             total_alerts = 0
+            _last_ts = None  # Initialize before loop to prevent NameError
 
             for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
                 symbol = "UNKNOWN"
@@ -222,7 +223,7 @@ def start(run_once=False):
                             pass
 
                         try:
-                            if _last_ts.date() != ist_now.date():
+                            if _last_ts is not None and _last_ts.date() != ist_now.date():
                                 rejection_counts["stale_data"] += 1
                                 try:
                                     upsert_fetch_error('yfinance', 'INTRADAY', symbol, '15m', 'stale_data', f'last_ts:{_last_ts.date()}')

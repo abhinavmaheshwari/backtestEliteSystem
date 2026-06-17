@@ -59,19 +59,52 @@ def _get_pool() -> pool.ThreadedConnectionPool:
                 "DATABASE_URL env var is not set. "
                 "Add the Railway Postgres addon and it will be injected automatically."
             )
-        _pool = pool.ThreadedConnectionPool(minconn=2, maxconn=30, dsn=db_url)
-        logger.info("✅ Postgres connection pool created")
+        _pool = pool.ThreadedConnectionPool(
+            minconn=2, 
+            maxconn=30, 
+            dsn=db_url,
+            connect_timeout=5  # Add 5s timeout instead of hanging indefinitely
+        )
+        logger.info("✅ Postgres connection pool created (5s timeout)")
         return _pool
 
 
 @contextmanager
 def get_connection():
+    """Get DB connection with circuit breaker pattern."""
+    from psycopg2 import OperationalError
+    
     p = _get_pool()
-    conn = p.getconn()
+    conn = None
     try:
+        conn = p.getconn()
+        # Test connection is alive before returning
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
         yield conn
+    except OperationalError as e:
+        # Circuit breaker: log and fail fast instead of hanging
+        logger.error(f"🔴 DB connection failed (circuit breaker): {e}")
+        if conn:
+            try:
+                p.putconn(conn, close=True)  # Return broken connection to pool
+            except Exception:
+                pass
+        raise
+    except Exception as e:
+        logger.error(f"🔴 DB operation failed: {e}")
+        if conn:
+            try:
+                p.putconn(conn, close=True)
+            except Exception:
+                pass
+        raise
     finally:
-        p.putconn(conn)
+        if conn:
+            try:
+                p.putconn(conn)
+            except Exception:
+                pass  # Connection already broken, ignore
 
 
 # ── One-time init guard ───────────────────────────────────────────────────────────────
@@ -312,6 +345,34 @@ def init_db():
                         PRIMARY KEY (name, date)
                     )
                 """)
+
+                # ── System checkpoints table (persistent audit trail) ─────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS system_checkpoints (
+                        id SERIAL PRIMARY KEY,
+                        checkpoint_name TEXT UNIQUE NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+                        updated_at TEXT NOT NULL DEFAULT (now()::TEXT),
+                        content TEXT NOT NULL,
+                        reason TEXT DEFAULT ''
+                    )
+                """)
+
+                # ── Telegram Queue table (persistent alert queue with rate limiting) ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS telegram_queue (
+                        id SERIAL PRIMARY KEY,
+                        alert_id INTEGER REFERENCES alerts(id),
+                        symbol TEXT NOT NULL,
+                        message_text TEXT NOT NULL,
+                        status TEXT DEFAULT 'pending',
+                        retry_count INTEGER DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+                        sent_at TEXT DEFAULT NULL
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_telegram_queue_status ON telegram_queue(status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_telegram_queue_created ON telegram_queue(created_at)")
 
                 conn.commit()
 
@@ -1384,3 +1445,130 @@ def check_data_exists_for_today() -> bool:
     except Exception as e:
         logger.error(f"Error checking if today's data exists in DB: {e}")
         return False
+
+# ── Checkpoint persistence (audit trail) ──────────────────────────────────────────────
+
+def save_checkpoint(checkpoint_name: str, content: str, reason: str = '') -> bool:
+    """Save system checkpoint to persistent database."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO system_checkpoints (checkpoint_name, created_at, updated_at, content, reason)
+                    VALUES (%s, NOW(), NOW(), %s, %s)
+                    ON CONFLICT (checkpoint_name) 
+                    DO UPDATE SET updated_at=NOW(), content=EXCLUDED.content, reason=EXCLUDED.reason
+                """, (checkpoint_name, content, reason))
+                conn.commit()
+                logger.info(f"✅ Checkpoint saved: {checkpoint_name}")
+                return True
+    except Exception as e:
+        logger.error(f"❌ Failed to save checkpoint '{checkpoint_name}': {e}")
+        return False
+
+def get_checkpoint(checkpoint_name: str) -> str:
+    """Retrieve system checkpoint from database."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT content FROM system_checkpoints 
+                    WHERE checkpoint_name = %s
+                """, (checkpoint_name,))
+                row = cur.fetchone()
+                return row[0] if row else None
+    except Exception as e:
+        logger.error(f"❌ Failed to retrieve checkpoint '{checkpoint_name}': {e}")
+        return None
+
+# ── Telegram Queue Management ──────────────────────────────────────────────────────────
+
+def queue_alert_to_telegram(symbol: str, message_text: str, alert_id: int = None) -> bool:
+    """Queue alert for asynchronous Telegram delivery with rate limiting."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO telegram_queue (alert_id, symbol, message_text, created_at)
+                    VALUES (%s, %s, %s, NOW())
+                """, (alert_id, symbol, message_text))
+                conn.commit()
+                logger.debug(f"✅ Queued Telegram alert for {symbol}")
+                return True
+    except Exception as e:
+        logger.error(f"❌ Failed to queue Telegram alert: {e}")
+        return False
+
+def get_pending_telegram_alerts(limit: int = 5) -> list:
+    """Get pending alerts from queue (5 per batch respects 30/sec Telegram limit)."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, alert_id, symbol, message_text, retry_count
+                    FROM telegram_queue 
+                    WHERE status = 'pending' AND retry_count < 3
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                """, (limit,))
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch pending Telegram alerts: {e}")
+        return []
+
+def mark_telegram_sent(queue_id: int) -> bool:
+    """Mark alert as sent in Telegram queue."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE telegram_queue 
+                    SET status = 'sent', sent_at = NOW()
+                    WHERE id = %s
+                """, (queue_id,))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.error(f"❌ Failed to mark alert sent: {e}")
+        return False
+
+def mark_telegram_failed(queue_id: int) -> bool:
+    """Increment retry count for failed Telegram send."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE telegram_queue 
+                    SET retry_count = retry_count + 1
+                    WHERE id = %s AND retry_count < 3
+                """, (queue_id,))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.error(f"❌ Failed to retry Telegram alert: {e}")
+        return False
+
+def cleanup_old_telegram_sent(days: int = 7) -> int:
+    """Clean up sent Telegram messages older than N days."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    DELETE FROM telegram_queue 
+                    WHERE status = 'sent' 
+                    AND created_at < NOW() - INTERVAL %s
+                """, (f"{days} days",))
+                deleted = cur.rowcount
+                conn.commit()
+                logger.info(f"🗑️  Deleted {deleted} old Telegram messages (>{days} days)")
+                return deleted
+    except Exception as e:
+        logger.error(f"❌ Failed to cleanup Telegram queue: {e}")
+        return 0

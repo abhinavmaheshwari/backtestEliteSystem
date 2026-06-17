@@ -167,3 +167,72 @@ def send_telegram_message(message: str, scan_type: str = None, retries: int = 3)
     except Exception:
         logger.exception('Failed to report telegram final failure')
     return False
+
+# =====================================================================================
+# TELEGRAM QUEUE FLUSHER — async delivery with rate limiting
+# =====================================================================================
+
+def flush_telegram_queue(batch_size: int = 5, batch_delay: float = 0.2):
+    """
+    Flush pending Telegram messages from queue.
+    - Takes 5 at a time (respects 30/sec limit: 5/sec = safe)
+    - Retry up to 3 times on failure
+    - Clean up sent messages after 7 days
+    
+    Call this from a background thread every 100ms.
+    """
+    try:
+        from database import (
+            get_pending_telegram_alerts, mark_telegram_sent, mark_telegram_failed,
+            cleanup_old_telegram_sent
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to import database functions: {e}")
+        return
+
+    while True:
+        try:
+            # Get pending alerts (max 5)
+            pending = get_pending_telegram_alerts(limit=batch_size)
+            
+            if not pending:
+                time.sleep(0.1)
+                continue
+            
+            # Send each alert
+            for alert in pending:
+                try:
+                    # Send without retry (already retried in DB)
+                    if send_telegram_message(alert['message_text'], scan_type=None, retries=1):
+                        mark_telegram_sent(alert['id'])
+                        logger.debug(f"✅ Telegram sent: {alert['symbol']}")
+                    else:
+                        # Mark for retry
+                        mark_telegram_failed(alert['id'])
+                        logger.warning(f"⚠️ Telegram retry queued: {alert['symbol']}")
+                except Exception as e:
+                    logger.error(f"❌ Error processing alert {alert['id']}: {e}")
+                    mark_telegram_failed(alert['id'])
+            
+            # Clean up old sent messages (weekly)
+            try:
+                cleanup_old_telegram_sent(days=7)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to cleanup old messages: {e}")
+            
+            # Rate limiting: respect Telegram 30/sec limit
+            time.sleep(batch_delay)
+            
+        except Exception as e:
+            logger.exception(f"❌ Telegram queue flush error: {e}")
+            time.sleep(1)
+
+def queue_telegram_message(message: str, symbol: str = "", alert_id: int = None) -> bool:
+    """Queue a message for asynchronous delivery instead of sending immediately."""
+    try:
+        from database import queue_alert_to_telegram
+        return queue_alert_to_telegram(symbol, message, alert_id)
+    except Exception as e:
+        logger.error(f"❌ Failed to queue message: {e}")
+        # Fallback to direct send on queue failure
+        return send_telegram_message(message, scan_type=None, retries=1)
