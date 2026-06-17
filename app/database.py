@@ -2049,13 +2049,13 @@ def get_wealth_buy_alerts(symbol: str = None, days_back: int = 30) -> list:
                 if symbol:
                     cur.execute("""
                         SELECT * FROM wealth_buy_alert 
-                        WHERE symbol = %s AND alert_date >= (CURRENT_DATE - INTERVAL '%s days')
+                        WHERE symbol = %s AND alert_date::DATE >= (CURRENT_DATE - INTERVAL '%s days')
                         ORDER BY alert_date DESC, alert_time DESC
                     """, (symbol, days_back))
                 else:
                     cur.execute("""
                         SELECT * FROM wealth_buy_alert 
-                        WHERE alert_date >= (CURRENT_DATE - INTERVAL '%s days')
+                        WHERE alert_date::DATE >= (CURRENT_DATE - INTERVAL '%s days')
                         ORDER BY alert_date DESC, alert_time DESC
                     """, (days_back,))
                 
@@ -2128,7 +2128,7 @@ def get_closed_positions(days_back: int = 30) -> list:
                 cur.execute("""
                     SELECT * FROM wealth_buy_alert 
                     WHERE is_closed = TRUE 
-                    AND exit_date >= (CURRENT_DATE - INTERVAL '%s days')
+                    AND exit_date::DATE >= (CURRENT_DATE - INTERVAL '%s days')
                     ORDER BY exit_date DESC, exit_time DESC
                 """, (days_back,))
                 return [dict(row) for row in cur.fetchall()]
