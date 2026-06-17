@@ -2017,22 +2017,21 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                # Check if alert for this symbol+breakout_type already exists today
-                today = datetime.now().strftime('%Y-%m-%d')
+                # Use database date function for consistency (no timezone issues)
                 cur.execute("""
                     SELECT id FROM wealth_buy_alert 
-                    WHERE symbol = %s AND alert_date = %s AND breakout_type = %s
+                    WHERE symbol = %s AND alert_date = CURRENT_DATE::TEXT AND breakout_type = %s
                     LIMIT 1
-                """, (symbol, today, breakout_type))
+                """, (symbol, breakout_type))
                 
                 if cur.fetchone():
                     logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
                     return False  # Duplicate, skip
                 
-                # New alert - insert it
+                # New alert - insert it (use CURRENT_DATE::TEXT for consistency)
                 cur.execute("""
-                    INSERT INTO wealth_buy_alert (symbol, alert_price, breakout_type, fm_score, status, notes)
-                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s)
+                    INSERT INTO wealth_buy_alert (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date)
+                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, CURRENT_DATE::TEXT)
                 """, (symbol, alert_price, breakout_type, fm_score, notes))
                 conn.commit()
         logger.info(f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type})")
