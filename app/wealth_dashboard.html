@@ -240,6 +240,7 @@
     .exit-banner strong { color: #dc2626; }
 
     .alert-blink { animation: blink 1s step-end infinite; background: rgba(255,235,59,0.08); }
+    tbody tr.alert-blink { animation: blink 1s step-end infinite; background: rgba(255,235,59,0.15) !important; box-shadow: inset 0 2px 8px rgba(255,235,59,0.2) !important; }
     @keyframes blink { 50%{opacity:0.3} }
 
   </style>
@@ -1140,26 +1141,36 @@ async function fetchTodaysAlertsAndBlink_Wealth(){
       return; 
     }
     const data = await res.json();
-    console.log('fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
+    console.log('🔔 fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
     if (!Array.isArray(data) || data.length === 0) return;
     
     // Focus on Buy Signals table only
     const buyTable = document.querySelector('#tbl-buy tbody');
-    if (!buyTable) return;
+    if (!buyTable) {
+      console.warn('⚠️ Buy table not found');
+      return;
+    }
     
     const buyRows = buyTable.querySelectorAll('tr');
+    console.log('📊 Found', buyRows.length, 'rows in Buy table');
+    
     data.forEach(alert=>{
       buyRows.forEach(tr=>{
-        const symbol = tr.querySelector('.sym')?.textContent?.trim();
-        if (symbol && symbol === alert.symbol && !tr.dataset.alertId) {
-          tr.dataset.alertSymbol = alert.symbol;
-          tr.dataset.alertId = alert.id;
-          tr.classList.add('alert-blink');
-          console.log('✓ Blink added for', symbol);
+        const symCell = tr.querySelector('td.sym');
+        if (!symCell) return;
+        
+        const symbol = symCell.textContent?.trim();
+        if (symbol === alert.symbol) {
+          if (!tr.classList.contains('alert-blink')) {
+            tr.classList.add('alert-blink');
+            console.log('✅ Blink ACTIVE for', symbol);
+          }
         }
       });
     });
-  }catch(e){console.warn('fetchTodaysAlerts_Wealth failed:', e)}
+  }catch(e){
+    console.error('❌ fetchTodaysAlerts_Wealth failed:', e);
+  }
 }
 
 // ═══ INTERACTIVE NAVIGATION ═══
