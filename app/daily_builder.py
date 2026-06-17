@@ -604,11 +604,24 @@ def _build_row(*, symbol, cats, path, row, close_price, market_cap, roe, opm, de
     }
 
 # =====================================================================================
+# SYMBOL NORMALIZATION (Fix TradingView symbols for Yahoo Finance)
+# =====================================================================================
+
+SYMBOL_CORRECTIONS = {
+    "BAJAJ_AUTO": "BAJAJAUT",      # Bajaj Auto Ltd - remove underscore
+    "NAM_INDIA": "NAMINDIAI",      # Name India Ltd - fix spelling
+}
+
+def normalize_symbol(symbol: str) -> str:
+    """Convert TradingView symbol names to Yahoo Finance compatible format."""
+    return SYMBOL_CORRECTIONS.get(symbol, symbol)
+
+# =====================================================================================
 # DISPATCHER
 # =====================================================================================
 
 def classify_stock(row: pd.Series) -> dict:
-    symbol = str(row.get("name", "UNKNOWN"))
+    symbol = normalize_symbol(str(row.get("name", "UNKNOWN")))
     sector = str(row.get("sector", ""))
     try:
         with _classify_lock:  # Thread-safe access
