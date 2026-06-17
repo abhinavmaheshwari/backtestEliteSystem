@@ -1095,6 +1095,10 @@
     loadTickers();
     loadAlertHistory();
     loadClosedPositions();
+    
+    // Ensure alert is dismissed on page load (no generic restart alert)
+    dismissAlert();
+    
     setInterval(loadData, 60000);
     setInterval(loadAlertHistory, 120000);  // Refresh alert history every 2 mins
     setInterval(loadClosedPositions, 300000);  // Refresh closed positions every 5 mins
