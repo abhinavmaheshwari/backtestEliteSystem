@@ -1087,13 +1087,16 @@
     }
 
 
-    loadData();
+    loadData().then(() => {
+      fetchTodaysAlertsAndBlink_Wealth(); // Blink after data loads
+    });
     loadTickers();
     loadAlertHistory();
     loadClosedPositions();
     setInterval(loadData, 60000);
     setInterval(loadAlertHistory, 120000);  // Refresh alert history every 2 mins
     setInterval(loadClosedPositions, 300000);  // Refresh closed positions every 5 mins
+    setInterval(fetchTodaysAlertsAndBlink_Wealth, ALERT_FETCH_INTERVAL_WEALTH); // Refresh blinking every 30s
   
 let _audioCtx = null;
 function initAudio() {
@@ -1131,19 +1134,33 @@ function playDing() {
 const ALERT_FETCH_INTERVAL_WEALTH = 60 * 1000;
 async function fetchTodaysAlertsAndBlink_Wealth(){
   try{
-    const res = await fetch('/api/todays_alerts'); if(!res.ok) return; const data = await res.json();
+    const res = await fetch('/api/wealth/alerts?today=true');
+    if(!res.ok) { 
+      console.warn('fetchTodaysAlerts_Wealth: API returned', res.status);
+      return; 
+    }
+    const data = await res.json();
+    console.log('fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
+    if (!Array.isArray(data) || data.length === 0) return;
+    
+    // Focus on Buy Signals table only
+    const buyTable = document.querySelector('#tbl-buy tbody');
+    if (!buyTable) return;
+    
+    const buyRows = buyTable.querySelectorAll('tr');
     data.forEach(alert=>{
-      document.querySelectorAll('tr').forEach(tr=>{
-        if(tr.textContent && tr.textContent.includes(alert.symbol) && !tr.dataset.alertId){
-          tr.dataset.alertSymbol = alert.symbol; tr.dataset.alertId = alert.id;
-          tr.classList.add('alert-blink'); // Unconditionally blink all day for today's alerts
+      buyRows.forEach(tr=>{
+        const symbol = tr.querySelector('.sym')?.textContent?.trim();
+        if (symbol && symbol === alert.symbol && !tr.dataset.alertId) {
+          tr.dataset.alertSymbol = alert.symbol;
+          tr.dataset.alertId = alert.id;
+          tr.classList.add('alert-blink');
+          console.log('✓ Blink added for', symbol);
         }
       });
     });
-  }catch(e){console.warn('fetchTodaysAlerts_Wealth failed', e)}
+  }catch(e){console.warn('fetchTodaysAlerts_Wealth failed:', e)}
 }
-setTimeout(fetchTodaysAlertsAndBlink_Wealth, 2000);
-setInterval(fetchTodaysAlertsAndBlink_Wealth, ALERT_FETCH_INTERVAL_WEALTH);
 
 // ═══ INTERACTIVE NAVIGATION ═══
 function goToTrading() {
