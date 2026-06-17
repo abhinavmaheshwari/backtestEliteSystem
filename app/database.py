@@ -413,12 +413,31 @@ def init_db():
                         current_price REAL,
                         status_updated_at TEXT DEFAULT (now()::TEXT),
                         notes TEXT,
-                        created_at TEXT NOT NULL DEFAULT (now()::TEXT)
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+                        entry_signal TEXT,
+                        exit_signal TEXT,
+                        exit_price REAL,
+                        exit_date TEXT,
+                        exit_time TEXT,
+                        is_closed BOOLEAN DEFAULT FALSE,
+                        pnl_rs REAL,
+                        pnl_pct REAL
                     )
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_symbol ON wealth_buy_alert(symbol)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_date ON wealth_buy_alert(alert_date)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_is_closed ON wealth_buy_alert(is_closed)")
+                
+                # Add migration columns if table already exists
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS entry_signal TEXT")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS exit_signal TEXT")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS exit_price REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS exit_date TEXT")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS exit_time TEXT")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS is_closed BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_rs REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_pct REAL")
 
                 conn.commit()
 
@@ -1992,16 +2011,29 @@ def get_bayesian_update_history(regime: str = None, limit: int = 20) -> list:
 
 def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = None, 
                          fm_score: float = None, notes: str = None) -> bool:
-    """Save a new buy alert to wealth_buy_alert table."""
+    """Save BUY alert to wealth_buy_alert. Deduplicates by (symbol, alert_date, breakout_type)."""
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
+                # Check if alert for this symbol+breakout_type already exists today
+                today = datetime.now().strftime('%Y-%m-%d')
+                cur.execute("""
+                    SELECT id FROM wealth_buy_alert 
+                    WHERE symbol = %s AND alert_date = %s AND breakout_type = %s
+                    LIMIT 1
+                """, (symbol, today, breakout_type))
+                
+                if cur.fetchone():
+                    logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
+                    return False  # Duplicate, skip
+                
+                # New alert - insert it
                 cur.execute("""
                     INSERT INTO wealth_buy_alert (symbol, alert_price, breakout_type, fm_score, status, notes)
                     VALUES (%s, %s, %s, %s, 'ACTIVE', %s)
                 """, (symbol, alert_price, breakout_type, fm_score, notes))
                 conn.commit()
-        logger.info(f"✅ Wealth buy alert saved: {symbol} @ ₹{alert_price}")
+        logger.info(f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type})")
         return True
     except Exception as e:
         logger.error(f"❌ Failed to save wealth buy alert: {e}")
@@ -2065,3 +2097,106 @@ def get_today_wealth_alerts() -> list:
         logger.error(f"❌ Failed to fetch today's wealth alerts: {e}")
         return []
 
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POSITION LIFECYCLE TRACKING (Open/Closed Positions)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_open_positions() -> list:
+    """Get all open positions (where is_closed=FALSE)."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM wealth_buy_alert 
+                    WHERE is_closed = FALSE
+                    ORDER BY alert_date DESC, alert_time DESC
+                """)
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch open positions: {e}")
+        return []
+
+
+def get_closed_positions(days_back: int = 30) -> list:
+    """Get closed positions from last N days."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM wealth_buy_alert 
+                    WHERE is_closed = TRUE 
+                    AND exit_date >= (CURRENT_DATE - INTERVAL '%s days')
+                    ORDER BY exit_date DESC, exit_time DESC
+                """, (days_back,))
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch closed positions: {e}")
+        return []
+
+
+def close_position(symbol: str, exit_price: float, exit_signal: str = None) -> bool:
+    """Auto-close an open position when SELL signal detected."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Get the most recent OPEN position for this symbol
+                cur.execute("""
+                    SELECT id, alert_price FROM wealth_buy_alert 
+                    WHERE symbol = %s AND is_closed = FALSE
+                    ORDER BY alert_date DESC, alert_time DESC
+                    LIMIT 1
+                """, (symbol,))
+                
+                result = cur.fetchone()
+                if not result:
+                    logger.warning(f"⚠️  No open position found for {symbol}")
+                    return False
+                
+                position_id, entry_price = result[0], result[1]
+                
+                # Calculate P&L
+                pnl_rs = exit_price - entry_price
+                pnl_pct = (pnl_rs / entry_price * 100) if entry_price else 0
+                
+                now = datetime.now()
+                exit_date = now.strftime('%Y-%m-%d')
+                exit_time = now.strftime('%H:%M:%S')
+                
+                # Update position as closed
+                cur.execute("""
+                    UPDATE wealth_buy_alert 
+                    SET is_closed = TRUE, 
+                        exit_price = %s, 
+                        exit_date = %s, 
+                        exit_time = %s,
+                        exit_signal = %s,
+                        pnl_rs = %s,
+                        pnl_pct = %s,
+                        status = 'CLOSED'
+                    WHERE id = %s
+                """, (exit_price, exit_date, exit_time, exit_signal, pnl_rs, pnl_pct, position_id))
+                conn.commit()
+        
+        logger.info(f"✅ Position closed: {symbol} P&L: ₹{pnl_rs:.2f} ({pnl_pct:.2f}%)")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to close position: {e}")
+        return False
+
+
+def get_open_symbols() -> list:
+    """Get list of symbols with open positions."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT symbol FROM wealth_buy_alert 
+                    WHERE is_closed = FALSE
+                    ORDER BY symbol
+                """)
+                return [row[0] for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch open symbols: {e}")
+        return []

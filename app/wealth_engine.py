@@ -628,7 +628,7 @@ def run_wealth_scan():
 
         # Save BUY signals to wealth_buy_alert table for historical tracking
         try:
-            from database import save_wealth_buy_alert
+            from database import save_wealth_buy_alert, close_position
             buy_signals = wealth_df[wealth_df["Signal"].str.contains("BUY", na=False)]
             for _, row in buy_signals.iterrows():
                 symbol = row.get("Stock")
@@ -637,8 +637,17 @@ def run_wealth_scan():
                 breakout = "Strength" if row.get("dist_52w_high", 100) > 5 else "Value"
                 if symbol and cmp:
                     save_wealth_buy_alert(symbol, cmp, breakout_type=breakout, fm_score=fm_score)
+            
+            # Auto-close positions when SELL signal detected
+            sell_signals = wealth_df[wealth_df["Signal"].str.contains("SELL", na=False)]
+            for _, row in sell_signals.iterrows():
+                symbol = row.get("Stock")
+                cmp = row.get("cmp")
+                signal_text = row.get("Signal")
+                if symbol and cmp:
+                    close_position(symbol, cmp, signal_text)
         except Exception as e:
-            logger.warning(f"⚠️  Could not save wealth buy alerts: {e}")
+            logger.warning(f"⚠️  Could not process buy/sell alerts: {e}")
 
         wealth_df.to_parquet(WEALTH_PATH, index=False)
         upload_parquet_to_db("wealth_engine", WEALTH_PATH)

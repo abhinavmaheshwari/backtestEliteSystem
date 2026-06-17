@@ -1010,7 +1010,7 @@ def update_wealth_alert(alert_id):
         
         if status not in ["ACTIVE", "BUY", "SELL", "HOLD", "CLOSED"]:
             return jsonify({"error": "Invalid status"}), 400
-        
+         
         success = update_wealth_alert_status(alert_id, status, current_price)
         if success:
             return jsonify({"success": True, "message": f"Alert {alert_id} updated to {status}"})
@@ -1018,6 +1018,55 @@ def update_wealth_alert(alert_id):
             return jsonify({"error": "Failed to update alert"}), 500
     except Exception as e:
         logger.error(f"❌ Error updating wealth alert: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wealth/open-positions", methods=["GET"])
+def get_open_positions_api():
+    """Get all open positions."""
+    from database import get_open_positions
+    try:
+        positions = get_open_positions()
+        return jsonify(positions)
+    except Exception as e:
+        logger.error(f"❌ Error fetching open positions: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wealth/closed-positions", methods=["GET"])
+def get_closed_positions_api():
+    """Get closed positions (filterable by days)."""
+    from database import get_closed_positions
+    try:
+        days = request.args.get("days", "30")
+        days = int(days) if days.isdigit() else 30
+        positions = get_closed_positions(days_back=days)
+        return jsonify(positions)
+    except Exception as e:
+        logger.error(f"❌ Error fetching closed positions: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/wealth/close-position", methods=["POST"])
+def close_position_api():
+    """Manually close a position (or auto-close on SELL signal)."""
+    from database import close_position
+    try:
+        data = request.get_json() or {}
+        symbol = data.get("symbol", "").upper()
+        exit_price = data.get("exit_price")
+        exit_signal = data.get("exit_signal")
+        
+        if not symbol or exit_price is None:
+            return jsonify({"error": "Symbol and exit_price are required"}), 400
+        
+        success = close_position(symbol, exit_price, exit_signal)
+        if success:
+            return jsonify({"success": True, "message": f"Position closed for {symbol}"})
+        else:
+            return jsonify({"error": "No open position found"}), 404
+    except Exception as e:
+        logger.error(f"❌ Error closing position: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ── Scanner DOWN helpers
