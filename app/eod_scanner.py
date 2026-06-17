@@ -525,8 +525,19 @@ def start():
         if fired:
             logger.info("   Rejections: " + " | ".join(f"{k}={v}" for k, v in fired.items()))
 
+        # ✅ CRITICAL: Verify alerts were actually saved to database (2026-06-17)
+        from database import upsert_scanner_health, verify_alerts_saved_today
+        if total_alerts > 0:
+            if not verify_alerts_saved_today("EOD", total_alerts):
+                logger.critical(f"🚨 CRITICAL ERROR: EOD generated {total_alerts} alerts but save failed!")
+                upsert_scanner_health(
+                    scanner_name="EOD",
+                    status="DOWN",
+                    error_msg=f"CRITICAL: {total_alerts} alerts failed to save to database"
+                )
+                raise RuntimeError("Alert save verification failed - database connectivity issue")
+
         try:
-            from database import upsert_scanner_health
             upsert_scanner_health(
                 scanner_name="EOD",
                 status="OK",

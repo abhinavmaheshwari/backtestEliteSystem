@@ -583,8 +583,19 @@ def start(run_once=False):
             logger.info("=" * 80)
             logger.info(f"✅ 1H SCAN COMPLETE | {elapsed:.2f}s | Alerts={total_alerts}/{len(watchlist)}")
             
+            # ✅ CRITICAL: Verify alerts were actually saved to database (2026-06-17)
+            from database import upsert_scanner_health, verify_alerts_saved_today
+            if total_alerts > 0:
+                if not verify_alerts_saved_today("1H", total_alerts):
+                    logger.critical(f"🚨 CRITICAL ERROR: 1H scanner generated {total_alerts} alerts but save failed!")
+                    upsert_scanner_health(
+                        scanner_name="1H",
+                        status="DOWN",
+                        error_msg=f"CRITICAL: {total_alerts} alerts failed to save to database"
+                    )
+                    raise RuntimeError("Alert save verification failed - database connectivity issue")
+            
             try:
-                from database import upsert_scanner_health
                 upsert_scanner_health(
                     scanner_name="1H",
                     status="OK",
