@@ -609,8 +609,20 @@ def start(run_once=False):
             duration = (datetime.now(IST) - scan_start).total_seconds()
             logger.info("=" * 80)
             logger.info(f"✅ INTRADAY SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")
+            
+            # ✅ CRITICAL: Verify alerts were actually saved to database (2026-06-17)
+            from database import upsert_scanner_health, verify_alerts_saved_today
+            if total_alerts > 0:
+                if not verify_alerts_saved_today("INTRADAY", total_alerts):
+                    logger.critical(f"🚨 CRITICAL ERROR: Intraday generated {total_alerts} alerts but save failed!")
+                    upsert_scanner_health(
+                        scanner_name="INTRADAY",
+                        status="DOWN",
+                        error_msg=f"CRITICAL: {total_alerts} alerts failed to save to database"
+                    )
+                    raise RuntimeError("Alert save verification failed - database connectivity issue")
+            
             try:
-                from database import upsert_scanner_health
                 upsert_scanner_health(
                     scanner_name="INTRADAY",
                     status="OK",

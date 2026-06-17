@@ -426,23 +426,29 @@ def run_system_scheduler():
             
             # Mark success
             now_str = datetime.now(IST).isoformat()
-            upsert_scanner_health(
-                "DAILY_BUILDER",
-                status="OK",
-                last_success=now_str,
-                scheduled_for="01:00 IST"
-            )
+            try:
+                upsert_scanner_health(
+                    "DAILY_BUILDER",
+                    status="OK",
+                    last_success=now_str,
+                    scheduled_for="01:00 IST"
+                )
+            except Exception:
+                logger.warning("⚠️ Could not update Daily Builder health status")
             logger.info("✅ Daily Builder completed successfully")
             return True
         except Exception as e:
             logger.exception("❌ SCHEDULER | Daily Builder crashed")
-            _telegram_notify(f"🚨 Daily Builder Scheduled Run Failed:\n{e}")
-            upsert_scanner_health(
-                "DAILY_BUILDER",
-                status="DOWN",
-                error_msg=str(e)[:500],
-                scheduled_for="01:00 IST"
-            )
+            # Telegram notifications disabled (2026-06-17)
+            try:
+                upsert_scanner_health(
+                    "DAILY_BUILDER",
+                    status="DOWN",
+                    error_msg=str(e)[:500],
+                    scheduled_for="01:00 IST"
+                )
+            except Exception:
+                pass
             return False
 
     def safe_run_wealth_scan_initial():

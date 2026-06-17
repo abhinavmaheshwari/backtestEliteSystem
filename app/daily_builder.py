@@ -23,48 +23,8 @@ _classify_lock = threading.Lock()  # Prevent race conditions in classify_stock
 
 # ── SEND GUARD — persisted in Postgres so restarts never re-send ────────────────────
 
-def _already_sent_today() -> bool:
-    """Returns True if the fundamental watchlist was already dispatched today."""
-    try:
-        from database import get_connection
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS daily_send_log (
-                        send_date TEXT PRIMARY KEY
-                    )
-                    """
-                )
-                cur.execute(
-                    "SELECT 1 FROM daily_send_log WHERE send_date = %s",
-                    (datetime.now().strftime("%Y-%m-%d"),)
-                )
-                return cur.fetchone() is not None
-    except Exception:
-        return False  # if DB unreachable, allow send rather than silently suppress
-
-def _mark_sent_today():
-    """Persist today's date to Postgres so restarts don't re-send."""
-    try:
-        from database import get_connection
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS daily_send_log (
-                        send_date TEXT PRIMARY KEY
-                    )
-                    """
-                )
-                cur.execute(
-                    "INSERT INTO daily_send_log (send_date) VALUES (%s) ON CONFLICT DO NOTHING",
-                    (datetime.now().strftime("%Y-%m-%d"),)
-                )
-                conn.commit()   # FIX: was missing — insert was never persisted
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"⚠️ Could not write send guard to DB: {e}")
+# Email and Telegram notifications removed per user request (2026-06-17)
+# System now relies on database deduplication to prevent re-runs on restart
 
 # ── LOGGING SETUP ────────────────────────────────────────────────────────────────────
 
@@ -858,82 +818,11 @@ def _main_impl():
     print(final_df.head(10).to_string(index=False))
 
     # =================================================================================
-    # EMAIL DISPATCH WITH TELEGRAM FALLBACK (EXACTLY ONCE PER DAY)
+    # NOTIFICATIONS DISABLED (2026-06-17)
+    # Email and Telegram notifications removed per user request.
+    # Database deduplication (check_data_exists_for_today) prevents re-runs on restart.
     # =================================================================================
-    if _already_sent_today():
-        logger.info("📧 Fundamental watchlist already dispatched today — skipping send (restart guard).")
-        return
-
-    try:
-        from email_engine import send_html_email
-        logger.info("📧 Attempting to email fundamental watchlist...")
-        
-        email_df = final_df[['Stock', 'Category', 'Category Explanation', 'PEG Ratio', 'Sector', 'CMP', 'Fundamental Score']]
-        table_html = email_df.to_html(index=False, border=0, classes="styled-table", justify="left")
-        
-        html_content = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: Arial, sans-serif; background-color: #f4f7f6; color: #333; padding: 20px; }}
-                .container {{ max-width: 900px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }}
-                h1 {{ color: #2c3e50; text-align: center; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
-                .styled-table {{ border-collapse: collapse; margin: 15px 0; font-size: 0.85em; width: 100%; }}
-                .styled-table thead tr {{ background-color: #34495e; color: #ffffff; text-align: left; }}
-                .styled-table th, .styled-table td {{ padding: 12px 10px; border-bottom: 1px solid #dddddd; }}
-                .styled-table td:nth-child(3) {{ color: #555; font-style: italic; max-width: 250px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🌟 Daily Fundamental Watchlist</h1>
-                <p style="text-align: center; color: #7f8c8d;">Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <h2>📋 Elite Universe ({len(final_df)} Stocks)</h2>
-                {table_html}
-                
-                <hr style="margin-top: 30px; border: 0; border-top: 1px solid #ddd;">
-                <p style="font-size: 12px; color: #7f8c8d; text-align: center;">
-                    <strong>PEG Ratio Legend:</strong> < 1.0 (Deep Value) | 1.0 to 1.5 (Fair Value) | > 2.0 (Overvalued)
-                </p>
-            </div>
-        </body>
-        </html>
-        """
-        
-        subject = f"🌟 Daily Fundamental Watchlist - {datetime.now().strftime('%Y-%m-%d')}"
-        
-        # ── 1. ATTEMPT EMAIL ──────────────────────────────────────────────────────
-        email_success = send_html_email(subject, html_content, attachment_path=OUTPUT_CSV)
-        
-        # ── 2. TELEGRAM FALLBACK ──────────────────────────────────────────────────
-        if not email_success:
-            logger.warning("⚠️ Email delivery failed or timed out. Activating Telegram Fallback...")
-            
-            bot_token = os.getenv("BOT_TOKEN")
-            chat_id   = os.getenv("CHAT_ID")
-            
-            if bot_token and chat_id and os.path.exists(OUTPUT_CSV):
-                url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
-                caption = f"🌟 *Daily Fundamental Watchlist*\nDate: {datetime.now().strftime('%Y-%m-%d')}\nTotal Stocks: {len(final_df)}\n\n_Email delivery blocked. CSV attached._"
-                
-                with open(OUTPUT_CSV, 'rb') as doc:
-                    resp = requests.post(url, data={'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}, files={'document': doc}, timeout=15)
-                
-                if resp.status_code == 200:
-                    logger.info("✅ Watchlist CSV successfully delivered to Telegram.")
-                else:
-                    logger.error(f"❌ Telegram fallback failed: {resp.text}")
-            else:
-                logger.error("❌ Cannot execute Telegram fallback: Missing BOT_TOKEN/CHAT_ID or CSV file.")
-                
-    except Exception as e:
-        logger.error(f"❌ CRITICAL ERROR in dispatch block: {e}")
-        logger.error(traceback.format_exc())
-        return
-
-    # Mark as sent AFTER successful dispatch so a crash mid-send doesn't suppress the next attempt
-    _mark_sent_today()
-    logger.info("✅ Send guard updated — will not re-send today on restart")
+    logger.info("✅ Daily Builder completed successfully (notifications disabled)")
     
     # Clean up checkpoint on full success
     try:
