@@ -424,12 +424,8 @@ def init_db():
                         pnl_pct REAL
                     )
                 """)
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_symbol ON wealth_buy_alert(symbol)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_date ON wealth_buy_alert(alert_date)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_is_closed ON wealth_buy_alert(is_closed)")
                 
-                # Add migration columns if table already exists
+                # Add migration columns if table already exists (for backward compatibility)
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS entry_signal TEXT")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS exit_signal TEXT")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS exit_price REAL")
@@ -438,6 +434,12 @@ def init_db():
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS is_closed BOOLEAN DEFAULT FALSE")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_rs REAL")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_pct REAL")
+                
+                # Create indexes (after columns are guaranteed to exist)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_symbol ON wealth_buy_alert(symbol)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_date ON wealth_buy_alert(alert_date)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_is_closed ON wealth_buy_alert(is_closed)")
 
                 conn.commit()
 
