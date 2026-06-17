@@ -80,6 +80,13 @@
       transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       cursor: pointer; position: relative; overflow: hidden;
     }
+    .kpi-card.alert-blink {
+      animation: kpiPulse 0.7s step-end infinite;
+      border-color: rgba(255,235,59,0.5) !important;
+      background: rgba(255,235,59,0.08) !important;
+      box-shadow: 0 0 16px rgba(255,235,59,0.3) !important;
+    }
+    @keyframes kpiPulse { 0%{box-shadow: 0 0 16px rgba(255,235,59,0.3)} 50%{box-shadow: 0 0 32px rgba(255,235,59,0.6)} 100%{box-shadow: 0 0 16px rgba(255,235,59,0.3)} }
     .kpi-card::before {
       content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
       background: radial-gradient(circle, rgba(139,92,246,0.1) 0%, transparent 70%);
@@ -1098,9 +1105,20 @@
         }
         const data = await res.json();
         console.log('🔔 fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
-        if (!Array.isArray(data) || data.length === 0) return;
+        if (!Array.isArray(data) || data.length === 0) {
+          // No alerts - remove blink from KPI card
+          document.getElementById('kpi-buys')?.classList.remove('alert-blink');
+          return;
+        }
         
-        // Focus on Buy Signals table only
+        // Blink the top KPI card if there are alerts
+        const kpiBuys = document.getElementById('kpi-buys');
+        if (kpiBuys && !kpiBuys.classList.contains('alert-blink')) {
+          kpiBuys.classList.add('alert-blink');
+          console.log('✨ KPI card blinking for', data.length, 'alerts');
+        }
+        
+        // Focus on Buy Signals table
         const buyTable = document.querySelector('#tbl-buy tbody');
         if (!buyTable) {
           console.warn('⚠️ Buy table not found');
