@@ -786,21 +786,17 @@
         // Alert Diffing Logic - Track new BUY/SELL signals
         let newBuySignals = new Set();
         let newSellSignals = new Set();
+        // Skip alert popup on first load, only track new signals after first load
         if (ALL_WEALTH_STOCKS.length > 0 && !isFirstLoad) {
             const oldKeys = new Set(ALL_WEALTH_STOCKS.filter(s => s.Signal).map(s => s.Stock + '|' + s.Signal));
-            let hasNew = false;
             for (const s of stocks) {
                 if (s.Signal && (s.Signal.includes("BUY") || s.Signal.includes("SELL"))) {
                     const key = s.Stock + '|' + s.Signal;
                     if (!oldKeys.has(key)) {
-                        hasNew = true;
                         if (s.Signal.includes("BUY")) newBuySignals.add(s.Stock);
                         if (s.Signal.includes("SELL")) newSellSignals.add(s.Stock);
                     }
                 }
-            }
-            if (hasNew) {
-                triggerAlertFlashing();
             }
         }
         isFirstLoad = false;
@@ -1095,10 +1091,6 @@
     loadTickers();
     loadAlertHistory();
     loadClosedPositions();
-    
-    // Ensure alert is dismissed on page load (no generic restart alert)
-    dismissAlert();
-    
     setInterval(loadData, 60000);
     setInterval(loadAlertHistory, 120000);  // Refresh alert history every 2 mins
     setInterval(loadClosedPositions, 300000);  // Refresh closed positions every 5 mins
