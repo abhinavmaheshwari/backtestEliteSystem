@@ -547,6 +547,7 @@
     let isAlertActive = false;
     let ALL_WEALTH_STOCKS = [];
     let isFirstLoad = true;  // Skip alert on initial page load
+    const ALERT_FETCH_INTERVAL_WEALTH = 60 * 1000;  // Check for alerts every 60 seconds
     
     function triggerAlertFlashing() {
         if(isAlertActive) return;
@@ -1088,6 +1089,46 @@
     }
 
 
+    async function fetchTodaysAlertsAndBlink_Wealth(){
+      try{
+        const res = await fetch('/api/wealth/alerts?today=true');
+        if(!res.ok) { 
+          console.warn('fetchTodaysAlerts_Wealth: API returned', res.status);
+          return; 
+        }
+        const data = await res.json();
+        console.log('🔔 fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
+        if (!Array.isArray(data) || data.length === 0) return;
+        
+        // Focus on Buy Signals table only
+        const buyTable = document.querySelector('#tbl-buy tbody');
+        if (!buyTable) {
+          console.warn('⚠️ Buy table not found');
+          return;
+        }
+        
+        const buyRows = buyTable.querySelectorAll('tr');
+        console.log('📊 Found', buyRows.length, 'rows in Buy table');
+        
+        data.forEach(alert=>{
+          buyRows.forEach(tr=>{
+            const symCell = tr.querySelector('td.sym');
+            if (!symCell) return;
+            
+            const symbol = symCell.textContent?.trim();
+            if (symbol === alert.symbol) {
+              if (!tr.classList.contains('alert-blink')) {
+                tr.classList.add('alert-blink');
+                console.log('✅ Blink ACTIVE for', symbol);
+              }
+            }
+          });
+        });
+      }catch(e){
+        console.error('❌ fetchTodaysAlerts_Wealth failed:', e);
+      }
+    }
+
     loadData().then(() => {
       fetchTodaysAlertsAndBlink_Wealth(); // Blink after data loads
     });
@@ -1126,52 +1167,6 @@ function playDing() {
 }
 
 </script>
-
-<style>
-.alert-blink{animation: blink 1s step-end infinite; background: rgba(255,235,59,0.08);}
-@keyframes blink{50%{opacity:0.3}}
-</style>
-<script>
-const ALERT_FETCH_INTERVAL_WEALTH = 60 * 1000;
-async function fetchTodaysAlertsAndBlink_Wealth(){
-  try{
-    const res = await fetch('/api/wealth/alerts?today=true');
-    if(!res.ok) { 
-      console.warn('fetchTodaysAlerts_Wealth: API returned', res.status);
-      return; 
-    }
-    const data = await res.json();
-    console.log('🔔 fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
-    if (!Array.isArray(data) || data.length === 0) return;
-    
-    // Focus on Buy Signals table only
-    const buyTable = document.querySelector('#tbl-buy tbody');
-    if (!buyTable) {
-      console.warn('⚠️ Buy table not found');
-      return;
-    }
-    
-    const buyRows = buyTable.querySelectorAll('tr');
-    console.log('📊 Found', buyRows.length, 'rows in Buy table');
-    
-    data.forEach(alert=>{
-      buyRows.forEach(tr=>{
-        const symCell = tr.querySelector('td.sym');
-        if (!symCell) return;
-        
-        const symbol = symCell.textContent?.trim();
-        if (symbol === alert.symbol) {
-          if (!tr.classList.contains('alert-blink')) {
-            tr.classList.add('alert-blink');
-            console.log('✅ Blink ACTIVE for', symbol);
-          }
-        }
-      });
-    });
-  }catch(e){
-    console.error('❌ fetchTodaysAlerts_Wealth failed:', e);
-  }
-}
 
 // ═══ INTERACTIVE NAVIGATION ═══
 function goToTrading() {
