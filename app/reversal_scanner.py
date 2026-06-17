@@ -9,8 +9,6 @@ from datetime import datetime
 from typing import Optional
 
 from technical_indicators import apply_indicators
-from telegram_engine import send_telegram_message
-from message_formatter import build_message
 from database import init_db, save_alert_if_new, upsert_fetch_error
 from price_cache import fetch_watchlist_data
 from watchlist_cache import get_watchlist
@@ -431,6 +429,9 @@ def _run_scan():
                 stop_loss=suggested_stop,
                 target_price=target_price,
                 context=context,
+                model_version="v1",
+                bayesian_regime="BEAR",
+                bayesian_weights=None,
             )
             if not saved:
                 continue
@@ -471,16 +472,7 @@ def _run_scan():
             upsert_fetch_error('yfinance', 'REVERSAL', symbol, '1d', 'processing_error', str(e))
 
     if total_alerts > 0:
-        for cat in sorted(alerts_by_category.keys()):
-            cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["symbol"])
-            chunks = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
-
-            for chunk_num, chunk in enumerate(chunks, start=1):
-                msg = build_message(
-                    "REVERSAL", cat, chunk, chunk_num, len(chunks),
-                    ist_now.strftime("%Y-%m-%d %H:%M:%S")
-                )
-                send_telegram_message(msg, scan_type="REVERSAL")
+        pass  # Telegram notifications removed (2026-06-17)
 
     logger.info(f"✅ REVERSAL SCAN DONE | Found {total_alerts} bottoming stocks.")
     

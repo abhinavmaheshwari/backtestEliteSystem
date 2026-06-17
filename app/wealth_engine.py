@@ -636,25 +636,7 @@ def run_wealth_scan():
         
         upsert_scanner_health("Wealth Engine", "OK", last_success=datetime.now().isoformat(), today_alerts=buy_count)
 
-        # Weekly Telegram Alert (Run on Sunday)
-        now = datetime.now()
-        # Note: Weekly Telegram state tracking moved to the scheduler in main.py
-        if now.weekday() == 6 and now.hour == 4:
-            try:
-                from telegram_engine import send_telegram_message
-                top_20 = wealth_df.sort_values(by="FM_Score", ascending=False).head(20)
-                msg = "🏆 <b>Top 20 Long-Term Compounders</b> 🏆\n\n"
-                for idx, row in top_20.iterrows():
-                    rs = row.get('rs_6m', 0) or 0
-                    fcf = row.get('FCF Margin %')
-                    fcf_str = f"{fcf:.0f}%" if fcf is not None else "N/A"
-                    msg += f"• <b>{row['Stock']}</b> | Score: {row['FM_Score']}\n"
-                    msg += f"  └ ROCE: {row.get('ROCE %', 0):.0f}% | RS: {rs:.0f}% | FCF: {fcf_str}\n"
-
-                send_telegram_message(msg, scan_type="EOD")
-                logger.info("📤 [WEALTH ENGINE] Weekly Telegram report sent.")
-            except Exception as tg_err:
-                logger.warning(f"⚠️ [WEALTH ENGINE] Telegram send failed: {tg_err}")
+        # Weekly Telegram Alert removed (2026-06-17)
 
     except Exception as e:
         logger.exception(f"❌ [WEALTH ENGINE] Scan crashed: {e}")

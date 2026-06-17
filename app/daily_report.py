@@ -11,7 +11,6 @@ import requests
 import os
 
 from config import DB_PATH, WATCHLIST_PATH, DATA_DIR
-from email_engine import send_html_email
 
 logger = logging.getLogger(__name__)
 
@@ -73,29 +72,6 @@ def generate_and_send_daily_summary():
     </html>
     """
 
-    # ── 4. ATTEMPT EMAIL (NO RETRIES) ────────────────────────────────────────────────
-    subject = f"📊 Daily Trade Summary - {today_str}"
-    logger.info("Attempting to send Daily Summary via Email...")
-    
-    email_success = send_html_email(subject, html_content, attachment_path=csv_filename)
-
-    # ── 5. TELEGRAM FALLBACK ─────────────────────────────────────────────────────────
-    if not email_success:
-        logger.warning("⚠️ Email failed. Activating Telegram CSV Fallback...")
-        bot_token = os.getenv("BOT_TOKEN")
-        chat_id   = os.getenv("CHAT_ID")
-        
-        if bot_token and chat_id and os.path.exists(csv_filename):
-            url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
-            caption = f"📊 *EOD Market Summary*\\nDate: {today_str}\\nTotal Alerts Today: {len(alerts_df)}\\n\\n_Email delivery blocked by server. CSV report attached._"
-            
-            try:
-                with open(csv_filename, 'rb') as doc:
-                    resp = requests.post(url, data={'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}, files={'document': doc}, timeout=15)
-                
-                if resp.status_code == 200:
-                    logger.info("✅ Daily Summary CSV successfully delivered to Telegram.")
-                else:
-                    logger.error(f"❌ Telegram fallback failed: {resp.text}")
-            except Exception as e:
-                logger.error(f"❌ Telegram upload error: {e}")
+    # ── 4. EMAIL & TELEGRAM NOTIFICATIONS REMOVED ────────────────────────────────────
+    # Email and Telegram notifications removed (2026-06-17)
+    logger.info(f"📊 Daily Summary prepared | {today_str} | {len(alerts_df)} alert(s)")

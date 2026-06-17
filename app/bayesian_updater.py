@@ -4,7 +4,6 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from database import get_connection, upsert_scanner_health, get_latest_weights, save_new_weights
-from telegram_engine import send_telegram_message
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -93,19 +92,38 @@ def run_bayesian_updater():
             new_weights["RS_RANK"] = max(5.0, new_weights["RS_RANK"] - 0.5)
             
             new_version = "v2"
-            save_new_weights(new_version, "BULL", new_weights)
             
-            # Send Telegram Alert
-            msg = (
-                f"🧠 <b>Bayesian Updater: Weight Shift</b>\n\n"
-                f"Model upgraded from {latest_bull['version']} to {new_version} based on {len(trades)} resolved TRAIN trades.\n\n"
-                f"<b>BULL Regime Adjustments:</b>\n"
-                f"• VOLUME_ZSCORE: {latest_bull['weights']['VOLUME_ZSCORE']} → {new_weights['VOLUME_ZSCORE']}\n"
-                f"• RS_RANK: {latest_bull['weights']['RS_RANK']} → {new_weights['RS_RANK']}\n\n"
-                f"<i>(Sample size gate passed: {len(trades)} >= {MIN_TRADES_FOR_UPDATE})</i>"
+            # ✅ SUBMIT FOR ADMIN APPROVAL (not directly applying)
+            from database import submit_bayesian_update_for_approval
+            
+            reason = (
+                f"VOLUME_ZSCORE improved (spike detection); "
+                f"RS_RANK reduced (less reliant on relative strength); "
+                f"Analysis: {len(trades)} TRAIN trades, {win_rate:.1%} win rate"
             )
-            send_telegram_message(msg, scan_type="SYSTEM")
-            logger.info(f"🧠 Bayesian Updater: Upgraded BULL weights to {new_version}")
+            
+            update_id = submit_bayesian_update_for_approval(
+                regime="BULL",
+                proposed_version=new_version,
+                current_version=latest_bull["version"],
+                current_weights=latest_bull["weights"],
+                proposed_weights=new_weights,
+                trades_analyzed=len(trades),
+                win_rate=win_rate,
+                reason=reason
+            )
+            
+            if update_id:
+                logger.info(f"✅ 🧠 Bayesian Update Submitted for Admin Approval")
+                logger.info(f"   Update ID: {update_id}")
+                logger.info(f"   Regime: BULL | Version: {latest_bull['version']} → {new_version}")
+                logger.info(f"   Win Rate: {win_rate:.1%} from {len(trades)} trades")
+                logger.info(f"   Changes:")
+                logger.info(f"   • VOLUME_ZSCORE: {latest_bull['weights']['VOLUME_ZSCORE']} → {new_weights['VOLUME_ZSCORE']}")
+                logger.info(f"   • RS_RANK: {latest_bull['weights']['RS_RANK']} → {new_weights['RS_RANK']}")
+                logger.info(f"   ⏳ Awaiting admin approval...")
+            else:
+                logger.warning(f"⚠️  Could not submit Bayesian update (may have pending update)")
 
         upsert_scanner_health("BayesianUpdater", "OK", last_success=datetime.now(IST).isoformat())
 

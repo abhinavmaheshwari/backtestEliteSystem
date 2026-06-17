@@ -23,8 +23,6 @@ from datetime import datetime, date, time as dt_time
 from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
-from telegram_engine import send_telegram_message
-from message_formatter import build_message
 from database import init_db, save_alert_if_new, upsert_fetch_error
 from delivery_data import fetch_previous_day_delivery
 from price_cache import fetch_watchlist_data  
@@ -433,7 +431,7 @@ def start(run_once=False):
                                     rejection_counts["gap_fill_risk"] += 1
                                     continue
 
-                    score, model_version = calculate_score(
+                    score, model_version, bayesian_weights = calculate_score(
                         category=category,
                         breakout_count=len(signals),
                         rsi=rsi_val,
@@ -445,6 +443,7 @@ def start(run_once=False):
                         timeframe=TIMEFRAME,
                         delivery_pct=delivery_pct,
                         min_vol=MIN_VOLUME_AVG,
+                        regime="BULL"
                     )
 
                     if score > 0:
@@ -538,6 +537,8 @@ def start(run_once=False):
                         target_price=target_price,
                         context=context,
                         model_version=model_version,
+                        bayesian_regime="BULL",
+                        bayesian_weights=bayesian_weights,
                     )
                     if not saved:
                         rejection_counts["duplicate"] += 1
@@ -598,14 +599,7 @@ def start(run_once=False):
             
             if total_alerts == 0:
                 logger.info("📭 No INTRADAY alerts this cycle")
-            else:
-                for cat in sorted(alerts_by_category.keys()):
-                    cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-                    chunks = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
-                    for chunk_num, chunk in enumerate(chunks, 1):
-                        msg = build_message("INTRADAY", cat, chunk, chunk_num, len(chunks), scan_time)
-                        send_telegram_message(msg, scan_type="INTRADAY")
-
+            
             duration = (datetime.now(IST) - scan_start).total_seconds()
             logger.info("=" * 80)
             logger.info(f"✅ INTRADAY SCAN COMPLETE | {round(duration, 2)}s | Alerts={total_alerts}/{len(watchlist)}")

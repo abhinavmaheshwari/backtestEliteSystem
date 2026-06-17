@@ -44,7 +44,7 @@ def _notify_down(name: str, err: str):
         scanner_name = THREAD_TO_SCANNER.get(name, name)
         from dashboard_server import notify_scanner_down
         notify_scanner_down(scanner_name, err)
-        _telegram_notify(f"🔴 Scanner {scanner_name} is DOWN!\nError: {err}")
+        # Telegram notification removed (2026-06-17)
     except Exception:
         pass
 
@@ -55,7 +55,7 @@ def _clear_down(name: str):
         scanner_name = THREAD_TO_SCANNER.get(name, name)
         from dashboard_server import clear_scanner_down
         clear_scanner_down(scanner_name)
-        _telegram_notify(f"🟢 Scanner {scanner_name} is active / recovered.")
+        # Telegram notification removed (2026-06-17)
     except Exception:
         pass
 
@@ -109,15 +109,6 @@ def wait_for_window(name: str):
             logger.info(f"[{name}] ✅ Window open | {now.strftime('%H:%M:%S')} | Launching scanner")
             return
         time.sleep(60)
-
-
-def _telegram_notify(text: str):
-    """Send a plain Telegram message — best-effort, never raises."""
-    try:
-        from telegram_engine import send_telegram_message
-        send_telegram_message(text, scan_type="SYSTEM")
-    except Exception:
-        logger.exception("❌ Could not send Telegram system notification")
 
 
 # =====================================================================================
@@ -227,8 +218,7 @@ def run_eod_scanner():
                     f"ℹ️ No breakout setups found today.\n"
                     f"All stocks screened — none passed the filters."
                 )
-                logger.info("📊 EOD | Zero alerts — notifying Telegram")
-                _telegram_notify(msg)
+                logger.info("📊 EOD | Zero alerts — no Telegram notification (removed 2026-06-17)")
             else:
                 logger.info(f"📊 EOD | Completed — {total} alert(s) sent")
             
@@ -261,7 +251,7 @@ def run_eod_scanner():
                     error_msg=f"Stopped at midnight after {retry_count} failed attempts",
                     scheduled_for="06:30 IST"
                 )
-                _telegram_notify(f"🛑 EOD SCAN | Stopped at midnight after {retry_count} retries. Last error: {str(exc)[:200]}")
+                # Telegram notification removed (2026-06-17)
                 import threading
                 threading.current_thread().completed_cleanly = True
                 return
@@ -274,8 +264,6 @@ def run_eod_scanner():
                 f"{tb[-500:]}"
             )
             logger.critical(f"💀 EOD scanner crashed (attempt {retry_count}): {exc}. Retrying in 1 minute...")
-            if retry_count == 1:
-                _telegram_notify(msg)  # Only send Telegram on first retry
             
             from database import upsert_scanner_health
             upsert_scanner_health(
@@ -313,8 +301,7 @@ def run_reversal_scanner():
                     f"ℹ️ No mean-reversion setups found today.\n"
                     f"All stocks screened — none passed the filters."
                 )
-                logger.info("🔄 REVERSAL | Zero alerts — notifying Telegram")
-                _telegram_notify(msg)
+                logger.info("🔄 REVERSAL | Zero alerts — no Telegram notification (removed 2026-06-17)")
             else:
                 logger.info(f"🔄 REVERSAL | Completed — {total} alert(s) sent")
             
@@ -347,7 +334,7 @@ def run_reversal_scanner():
                     error_msg=f"Stopped at midnight after {retry_count} failed attempts",
                     scheduled_for="06:30 IST"
                 )
-                _telegram_notify(f"🛑 REVERSAL SCAN | Stopped at midnight after {retry_count} retries. Last error: {str(exc)[:200]}")
+                # Telegram notification removed (2026-06-17)
                 import threading
                 threading.current_thread().completed_cleanly = True
                 return
@@ -360,8 +347,6 @@ def run_reversal_scanner():
                 f"{tb[-500:]}"
             )
             logger.critical(f"💀 REVERSAL scanner crashed (attempt {retry_count}): {exc}. Retrying in 1 minute...")
-            if retry_count == 1:
-                _telegram_notify(msg)  # Only send Telegram on first retry
             
             from database import upsert_scanner_health
             upsert_scanner_health(
@@ -384,7 +369,7 @@ def run_bayesian_loop():
             run_bayesian_updater()
         except Exception as e:
             logger.exception("❌ BAYESIAN UPDATER | Crashed")
-            _telegram_notify(f"🚨 BAYESIAN UPDATER CRASHED:\n{e}")
+            # Telegram notification removed (2026-06-17)
         
         # Run daily (86400 seconds)
         logger.info("🧠 BAYESIAN UPDATER | Sleeping for 24h")
@@ -693,7 +678,7 @@ if __name__ == "__main__":
     _cleanup_old_scanner_names()
     def handle_sigterm(*args):
         logger.info("🛑 SIGTERM received — container shutting down. Closing gracefuly...")
-        _telegram_notify("🛑 System shutting down (Railway container restart/stop).")
+        # Telegram notification removed (2026-06-17)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, handle_sigterm)

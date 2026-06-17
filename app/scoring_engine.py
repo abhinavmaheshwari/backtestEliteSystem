@@ -739,7 +739,7 @@ def calculate_score(
             ticker, latest, volume_ratio, symbol, timeframe=timeframe, min_vol=min_vol
         )
         if disq:
-            return 0, model_version
+            return 0, model_version, weights, weights
             
     # ── STEP 1.5: PIOTROSKI F-SCORE DISQUALIFIER & CAP ──────────────────────────────
     f_score_pts = 0
@@ -750,7 +750,7 @@ def calculate_score(
             p_score = get_piotroski_score(symbol)
             if p_score >= 0 and p_score <= 3:
                 logger.warning(f"🚫 {tag}DISQ: Piotroski F-Score {p_score} <= 3 (Fundamental weakness)")
-                return 0, model_version
+                return 0, model_version, weights
             elif p_score >= 7:
                 f_score_pts = 12
                 logger.debug(f"  +12 {tag}Piotroski F-Score {p_score} >= 7 bonus")
@@ -941,7 +941,7 @@ def calculate_score(
     final_score = int(score)
     if final_score > max_score_cap:
         logger.debug(f"  {tag}Score capped at {max_score_cap} (was {final_score})")
-        return max_score_cap, model_version
+        return max_score_cap, model_version, weights
     final_score = min(final_score, 100)
-    logger.info(f"  📊 Final score: {final_score} (Model: {model_version})")
-    return final_score, model_version
+    logger.info(f"  📊 Final score: {final_score} (Model: {model_version}, Regime: {regime})")
+    return final_score, model_version, weights

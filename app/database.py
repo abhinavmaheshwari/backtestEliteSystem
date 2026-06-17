@@ -159,6 +159,8 @@ def init_db():
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS context      JSONB",
                     # Bayesian Tracker Columns
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS model_version  TEXT DEFAULT 'v1'",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS bayesian_regime TEXT DEFAULT 'BULL'",
+                    "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS bayesian_weights JSONB",
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS data_partition TEXT DEFAULT 'TRAIN'",
                 ]:
                     cur.execute(col_sql)
@@ -173,6 +175,29 @@ def init_db():
                         regime TEXT NOT NULL,
                         weights JSONB NOT NULL,
                         created_at TEXT NOT NULL DEFAULT (now()::TEXT)
+                    )
+                """)
+
+                # ── Bayesian Model Updates (Pending Admin Approval) ──────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bayesian_model_updates (
+                        id SERIAL PRIMARY KEY,
+                        regime TEXT NOT NULL,
+                        proposed_version TEXT NOT NULL,
+                        current_version TEXT NOT NULL,
+                        current_weights JSONB NOT NULL,
+                        proposed_weights JSONB NOT NULL,
+                        trades_analyzed INTEGER NOT NULL,
+                        win_rate REAL NOT NULL,
+                        reason TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'PENDING',
+                        admin_comment TEXT,
+                        approved_by TEXT,
+                        approved_at TEXT,
+                        rejected_at TEXT,
+                        applied_at TEXT,
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+                        expires_at TEXT
                     )
                 """)
 
@@ -399,12 +424,20 @@ def save_alert_if_new(
     context: dict = None,
     model_version: str = "v1",
     data_partition: str = "TRAIN",
+    bayesian_regime: str = "BULL",
+    bayesian_weights: dict = None,
     **kwargs
 ) -> tuple[bool, float, int]:
     """
     Insert a new alert.  Returns (inserted, capital_allocated, shares_bought).
+    
+    Captures:
+    - model_version: Bayesian model version (v1, v2, etc)
+    - bayesian_regime: Market regime (BULL, BEAR, SIDEWAYS)
+    - bayesian_weights: Actual weights used for scoring
     """
     context_str = json.dumps(context) if context is not None else None
+    weights_str = json.dumps(bayesian_weights) if bayesian_weights is not None else None
     
     # Calculate portfolio allocation dynamically if not provided
     from portfolio_engine import calculate_trade_allocation
@@ -425,13 +458,13 @@ def save_alert_if_new(
                         (symbol, breakout_type, alert_time, scanner, category,
                          entry_price, stop_loss, target_price, signals, score,
                          rsi, volume_ratio, status, context, capital_allocated, shares_bought,
-                         model_version, data_partition)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s)
+                         model_version, bayesian_regime, bayesian_weights, data_partition)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
                 """, (symbol, breakout_type, alert_time, scanner, category,
                       entry_price, stop_loss, target_price, signals, score,
                       rsi, volume_ratio, context_str, capital_allocated, shares_bought,
-                      model_version, data_partition))
+                      model_version, bayesian_regime, weights_str, data_partition))
                 conn.commit()
                 return cur.rowcount > 0, capital_allocated, shares_bought
             except Exception:
@@ -1628,3 +1661,305 @@ def verify_alerts_saved_today(scanner_name: str, expected_count: int) -> bool:
     except Exception as e:
         logger.error(f"❌ CRITICAL: Could not verify alerts for {scanner_name}: {e}")
         return False
+
+
+def get_current_bayesian_model():
+    """
+    Get the current ACTIVE (APPROVED) Bayesian model version and weights for all regimes.
+    
+    CRITICAL: This ONLY returns weights from score_weight_log that have been
+    explicitly approved by admin. PENDING updates in bayesian_model_updates
+    are NOT included here.
+    
+    Returns:
+        dict: {'BULL': {'version': 'v1', 'weights': {...}}, ...}
+    """
+    import json
+    init_db()
+    
+    try:
+        model = {}
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Get latest APPROVED version and weights for each regime
+                # Only read from score_weight_log, which contains only approved weights
+                for regime in ['BULL', 'BEAR', 'SIDEWAYS']:
+                    cur.execute("""
+                        SELECT model_version, weights
+                        FROM score_weight_log
+                        WHERE regime = %s
+                        ORDER BY id DESC
+                        LIMIT 1
+                    """, (regime,))
+                    
+                    row = cur.fetchone()
+                    if row:
+                        model[regime] = {
+                            'version': row[0],
+                            'weights': json.loads(row[1]) if isinstance(row[1], str) else row[1]
+                        }
+        
+        return model if model else {
+            'BULL': {'version': 'v1', 'weights': {}},
+            'BEAR': {'version': 'v1', 'weights': {}},
+            'SIDEWAYS': {'version': 'v1', 'weights': {}}
+        }
+    except Exception as e:
+        logger.exception(f"❌ Failed to get current Bayesian model: {e}")
+        return {}
+
+
+# ── Bayesian Model Admin Approval Workflow ────────────────────────────────────────────────
+
+def submit_bayesian_update_for_approval(
+    regime: str,
+    proposed_version: str,
+    current_version: str,
+    current_weights: dict,
+    proposed_weights: dict,
+    trades_analyzed: int,
+    win_rate: float,
+    reason: str
+) -> int:
+    """
+    Submit a Bayesian model weight change for admin approval.
+    
+    IMPORTANT: This ONLY saves the proposal to bayesian_model_updates.
+    Weights are NOT used for calculations until admin explicitly approves.
+    
+    Args:
+        regime: 'BULL', 'BEAR', or 'SIDEWAYS'
+        proposed_version: e.g., 'v2'
+        current_version: e.g., 'v1' (what's currently live)
+        current_weights: dict of current active weights
+        proposed_weights: dict of new proposed weights
+        trades_analyzed: number of TRAIN trades analyzed
+        win_rate: win rate percentage (0.0-1.0)
+        reason: explanation of why weights changed
+    
+    Returns:
+        update_id (int) if successful, or None if failed
+        
+    Side effect: Inserts row into bayesian_model_updates with status='PENDING'
+    """
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Check if there's already a PENDING update for this regime
+                cur.execute("""
+                    SELECT id FROM bayesian_model_updates
+                    WHERE regime = %s AND status = 'PENDING'
+                    LIMIT 1
+                """, (regime,))
+                
+                pending = cur.fetchone()
+                if pending:
+                    logger.error(f"❌ BLOCKED: Already have PENDING update for {regime} regime (ID: {pending[0]})")
+                    logger.error(f"   Admin must approve/reject it before submitting a new proposal")
+                    return None
+                
+                # Insert the proposal with status='PENDING'
+                cur.execute("""
+                    INSERT INTO bayesian_model_updates (
+                        regime, proposed_version, current_version,
+                        current_weights, proposed_weights,
+                        trades_analyzed, win_rate, reason, status, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', NOW()::TEXT)
+                    RETURNING id
+                """, (
+                    regime,
+                    proposed_version,
+                    current_version,
+                    json.dumps(current_weights),
+                    json.dumps(proposed_weights),
+                    trades_analyzed,
+                    win_rate,
+                    reason
+                ))
+                
+                update_id = cur.fetchone()[0]
+                conn.commit()
+                
+                logger.info(f"✅ Bayesian update SUBMITTED for approval (ID: {update_id})")
+                logger.info(f"   Status: PENDING (awaiting admin review)")
+                logger.info(f"   Regime: {regime}")
+                logger.info(f"   Current version: {current_version}")
+                logger.info(f"   Proposed version: {proposed_version}")
+                logger.info(f"   Win rate: {win_rate:.1%} from {trades_analyzed} trades")
+                
+                return update_id
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to submit Bayesian update for approval: {e}")
+        return None
+
+
+def get_pending_bayesian_updates() -> list:
+    """Get all PENDING Bayesian updates awaiting admin approval."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, regime, proposed_version, current_version,
+                           current_weights, proposed_weights,
+                           trades_analyzed, win_rate, reason, created_at
+                    FROM bayesian_model_updates
+                    WHERE status = 'PENDING'
+                    ORDER BY created_at DESC
+                """)
+                
+                updates = []
+                for row in cur.fetchall():
+                    row_dict = dict(row)
+                    # Parse JSON fields
+                    row_dict['current_weights'] = json.loads(row_dict['current_weights'])
+                    row_dict['proposed_weights'] = json.loads(row_dict['proposed_weights'])
+                    updates.append(row_dict)
+                
+                return updates
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch pending Bayesian updates: {e}")
+        return []
+
+
+def approve_bayesian_update(update_id: int, admin_name: str, comment: str = "") -> bool:
+    """
+    ADMIN APPROVES a Bayesian update. Weights are NOW applied to all future scanners.
+    
+    WORKFLOW:
+    1. Update bayesian_model_updates status to APPROVED
+    2. INSERT proposed_weights into score_weight_log (makes them LIVE)
+    3. Future scanners will use these weights via get_current_bayesian_model()
+    
+    Args:
+        update_id: ID of the bayesian_model_updates row
+        admin_name: Admin user who approved
+        comment: Optional approval comment
+    
+    Returns:
+        True if approval successful, False otherwise
+    """
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Fetch the pending update details
+                cur.execute("""
+                    SELECT regime, proposed_version, proposed_weights, trades_analyzed, win_rate
+                    FROM bayesian_model_updates
+                    WHERE id = %s AND status = 'PENDING'
+                """, (update_id,))
+                
+                row = cur.fetchone()
+                if not row:
+                    logger.error(f"❌ Update {update_id} not found or already processed")
+                    return False
+                
+                regime, proposed_version, proposed_weights_json, trades_analyzed, win_rate = row
+                
+                # Parse the weights
+                proposed_weights = json.loads(proposed_weights_json) if isinstance(proposed_weights_json, str) else proposed_weights_json
+                
+                # Step 1: Insert into score_weight_log (MAKES WEIGHTS LIVE)
+                cur.execute("""
+                    INSERT INTO score_weight_log (model_version, regime, weights, created_at)
+                    VALUES (%s, %s, %s, NOW()::TEXT)
+                """, (proposed_version, regime, json.dumps(proposed_weights)))
+                
+                # Step 2: Update bayesian_model_updates to APPROVED
+                cur.execute("""
+                    UPDATE bayesian_model_updates
+                    SET status = 'APPROVED', approved_by = %s, approved_at = NOW()::TEXT,
+                        admin_comment = %s, applied_at = NOW()::TEXT
+                    WHERE id = %s
+                """, (admin_name, comment, update_id))
+                
+                conn.commit()
+                
+                logger.info(f"✅ APPROVED: Bayesian Update ID {update_id}")
+                logger.info(f"   Admin: {admin_name}")
+                logger.info(f"   Regime: {regime}")
+                logger.info(f"   New version: {proposed_version} NOW LIVE")
+                logger.info(f"   Weights inserted into score_weight_log")
+                logger.info(f"   Future scanners will use this version")
+                
+                return True
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to approve Bayesian update {update_id}: {e}")
+        return False
+
+
+def reject_bayesian_update(update_id: int, admin_name: str, reason: str = "") -> bool:
+    """
+    ADMIN REJECTS a Bayesian update. Weights are NOT applied.
+    
+    Args:
+        update_id: ID of the bayesian_model_updates row
+        admin_name: Admin user who rejected
+        reason: Why it was rejected
+    
+    Returns:
+        True if rejection successful, False otherwise
+    """
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE bayesian_model_updates
+                    SET status = 'REJECTED', approved_by = %s, rejected_at = NOW()::TEXT,
+                        admin_comment = %s
+                    WHERE id = %s AND status = 'PENDING'
+                """, (admin_name, reason, update_id))
+                
+                if cur.rowcount == 0:
+                    logger.error(f"❌ Update {update_id} not found or already processed")
+                    return False
+                
+                conn.commit()
+                
+                logger.info(f"✅ REJECTED: Bayesian Update ID {update_id}")
+                logger.info(f"   Admin: {admin_name}")
+                logger.info(f"   Reason: {reason or '(none provided)'}")
+                logger.info(f"   Current weights remain unchanged")
+                
+                return True
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to reject Bayesian update {update_id}: {e}")
+        return False
+
+
+def get_bayesian_update_history(regime: str = None, limit: int = 20) -> list:
+    """Get approval history for Bayesian updates."""
+    init_db()
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if regime:
+                    cur.execute("""
+                        SELECT id, regime, proposed_version, current_version,
+                               trades_analyzed, win_rate, status, approved_by,
+                               approved_at, rejected_at, admin_comment, created_at
+                        FROM bayesian_model_updates
+                        WHERE regime = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """, (regime, limit))
+                else:
+                    cur.execute("""
+                        SELECT id, regime, proposed_version, current_version,
+                               trades_analyzed, win_rate, status, approved_by,
+                               approved_at, rejected_at, admin_comment, created_at
+                        FROM bayesian_model_updates
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """, (limit,))
+                
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch Bayesian update history: {e}")
+        return []

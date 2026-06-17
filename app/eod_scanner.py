@@ -13,8 +13,6 @@ from datetime import datetime, date
 from technical_indicators import apply_indicators
 from breakout_engine import detect_breakouts
 from scoring_engine import calculate_score
-from telegram_engine import send_telegram_message
-from message_formatter import build_message
 from database import init_db, save_alert_if_new, upsert_fetch_error
 from delivery_data import fetch_delivery_data
 from price_cache import fetch_watchlist_data
@@ -348,7 +346,7 @@ def start():
                 )
 
 
-                score, model_version = calculate_score(
+                score, model_version, bayesian_weights = calculate_score(
                     category=category,
                     breakout_count=len(signals),
                     rsi=rsi_val,
@@ -361,6 +359,7 @@ def start():
                     atr_val=atr_val_eod,
                     delivery_pct=delivery_pct,
                     min_vol=MIN_AVG_VOLUME_SHARES,
+                    regime="BULL"
                 )
 
                 if score > 0:
@@ -452,7 +451,9 @@ def start():
                     stop_loss=suggested_stop,
                     target_price=target_price,
                     context=context,
-                    model_version=model_version
+                    model_version=model_version,
+                    bayesian_regime="BULL",
+                    bayesian_weights=bayesian_weights
                 )
                 if not saved:
                     rejection_counts["duplicate"] += 1
@@ -504,22 +505,8 @@ def start():
 
         scan_time = ist_now.strftime("%Y-%m-%d %H:%M:%S")
 
-        if total_alerts > 0:
-            for cat in sorted(alerts_by_category.keys()):
-                cat_alerts = sorted(alerts_by_category[cat], key=lambda x: x["score"], reverse=True)
-                chunks     = [cat_alerts[i:i + CHUNK_SIZE] for i in range(0, len(cat_alerts), CHUNK_SIZE)]
-                for chunk_num, chunk in enumerate(chunks, start=1):
-                    msg = build_message("EOD", cat, chunk, chunk_num, len(chunks), scan_time)
-                    send_telegram_message(msg, scan_type="EOD")
-
-        # ── SEND DAILY CONSOLIDATED SUMMARY EMAIL ────────────────────────────────
-        try:
-            from daily_report import generate_and_send_daily_summary
-            logger.info("📧 Compiling daily comprehensive email report payload...")
-            generate_and_send_daily_summary()
-        except Exception as e:
-            logger.error(f"❌ Failed to dispatch daily summary mail package: {e}")
-        # ────────────────────────────────────────────────────────────────────────
+        # ── VERIFICATION & STATUS ────────────────────────────────────────────────────
+        # Removed Telegram notifications (2026-06-17)
 
         fired = {k: v for k, v in rejection_counts.items() if v > 0}
         if fired:
