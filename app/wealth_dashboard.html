@@ -369,7 +369,7 @@
     <div id="scroll-buy" class="section-title" style="margin-top:0; color:var(--green);">✅ Active Buy Signals <span id="buy-count">0</span> <span>Score ≥ 85 · above 200 SMA</span></div>
     <div class="table-container">
       <table id="tbl-buy">
-        <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Bucket</th><th>Sector</th></tr></thead>
+        <thead><tr><th>Stock</th><th>CMP</th><th>Score</th><th>Alloc %</th><th>Amount (₹)</th><th>RS (6M)</th><th>ROCE %</th><th>ROE %</th><th>YoY Profit</th><th>FCF</th><th>Bucket</th><th>Sector</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -434,6 +434,8 @@
           <th>Alert Date</th>
           <th>Alert Price</th>
           <th>Current Price</th>
+          <th>Alloc %</th>
+          <th>PnL (₹)</th>
           <th>Return %</th>
           <th>Type</th>
           <th>Score</th>
@@ -834,6 +836,8 @@
             <td class="sym">${r.Stock}</td>
             <td class="mono">₹${fmt(r.cmp)}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
+            <td class="mono" style="color:var(--accent); font-weight:bold;">${r.position_pct ? r.position_pct + '%' : '-'}</td>
+            <td class="mono" style="color:var(--green); font-weight:bold;">${r.position_amount ? '₹' + r.position_amount.toLocaleString('en-IN') : '-'}</td>
             <td class="mono ${getRsCls(r.rs_6m)}">${fmt(r.rs_6m)}%</td>
             <td class="mono">${fmt(r['ROCE %'])}%</td>
             <td class="mono">${fmt(r['ROE %'])}%</td>
@@ -842,7 +846,7 @@
             <td>${bucketTag(r.Portfolio_Bucket)}</td>
             <td>${sectorTag(r.Sector)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="10" class="empty">No active buy signals — wait for score ≥ 85 with price above 200 SMA</td></tr>`;
+        `).join('') : `<tr><td colspan="12" class="empty">No active buy signals — wait for score ≥ 85 with price above 200 SMA</td></tr>`;
 
         // Sells Table
         const sells = stocks.filter(s => (s.Signal || "").includes("SELL")).sort((a,b) => (a.FM_Score || 0) - (b.FM_Score || 0));
@@ -1023,14 +1027,22 @@
         const breakoutType = alert.breakout_type || '-';
         const fmScore = alert.fm_score ? alert.fm_score.toFixed(1) : '-';
         const alertDate = alert.alert_date || '-';
-        const alertTime = alert.alert_time ? alert.alert_time.split('T')[1]?.substring(0, 5) : '';
+        const alertTime = alert.alert_time ? (alert.alert_time.includes('T') ? alert.alert_time.split('T')[1].substring(0, 5) : alert.alert_time.substring(0, 5)) : '';
         
+        const posPct = alert.position_pct ? alert.position_pct + '%' : '-';
+        const posAmt = parseFloat(alert.position_amount) || 0;
+        const pnlRs = alertPrice > 0 && posAmt > 0 ? (posAmt * (currentPrice - alertPrice) / alertPrice) : 0;
+        const pnlRsFmt = posAmt > 0 ? (pnlRs >= 0 ? '+' : '') + '₹' + Math.abs(pnlRs).toLocaleString('en-IN', {maximumFractionDigits:0}) : '-';
+        const pnlRsColor = pnlRs > 0 ? 'var(--green)' : pnlRs < 0 ? 'var(--red)' : 'var(--muted)';
+
         return `
           <tr>
             <td class="sym"><strong>${symbol}</strong></td>
             <td class="mono">${alertDate} ${alertTime}</td>
             <td class="mono">₹${alertPrice.toFixed(2)}</td>
             <td class="mono">₹${currentPrice > 0 ? currentPrice.toFixed(2) : '-'}</td>
+            <td class="mono" style="color:var(--accent); font-weight:bold;">${posPct}</td>
+            <td class="mono" style="color: ${pnlRsColor}; font-weight: 600;">${pnlRsFmt}</td>
             <td class="mono" style="color: ${returnColor}; font-weight: 600;">${returnPct}%</td>
             <td>${breakoutType}</td>
             <td><span class="score-badge ${getScoreCls(fmScore)}">${fmScore}</span></td>

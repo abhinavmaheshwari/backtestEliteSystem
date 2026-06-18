@@ -2022,7 +2022,9 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
     """Save BUY alert to wealth_buy_alert with position sizing. Deduplicates by (symbol, alert_date, breakout_type)."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    ist_today = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
+    now_ist = datetime.now(ZoneInfo('Asia/Kolkata'))
+    ist_today = now_ist.strftime('%Y-%m-%d')
+    ist_time = now_ist.strftime('%H:%M:%S')
     
     try:
         with get_connection() as conn:
@@ -2038,13 +2040,13 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
                     logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
                     return False  # Duplicate, skip
                 
-                # New alert - insert it with position sizing data
+                # New alert - insert it with position sizing data and explicit IST time
                 cur.execute("""
                     INSERT INTO wealth_buy_alert 
-                    (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date,
+                    (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date, alert_time,
                      position_pct, position_amount, portfolio_bucket, valuation_score)
-                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s)
-                """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today,
+                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s, %s)
+                """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today, ist_time,
                       position_pct, position_amount, portfolio_bucket, valuation_score))
                 conn.commit()
         
