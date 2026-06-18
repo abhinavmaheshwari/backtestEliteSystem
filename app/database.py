@@ -436,6 +436,7 @@ def init_db():
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS pnl_pct REAL")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS position_pct REAL")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS position_amount REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS position_shares INTEGER")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS portfolio_bucket TEXT")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS valuation_score REAL")
                 
@@ -2018,6 +2019,7 @@ def get_bayesian_update_history(regime: str = None, limit: int = 20) -> list:
 def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = None, 
                          fm_score: float = None, notes: str = None,
                          position_pct: float = None, position_amount: float = None,
+                         position_shares: int = None,
                          portfolio_bucket: str = None, valuation_score: float = None) -> bool:
     """Save BUY alert to wealth_buy_alert with position sizing. Deduplicates by (symbol, alert_date, breakout_type)."""
     from datetime import datetime
@@ -2044,10 +2046,10 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
                 cur.execute("""
                     INSERT INTO wealth_buy_alert 
                     (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date, alert_time,
-                     position_pct, position_amount, portfolio_bucket, valuation_score)
-                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s, %s)
+                     position_pct, position_amount, position_shares, portfolio_bucket, valuation_score)
+                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today, ist_time,
-                      position_pct, position_amount, portfolio_bucket, valuation_score))
+                      position_pct, position_amount, position_shares, portfolio_bucket, valuation_score))
                 conn.commit()
         
         msg = f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type}) | Score: {fm_score}"

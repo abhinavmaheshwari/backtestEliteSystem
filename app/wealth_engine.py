@@ -744,9 +744,12 @@ def run_wealth_scan():
                 sizing = position_size_calculator(fm_score, bucket)
                 r["position_pct"] = sizing["position_pct"]
                 r["position_amount"] = sizing["position_amount"]
+                cmp = r.get("cmp", 0)
+                r["position_shares"] = int(sizing["position_amount"] / cmp) if cmp and cmp > 0 else 0
             else:
                 r["position_pct"] = None
                 r["position_amount"] = None
+                r["position_shares"] = None
             return r
         
         wealth_df = wealth_df.apply(calculate_position_sizing, axis=1)
@@ -769,6 +772,7 @@ def run_wealth_scan():
                 position_amount = row.get("position_amount")
                 portfolio_bucket = row.get("Portfolio_Bucket", "Unknown")
                 valuation_score = row.get("Valuation_Score", 0)
+                position_shares = int(position_amount / cmp) if cmp and cmp > 0 and position_amount else 0
                 if symbol and cmp:
                     save_wealth_buy_alert(
                         symbol, 
@@ -777,6 +781,7 @@ def run_wealth_scan():
                         fm_score=fm_score,
                         position_pct=position_pct,
                         position_amount=position_amount,
+                        position_shares=position_shares,
                         portfolio_bucket=portfolio_bucket,
                         valuation_score=valuation_score
                     )
