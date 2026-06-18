@@ -2429,8 +2429,8 @@ function renderWatchlist() {
           <td style="text-align:right">${d['Market Cap Cr'] ? d['Market Cap Cr'].toLocaleString('en-IN') : '-'}</td>
           <td>${catsHtml}</td>
           <td style="text-align:right; font-weight:600;">${d['Fundamental Score'] || 0}</td>
-          <td style="text-align:right; color:${d['ROE %'] < 0 ? 'var(--loss)' : 'var(--win)'}; font-weight:700;">${d['ROE %'] ? Number(d['ROE %']).toFixed(1) + '%' : '-'}</td>
-          <td style="text-align:right; color:${d['YOY Profit %'] < 0 ? 'var(--loss)' : 'var(--win)'}; font-weight:700;">${d['YOY Profit %'] ? Number(d['YOY Profit %']).toFixed(1) + '%' : '-'}</td>
+          <td style="text-align:right; color:${parseFloat(d['ROE %']) < 0 ? 'var(--loss)' : 'var(--win)'}; font-weight:700;">${d['ROE %'] ? Number(d['ROE %']).toFixed(1) + '%' : '-'}</td>
+          <td style="text-align:right; color:${parseFloat(d['YOY Profit %']) < 0 ? 'var(--loss)' : 'var(--win)'}; font-weight:700;">${d['YOY Profit %'] ? Number(d['YOY Profit %']).toFixed(1) + '%' : '-'}</td>
         </tr>`;
     }).join('');
 }
