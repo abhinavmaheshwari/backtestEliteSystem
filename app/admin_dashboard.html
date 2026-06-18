@@ -2802,10 +2802,14 @@ function closeAdminChat() {
     }
 }
 
+function getChatApiBase() {
+    return window.location.protocol === 'file:' ? 'https://elitebreakoutsystem-production.up.railway.app' : '';
+}
+
 async function markMessagesAsReadAdmin() {
     if (!currentChatUser) return;
     try {
-        await fetch('/api/messages/read', {
+        await fetch(`${getChatApiBase()}/api/messages/read`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ user: currentChatUser, as_admin: true })
@@ -2816,7 +2820,7 @@ async function markMessagesAsReadAdmin() {
 async function fetchAdminChatMessages() {
     if (!currentChatUser) return;
     try {
-        const res = await fetch(`/api/messages?user=${encodeURIComponent(currentChatUser)}`);
+        const res = await fetch(`${getChatApiBase()}/api/messages?user=${encodeURIComponent(currentChatUser)}`);
         if (!res.ok) return;
         const messages = await res.json();
         
@@ -2871,7 +2875,7 @@ async function sendAdminChatMessage() {
     input.value = '';
     
     try {
-        await fetch('/api/messages', {
+        await fetch(`${getChatApiBase()}/api/messages`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ user: currentChatUser, message: msg, is_from_admin: true })

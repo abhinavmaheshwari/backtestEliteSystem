@@ -1668,11 +1668,15 @@ function toggleChat() {
   }
 }
 
+function getChatApiBase() {
+  return window.location.protocol === 'file:' ? 'https://elitebreakoutsystem-production.up.railway.app' : '';
+}
+
 async function markMessagesAsRead() {
   const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
   document.getElementById('chat-unread-badge').style.display = 'none';
   try {
-    await fetch('/api/messages/read', {
+    await fetch(`${getChatApiBase()}/api/messages/read`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ user: viewerName, as_admin: false })
@@ -1683,7 +1687,7 @@ async function markMessagesAsRead() {
 async function fetchChatMessages() {
   const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
   try {
-    const res = await fetch(`/api/messages?user=${encodeURIComponent(viewerName)}`);
+    const res = await fetch(`${getChatApiBase()}/api/messages?user=${encodeURIComponent(viewerName)}`);
     if (!res.ok) return;
     const messages = await res.json();
     
@@ -1755,7 +1759,7 @@ async function sendChatMessage() {
   const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
   
   try {
-    await fetch('/api/messages', {
+    await fetch(`${getChatApiBase()}/api/messages`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ user: viewerName, message: msg, is_from_admin: false })
