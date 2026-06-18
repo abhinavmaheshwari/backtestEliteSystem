@@ -1309,7 +1309,7 @@ function triggerAlertFlashing() {
     // Flash Title
     let toggle = false;
     userAlertInterval = setInterval(() => {
-        document.title = toggle ? '⚠️ NEW ALERT!' : 'Elite Breakout System';
+        document.title = toggle ? '⚠️ SYSTEM UPDATE!' : 'Elite Breakout System';
         toggle = !toggle;
     }, 1000);
 }
@@ -1333,19 +1333,26 @@ async function doRefresh(isAuto = false) {
   
   // Alert Diffing Logic
   if (isAuto && data.trades && ALL_TRADES.length > 0) {
-      const oldKeys = new Set(ALL_TRADES.map(t => t.symbol + '|' + (t.alert_time||t.entry_date)));
-      let hasNew = false;
+      const oldTradesMap = new Map(ALL_TRADES.map(t => [t.symbol + '|' + (t.alert_time||t.entry_date), t]));
+      let hasUpdate = false;
       for (const t of data.trades) {
-          if (t.status === 'OPEN' && !oldKeys.has(t.symbol + '|' + (t.alert_time||t.entry_date))) {
-              // Found a new open trade not in the old dataset!
+          const key = t.symbol + '|' + (t.alert_time||t.entry_date);
+          const oldT = oldTradesMap.get(key);
+          
+          if (!oldT && t.status === 'OPEN') {
+              // Found a new open trade not in the old dataset
               const ageHours = (new Date() - new Date((t.alert_time||t.entry_date).replace(' ','T'))) / (1000 * 60 * 60);
-              if (ageHours < 2) { // Only flash if it's actually recent (< 2 hrs old)
-                  hasNew = true;
+              if (ageHours < 2) {
+                  hasUpdate = true;
                   break;
               }
+          } else if (oldT && oldT.status === 'OPEN' && t.status !== 'OPEN') {
+              // Existing trade was just closed by the system
+              hasUpdate = true;
+              break;
           }
       }
-      if (hasNew) {
+      if (hasUpdate) {
           triggerAlertFlashing();
       }
   }

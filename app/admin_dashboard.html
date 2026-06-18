@@ -1967,7 +1967,18 @@ let originalTitle = document.title;
 let isAlertActive = false;
 
 function triggerAlertFlashing() {
-    // Disabled per user request
+    if(isAlertActive) return;
+    isAlertActive = true;
+    
+    // Play Audio (if permitted)
+    if (typeof playLoudNotificationSound === 'function') playLoudNotificationSound();
+    
+    // Flash Title
+    let toggle = false;
+    adminAlertInterval = setInterval(() => {
+        document.title = toggle ? '⚠️ SYSTEM UPDATE!' : 'Elite Breakout System Admin';
+        toggle = !toggle;
+    }, 1000);
 }
 
 function dismissAlert() {
@@ -1989,19 +2000,25 @@ async function doRefresh(isAuto = false) {
   
   // Alert Diffing Logic
   if (isAuto && data.trades && ALL_TRADES.length > 0) {
-      const oldKeys = new Set(ALL_TRADES.map(t => t.symbol + '|' + (t.alert_time||t.entry_date)));
-      let hasNew = false;
+      const oldTradesMap = new Map(ALL_TRADES.map(t => [t.symbol + '|' + (t.alert_time||t.entry_date), t]));
+      let hasUpdate = false;
       for (const t of data.trades) {
-          if (t.status === 'OPEN' && !oldKeys.has(t.symbol + '|' + (t.alert_time||t.entry_date))) {
+          const key = t.symbol + '|' + (t.alert_time||t.entry_date);
+          const oldT = oldTradesMap.get(key);
+          
+          if (!oldT && t.status === 'OPEN') {
               const ageHours = (new Date() - new Date((t.alert_time||t.entry_date).replace(' ','T'))) / (1000 * 60 * 60);
               if (ageHours < 2) {
-                  hasNew = true;
+                  hasUpdate = true;
                   break;
               }
+          } else if (oldT && oldT.status === 'OPEN' && t.status !== 'OPEN') {
+              hasUpdate = true;
+              break;
           }
       }
-      if (hasNew) {
-        // No longer triggering toast or audio as per user request
+      if (hasUpdate) {
+          triggerAlertFlashing();
       }
   }
 
