@@ -43,8 +43,10 @@ WATCHLIST_PATH = os.path.join(DATA_DIR, "elite_fundamental_watchlist.parquet")
 DB_PATH = os.path.join(DATA_DIR, "alerts.db")
 
 # =====================================================================================
-# SCORE THRESHOLDS
+# SCORE THRESHOLDS & AI
 # =====================================================================================
+
+ENABLE_AI_SENTIMENT_SCORE = True  # Set False to disable experimental AI sentiment scoring for audit/backtest runs
 
 SCORE_THRESHOLDS = {
     "15m": 78,

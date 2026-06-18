@@ -14,7 +14,10 @@ except Exception:
     except Exception:
         pass
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, date
+
+from database import get_db_connection
+from config import ENABLE_AI_SENTIMENT_SCORE
 from collections import defaultdict
 import concurrent.futures
 from pledge_scraper import fetch_promoter_pledge
@@ -195,7 +198,7 @@ def calculate_valuation_score(r, sector_stats: dict = None) -> int:
 
 def position_size_calculator(fm_score: int, portfolio_bucket: str, portfolio_total: float = 10_000_000) -> dict:
     """
-    Kelly-inspired position sizing formula.
+    Conviction-Proportional Sizing formula.
     
     Args:
         fm_score: 0-100 score
@@ -206,7 +209,7 @@ def position_size_calculator(fm_score: int, portfolio_bucket: str, portfolio_tot
         {
             "position_pct": 2.5,  # % of portfolio
             "position_amount": 250000,  # Rupees
-            "kelly_adjusted": True,
+            "conviction_adjusted": True,
             "rationale": "Score 82 Core = 2.5% allocation"
         }
     """
@@ -219,12 +222,12 @@ def position_size_calculator(fm_score: int, portfolio_bucket: str, portfolio_tot
     
     base = base_pct.get(portfolio_bucket, 0.025)
     
-    # Kelly multiplier: Adjust by how strong the score is
+    # Conviction multiplier: Adjust by how strong the score is
     # At FM_Score=60 (minimum): 0.5x multiplier (conservative)
     # At FM_Score=100 (perfect): 1.0x multiplier (full allocation)
-    kelly_multiplier = max(0.5, (fm_score - 60) / 40)
+    conviction_multiplier = max(0.5, (fm_score - 60) / 40)
     
-    raw_pct = base * kelly_multiplier
+    raw_pct = base * conviction_multiplier
     
     # Hard cap at 5% per position (risk management)
     position_pct = min(raw_pct, 0.05)
@@ -233,8 +236,8 @@ def position_size_calculator(fm_score: int, portfolio_bucket: str, portfolio_tot
     return {
         "position_pct": round(position_pct * 100, 2),
         "position_amount": round(position_amount, 0),
-        "kelly_multiplier": round(kelly_multiplier, 2),
-        "rationale": f"Score {fm_score} {portfolio_bucket} = {round(position_pct * 100, 2)}% (Kelly: {round(kelly_multiplier, 2)}x)"
+        "conviction_multiplier": round(conviction_multiplier, 2),
+        "rationale": f"Score {fm_score} {portfolio_bucket} = {round(position_pct * 100, 2)}% (Conviction: {round(conviction_multiplier, 2)}x)"
     }
 
 
@@ -287,7 +290,9 @@ def calculate_100_point_score(r) -> int:
 
     # RS Rating buckets (only if available)
     if rs_rating is not None:
-        if rs_rating > 90: score += 8   # Reduced from 12
+        # Only the RS_Rating bonus requires the absolute momentum gate
+        if rs_rating > 90 and sma_200 is not None and cmp_price > sma_200 and sma_200 > 0: 
+            score += 8   # Reduced from 12
         elif rs_rating > 80: score += 5  # Reduced from 8
         elif rs_rating > 60: score += 2  # Reduced from 4
 
@@ -319,13 +324,14 @@ def calculate_100_point_score(r) -> int:
         score += 0
 
     # ── AI SENTIMENT (+5 or -5 pts) — Based on management guidance ───────────
-    ai_conf = r.get("AI_Confidence", 0)
-    if ai_conf >= 8:
-        score += 5   # Upward guidance / Record margins
-    elif ai_conf == 7:
-        score += 2   # Solid / Consistent guidance
-    elif 1 <= ai_conf <= 4:
-        score -= 5   # Headwinds / Guidance cuts
+    if ENABLE_AI_SENTIMENT_SCORE:
+        ai_conf = r.get("AI_Confidence", 0)
+        if ai_conf >= 8:
+            score += 5   # Upward guidance / Record margins
+        elif ai_conf == 7:
+            score += 2   # Solid / Consistent guidance
+        elif 1 <= ai_conf <= 4:
+            score -= 5   # Headwinds / Guidance cuts
 
     return min(100, score)
 
@@ -430,7 +436,7 @@ def calculate_hold_score(r: pd.Series) -> int:
     Evaluates existing holdings based on a 100-point exit rubric.
     Score < 45 = SELL REVIEW
     
-    NEW: Includes drawdown circuit breaker (hard stop at 30% loss).
+    NEW: Includes drawdown circuit breaker (hard stop at 20% loss).
     """
     score = 0
     
@@ -441,12 +447,12 @@ def calculate_hold_score(r: pd.Series) -> int:
     if entry_price > 0 and cmp > 0:
         drawdown_pct = ((entry_price - cmp) / entry_price) * 100
         
-        # CATASTROPHIC STOP: >30% loss
-        if drawdown_pct > 30:
+        # CATASTROPHIC STOP: >20% loss (Unconditional early return)
+        if drawdown_pct > 20:
             return 0  # Instant SELL signal (Hold_Score = 0 < 45)
         
-        # WARNING: >20% loss  
-        if drawdown_pct > 20:
+        # WARNING: >10% loss  
+        if drawdown_pct > 10:
             score -= 25  # Force below 45 → SELL REVIEW
     
     # 2. Technical Health (40 pts)

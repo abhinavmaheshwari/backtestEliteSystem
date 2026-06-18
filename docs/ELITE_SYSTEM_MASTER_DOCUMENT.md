@@ -153,11 +153,11 @@ Runs every 30 minutes. Generates `FM_Score` (Fund Manager Score) and assigns buc
 - **Cash Flow Quality (10 pts)**: FCF Margin >= (OPM * 0.5) (+10). *Rationale*: Validates that Operating Profits are backed by actual cash, catching Satyam/DHFL-type aggressive revenue recognition.
 - **AI Sentiment (±5 pts)**: AI Confidence >= `8` (+5), AI Confidence <= `4` (-5).
 
-### 5.2 Dynamic Position Sizing (Kelly Criterion)
+### 5.2 Dynamic Position Sizing (Conviction-Proportional Sizing)
 The system calculates the exact ₹ capital to allocate based on conviction.
-- **Logic**: `Kelly Multiplier = MAX(0.5, (FM_Score - 60) / 40)`
+- **Logic**: `Conviction Multiplier = MAX(0.5, (FM_Score - 60) / 40)`
 - **Base Allocations**: Core Bucket = 3%, Growth = 4%, Opportunistic = 1.5%.
-- **Final Allocation**: `Position_PCT = MIN(Base * Kelly_Multiplier, 0.05)`
+- **Final Allocation**: `Position_PCT = MIN(Base * Conviction_Multiplier, 0.05)`
 - *Rationale*: Maximum capital (up to 5% cap) goes to 90-100 score stocks, while aggressively tapering capital for borderline setups (scores 60-70).
 
 ### 5.3 Hold Score & Tax-Loss Harvesting (Exits)
