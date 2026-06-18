@@ -819,10 +819,12 @@ def run_wealth_scan():
                             symbol_row = wealth_df[wealth_df["Stock"] == symbol]
                             current_score = None
                             if not symbol_row.empty:
-                                current_score = symbol_row.iloc[0].get("Hold_Score")
+                                val = symbol_row.iloc[0].get("Hold_Score")
+                                if pd.notna(val):
+                                    current_score = float(val)
 
                             if current_price and current_price > 0:
-                                realtime_metrics[symbol] = {"price": current_price, "score": current_score}
+                                realtime_metrics[symbol] = {"price": float(current_price), "score": current_score}
                         except Exception:
                             pass  # Skip symbols that fail price fetch
                 
