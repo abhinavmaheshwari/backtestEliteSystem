@@ -42,6 +42,8 @@ from psycopg2.extras import RealDictCursor
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
+_DB_WRITE_LOCK = threading.RLock()
+
 # ── Connection pool ───────────────────────────────────────────────────────────────────
 _pool: Optional[pool.ThreadedConnectionPool] = None
 _pool_lock = threading.Lock()
@@ -447,6 +449,7 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_date ON wealth_buy_alert(alert_date)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_is_closed ON wealth_buy_alert(is_closed)")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_wealth_alert ON wealth_buy_alert(symbol, alert_date, COALESCE(breakout_type, ''))")
 
                 # ── Users & Sessions Tables ──
                 cur.execute("""
@@ -535,27 +538,32 @@ def save_alert_if_new(
         else:
             capital_allocated, shares_bought = 0.0, 0
             
-    with get_connection() as conn:
-        with conn.cursor() as cur:
+    with _DB_WRITE_LOCK:
+        with get_connection() as conn:
+            success = False
             try:
-                cur.execute("""
-                    INSERT INTO alerts
-                        (symbol, breakout_type, alert_time, scanner, category,
-                         entry_price, stop_loss, target_price, signals, score,
-                         rsi, volume_ratio, status, context, capital_allocated, shares_bought,
-                         model_version, bayesian_regime, bayesian_weights, data_partition)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
-                """, (symbol, breakout_type, alert_time, scanner, category,
-                      entry_price, stop_loss, target_price, signals, score,
-                      rsi, volume_ratio, context_str, capital_allocated, shares_bought,
-                      model_version, bayesian_regime, weights_str, data_partition))
-                conn.commit()
-                return cur.rowcount > 0, capital_allocated, shares_bought
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO alerts
+                            (symbol, breakout_type, alert_time, scanner, category,
+                             entry_price, stop_loss, target_price, signals, score,
+                             rsi, volume_ratio, status, context, capital_allocated, shares_bought,
+                             model_version, bayesian_regime, bayesian_weights, data_partition)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (symbol, breakout_type, alert_date) DO NOTHING
+                    """, (symbol, breakout_type, alert_time, scanner, category,
+                          entry_price, stop_loss, target_price, signals, score,
+                          rsi, volume_ratio, context_str, capital_allocated, shares_bought,
+                          model_version, bayesian_regime, weights_str, data_partition))
+                    conn.commit()
+                    success = True
+                    return cur.rowcount > 0, capital_allocated, shares_bought
             except Exception:
-                conn.rollback()
                 logger.exception(f"❌ save_alert_if_new failed for {symbol}")
                 return False, 0.0, 0
+            finally:
+                if not success:
+                    conn.rollback()
 
 
 def update_alert_outcome(
@@ -573,25 +581,30 @@ def update_alert_outcome(
     """
     if closed_at is None:
         closed_at = datetime.now(IST).isoformat()
-    with get_connection() as conn:
-        with conn.cursor() as cur:
+    with _DB_WRITE_LOCK:
+        with get_connection() as conn:
+            success = False
             try:
-                cur.execute("""
-                    UPDATE alerts
-                    SET status     = %s,
-                        exit_price = %s,
-                        pnl_pct    = %s,
-                        pnl_rs     = %s,
-                        closed_at  = %s
-                    WHERE id = %s
-                      AND status = 'OPEN'   -- never overwrite an already-closed row
-                """, (status, exit_price, pnl_pct, pnl_rs, closed_at, alert_id))
-                conn.commit()
-                if cur.rowcount:
-                    logger.info(f"🔒 Alert {alert_id} locked as {status} | exit={exit_price} pnl={pnl_pct}%")
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE alerts
+                        SET status     = %s,
+                            exit_price = %s,
+                            pnl_pct    = %s,
+                            pnl_rs     = %s,
+                            closed_at  = %s
+                        WHERE id = %s
+                          AND status = 'OPEN'   -- never overwrite an already-closed row
+                    """, (status, exit_price, pnl_pct, pnl_rs, closed_at, alert_id))
+                    conn.commit()
+                    success = True
+                    if cur.rowcount:
+                        logger.info(f"🔒 Alert {alert_id} locked as {status} | exit={exit_price} pnl={pnl_pct}%")
             except Exception:
-                conn.rollback()
                 logger.exception(f"❌ update_alert_outcome failed for alert_id={alert_id}")
+            finally:
+                if not success:
+                    conn.rollback()
 
 
 def get_all_alerts() -> list[dict]:
@@ -2066,38 +2079,40 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
     ist_today = now_ist.strftime('%Y-%m-%d')
     ist_time = now_ist.strftime('%H:%M:%S')
     
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                # Use explicit IST date
-                cur.execute("""
-                    SELECT id FROM wealth_buy_alert 
-                    WHERE symbol = %s AND alert_date = %s AND breakout_type = %s
-                    LIMIT 1
-                """, (symbol, ist_today, breakout_type))
-                
-                if cur.fetchone():
-                    logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
-                    return False  # Duplicate, skip
-                
-                # New alert - insert it with position sizing data and explicit IST time
-                cur.execute("""
-                    INSERT INTO wealth_buy_alert 
-                    (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date, alert_time,
-                     position_pct, position_amount, position_shares, portfolio_bucket, valuation_score)
-                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today, ist_time,
-                      position_pct, position_amount, position_shares, portfolio_bucket, valuation_score))
-                conn.commit()
-        
-        msg = f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type}) | Score: {fm_score}"
-        if position_pct:
-            msg += f" | Size: {position_pct}% (₹{int(position_amount or 0)})"
-        logger.info(msg)
-        return True
-    except Exception as e:
-        logger.error(f"❌ Failed to save wealth buy alert: {e}")
-        return False
+    with _DB_WRITE_LOCK:
+        try:
+            with get_connection() as conn:
+                success = False
+                try:
+                    with conn.cursor() as cur:
+                        # New alert - insert it with position sizing data and explicit IST time (Atomic DO NOTHING)
+                        cur.execute("""
+                            INSERT INTO wealth_buy_alert 
+                            (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date, alert_time,
+                             position_pct, position_amount, position_shares, portfolio_bucket, valuation_score)
+                            VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (symbol, alert_date, COALESCE(breakout_type, '')) DO NOTHING
+                        """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today, ist_time,
+                              position_pct, position_amount, position_shares, portfolio_bucket, valuation_score))
+                        
+                        if cur.rowcount == 0:
+                            logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
+                            return False  # Duplicate, skip
+                            
+                        conn.commit()
+                        success = True
+                finally:
+                    if not success:
+                        conn.rollback()
+            
+            msg = f"✅ BUY alert saved: {symbol} @ ₹{alert_price} ({breakout_type}) | Score: {fm_score}"
+            if position_pct:
+                msg += f" | Size: {position_pct}% (₹{int(position_amount or 0)})"
+            logger.info(msg)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to save wealth buy alert: {e}")
+            return False
 
 
 def get_wealth_buy_alerts(symbol: str = None, days_back: int = 30) -> list:
@@ -2202,52 +2217,59 @@ def get_closed_positions(days_back: int = 30) -> list:
 
 def close_position(symbol: str, exit_price: float, exit_signal: str = None) -> bool:
     """Auto-close an open position when SELL signal detected."""
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                # Get the most recent OPEN position for this symbol
-                cur.execute("""
-                    SELECT id, alert_price FROM wealth_buy_alert 
-                    WHERE symbol = %s AND is_closed = FALSE
-                    ORDER BY alert_date DESC, alert_time DESC
-                    LIMIT 1
-                """, (symbol,))
-                
-                result = cur.fetchone()
-                if not result:
-                    logger.warning(f"⚠️  No open position found for {symbol}")
-                    return False
-                
-                position_id, entry_price = result[0], result[1]
-                
-                # Calculate P&L
-                pnl_rs = exit_price - entry_price
-                pnl_pct = (pnl_rs / entry_price * 100) if entry_price else 0
-                
-                now = datetime.now()
-                exit_date = now.strftime('%Y-%m-%d')
-                exit_time = now.strftime('%H:%M:%S')
-                
-                # Update position as closed
-                cur.execute("""
-                    UPDATE wealth_buy_alert 
-                    SET is_closed = TRUE, 
-                        exit_price = %s, 
-                        exit_date = %s, 
-                        exit_time = %s,
-                        exit_signal = %s,
-                        pnl_rs = %s,
-                        pnl_pct = %s,
-                        status = 'CLOSED'
-                    WHERE id = %s
-                """, (exit_price, exit_date, exit_time, exit_signal, pnl_rs, pnl_pct, position_id))
-                conn.commit()
-        
-        logger.info(f"✅ Position closed: {symbol} P&L: ₹{pnl_rs:.2f} ({pnl_pct:.2f}%)")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Failed to close position: {e}")
-        return False
+    with _DB_WRITE_LOCK:
+        try:
+            with get_connection() as conn:
+                success = False
+                try:
+                    with conn.cursor() as cur:
+                        # Get the most recent OPEN position for this symbol
+                        cur.execute("""
+                            SELECT id, alert_price FROM wealth_buy_alert 
+                            WHERE symbol = %s AND is_closed = FALSE
+                            ORDER BY alert_date DESC, alert_time DESC
+                            LIMIT 1
+                        """, (symbol,))
+                        
+                        result = cur.fetchone()
+                        if not result:
+                            logger.warning(f"⚠️  No open position found for {symbol}")
+                            return False
+                        
+                        position_id, entry_price = result[0], result[1]
+                        
+                        # Calculate P&L
+                        pnl_rs = exit_price - entry_price
+                        pnl_pct = (pnl_rs / entry_price * 100) if entry_price else 0
+                        
+                        now = datetime.now()
+                        exit_date = now.strftime('%Y-%m-%d')
+                        exit_time = now.strftime('%H:%M:%S')
+                        
+                        # Update position as closed
+                        cur.execute("""
+                            UPDATE wealth_buy_alert 
+                            SET is_closed = TRUE, 
+                                exit_price = %s, 
+                                exit_date = %s, 
+                                exit_time = %s,
+                                exit_signal = %s,
+                                pnl_rs = %s,
+                                pnl_pct = %s,
+                                status = 'CLOSED'
+                            WHERE id = %s
+                        """, (exit_price, exit_date, exit_time, exit_signal, pnl_rs, pnl_pct, position_id))
+                        conn.commit()
+                        success = True
+                finally:
+                    if not success:
+                        conn.rollback()
+            
+            logger.info(f"✅ Position closed: {symbol} P&L: ₹{pnl_rs:.2f} ({pnl_pct:.2f}%)")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to close position: {e}")
+            return False
 
 
 def get_open_symbols() -> list:
@@ -2292,27 +2314,34 @@ def update_position_real_time_prices(symbols_metrics: dict) -> int:
     Returns:
         Count of updated positions
     """
-    updated_count = 0
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                for symbol, metrics in symbols_metrics.items():
-                    price = metrics.get("price")
-                    score = metrics.get("score")
-                    
-                    if symbol and price is not None and price > 0:
-                        cur.execute("""
-                            UPDATE wealth_buy_alert 
-                            SET current_price = %s, current_score = %s, status_updated_at = now()::TEXT
-                            WHERE symbol = %s AND is_closed = FALSE
-                        """, (price, score, symbol))
-                        updated_count += cur.rowcount
-                conn.commit()
-        logger.info(f"✅ Updated {updated_count} position(s) with real-time metrics")
-        return updated_count
-    except Exception as e:
-        logger.error(f"❌ Failed to update real-time prices: {e}")
-        return 0
+    with _DB_WRITE_LOCK:
+        updated_count = 0
+        try:
+            with get_connection() as conn:
+                success = False
+                try:
+                    with conn.cursor() as cur:
+                        for symbol, metrics in symbols_metrics.items():
+                            price = metrics.get("price")
+                            score = metrics.get("score")
+                            
+                            if symbol and price is not None and price > 0:
+                                cur.execute("""
+                                    UPDATE wealth_buy_alert 
+                                    SET current_price = %s, current_score = %s, status_updated_at = now()::TEXT
+                                    WHERE symbol = %s AND is_closed = FALSE
+                                """, (price, score, symbol))
+                                updated_count += cur.rowcount
+                        conn.commit()
+                        success = True
+                finally:
+                    if not success:
+                        conn.rollback()
+            logger.info(f"✅ Updated {updated_count} position(s) with real-time metrics")
+            return updated_count
+        except Exception as e:
+            logger.error(f"❌ Failed to update real-time prices: {e}")
+            return 0
 
 # ── USER AND SESSION TRACKING ─────────────────────────────────────────────
 

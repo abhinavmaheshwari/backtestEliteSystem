@@ -1,1 +1,1 @@
-web: python app/main.py
+web: bash start.sh

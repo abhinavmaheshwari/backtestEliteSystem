@@ -16,6 +16,7 @@ import logging
 import time
 import traceback
 import signal
+import random
 from zoneinfo import ZoneInfo
 from datetime import datetime, time as dt_time
 
@@ -251,6 +252,7 @@ def run_eod_scanner():
                 scheduled_for="06:30 IST"
             )
             logger.info("✅ EOD SCANNER | Completed successfully — exiting")
+            retry_count = 0  # reset on successful completion
             # Mark thread as completed cleanly so watchdog doesn't restart
             import threading
             threading.current_thread().completed_cleanly = True
@@ -293,7 +295,9 @@ def run_eod_scanner():
                 scheduled_for="06:30 IST"
             )
             
-            time.sleep(60)  # Retry every minute
+            wait_time = min(300, (2 ** retry_count) * random.uniform(0.5, 1.5))
+            logger.info(f"⏳ Sleeping for {wait_time:.1f}s before next EOD retry...")
+            time.sleep(wait_time)
 
 
 def run_reversal_scanner():
@@ -353,6 +357,7 @@ def run_reversal_scanner():
                 scheduled_for="06:30 IST"
             )
             logger.info("✅ REVERSAL SCANNER | Completed successfully — exiting")
+            retry_count = 0  # reset on successful completion
             # Mark thread as completed cleanly so watchdog doesn't restart
             import threading
             threading.current_thread().completed_cleanly = True
@@ -395,7 +400,9 @@ def run_reversal_scanner():
                 scheduled_for="06:30 IST"
             )
             
-            time.sleep(60)  # Retry every minute
+            wait_time = min(300, (2 ** retry_count) * random.uniform(0.5, 1.5))
+            logger.info(f"⏳ Sleeping for {wait_time:.1f}s before next REVERSAL retry...")
+            time.sleep(wait_time)
 
 
 def run_bayesian_loop():
@@ -731,14 +738,19 @@ if __name__ == "__main__":
     watchdog_thread = threading.Thread(target=run_watchdog, name="Watchdog", daemon=True)
     watchdog_thread.start()
 
-    try:
-        from dashboard_server import start_dashboard_server
-        port = int(os.getenv("PORT", 8080))
-        logger.info(f"🌐 Dashboard server binding to port {port} (main thread)")
-        start_dashboard_server()
-    except ImportError:
-        logger.error("❌ dashboard_server.py not found — Railway will show 'failed to respond'")
-        watchdog_thread.join()
-    except Exception:
-        logger.exception("❌ Dashboard server crashed")
-        watchdog_thread.join()
+    if "--worker" in sys.argv:
+        logger.info("🛠️ Running in WORKER mode — decoupling Flask dashboard.")
+        while True:
+            time.sleep(86400)
+    else:
+        try:
+            from dashboard_server import start_dashboard_server
+            port = int(os.getenv("PORT", 8080))
+            logger.info(f"🌐 Dashboard server binding to port {port} (main thread)")
+            start_dashboard_server()
+        except ImportError:
+            logger.error("❌ dashboard_server.py not found — Railway will show 'failed to respond'")
+            watchdog_thread.join()
+        except Exception:
+            logger.exception("❌ Dashboard server crashed")
+            watchdog_thread.join()
