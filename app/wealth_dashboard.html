@@ -1124,6 +1124,32 @@
     }
 
 
+    let isFirstWealthAlertFetch = true;
+    let lastWealthAlertCount = 0;
+    
+    function playLoudNotificationSound() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (ctx.state === 'suspended') ctx.resume();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(600, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+        osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.3);
+        osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.5);
+        osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.7);
+        gain.gain.setValueAtTime(0, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.05);
+        gain.gain.setValueAtTime(1, ctx.currentTime + 0.65);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.8);
+      } catch(e) { console.warn("Audio playback blocked", e); }
+    }
+
     async function fetchTodaysAlertsAndBlink_Wealth(){
       try{
         const res = await fetch('/api/wealth/alerts?today=true');
@@ -1133,6 +1159,12 @@
         }
         const data = await res.json();
         console.log('🔔 fetchTodaysAlerts_Wealth: received', data.length, 'alerts');
+        
+        if (!isFirstWealthAlertFetch && data.length > lastWealthAlertCount) {
+            playLoudNotificationSound();
+        }
+        lastWealthAlertCount = data.length;
+        isFirstWealthAlertFetch = false;
         if (!Array.isArray(data) || data.length === 0) {
           // No alerts - remove blink from KPI card
           document.getElementById('kpi-buys')?.classList.remove('alert-blink');

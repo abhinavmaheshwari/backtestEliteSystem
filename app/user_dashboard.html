@@ -1304,10 +1304,7 @@ function triggerAlertFlashing() {
     if(toast) toast.classList.add('show');
     
     // Play Audio (if permitted)
-    try {
-        const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-        audio.play().catch(e => console.log('Audio autoplay blocked'));
-    } catch(e) {}
+    playLoudNotificationSound();
     
     // Flash Title
     let toggle = false;
@@ -1498,12 +1495,45 @@ async function generateAIModal() {
 </style>
 <script>
 const ALERT_FETCH_INTERVAL = 60 * 1000;
+
+let isFirstUserAlertFetch = true;
+let lastUserAlertCount = 0;
+
+function playLoudNotificationSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(600, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+    osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.3);
+    osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.5);
+    osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.7);
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(1, ctx.currentTime + 0.05);
+    gain.gain.setValueAtTime(1, ctx.currentTime + 0.65);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.8);
+  } catch(e) { console.warn("Audio playback blocked", e); }
+}
+
 async function fetchTodaysAlertsAndBlink_User(){
   try{
     const today = new Date();
     const todayStr = today.toISOString().slice(0,10);
     
     const res = await fetch('/api/todays_alerts'); if(!res.ok) return; const data = await res.json();
+    if (!isFirstUserAlertFetch && data.length > lastUserAlertCount) {
+        playLoudNotificationSound();
+    }
+    lastUserAlertCount = data.length;
+    isFirstUserAlertFetch = false;
+    
     data.forEach(alert=>{
       // attach attributes to matching table rows
       document.querySelectorAll('tr').forEach(tr=>{

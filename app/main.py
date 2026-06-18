@@ -501,15 +501,15 @@ def run_system_scheduler():
             return False
 
     def safe_run_wealth_market_hours():
-        """Run Wealth Engine during market hours (30-min loop from 10:00 AM to 3:30 PM)."""
+        """Run Wealth Engine during market hours (5-min loop from 9:15 AM to 3:30 PM)."""
         nonlocal last_wealth_market_run
         try:
             now = datetime.now(IST)
-            # Only run once per 30 minutes (1800 seconds)
-            if last_wealth_market_run and (now - last_wealth_market_run).total_seconds() < 1800:
+            # Only run once per 5 minutes (300 seconds)
+            if last_wealth_market_run and (now - last_wealth_market_run).total_seconds() < 300:
                 return False
             
-            logger.info(f"🕒 SCHEDULER | [{now.strftime('%H:%M')}] Triggering Wealth Engine (market hours - 30min loop)")
+            logger.info(f"🕒 SCHEDULER | [{now.strftime('%H:%M')}] Triggering Wealth Engine (market hours - 5min loop)")
             run_wealth_scan()
             
             last_wealth_market_run = now
@@ -519,7 +519,7 @@ def run_system_scheduler():
                 "Wealth Engine",
                 status="OK",
                 last_success=now_str,
-                scheduled_for="Every 30min (10:00 AM - 3:30 PM)"
+                scheduled_for="Every 5min (9:15 AM - 3:30 PM)"
             )
             logger.info("✅ Wealth Engine (market hours) completed successfully")
             return True
@@ -529,7 +529,7 @@ def run_system_scheduler():
                 "Wealth Engine",
                 status="DOWN",
                 error_msg=str(e)[:500],
-                scheduled_for="Every 30min (10:00 AM - 3:30 PM)"
+                scheduled_for="Every 5min (9:15 AM - 3:30 PM)"
             )
             return False
 
@@ -606,8 +606,8 @@ def run_system_scheduler():
             # Refresh now in case daily builder blocked for a long time
             now = datetime.now(IST)
             
-            # 1:05 AM - Wealth Engine (initial)
-            if now.hour == 1 and now.minute >= 5 and not wealth_initial_ran:
+            # 1:30 AM - Wealth Engine (initial)
+            if now.hour == 1 and now.minute >= 30 and not wealth_initial_ran:
                 wealth_initial_ran = True
                 safe_run_wealth_scan_initial()
             elif now.hour != 1:
@@ -615,15 +615,15 @@ def run_system_scheduler():
             
             now = datetime.now(IST)
             
-            # 8:30 AM - Verify Scans
-            if now.hour == 8 and now.minute >= 30 and not verify_scans_ran:
+            # 9:15 AM - Verify Scans
+            if now.hour == 9 and now.minute >= 15 and not verify_scans_ran:
                 verify_scans_ran = True
                 verify_scans()
-            elif now.hour != 8:
+            elif now.hour != 9:
                 verify_scans_ran = False
             
-            # Market hours: Wealth Engine every 30 minutes from 10:00 AM - 3:30 PM
-            if (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 30):
+            # Market hours: Wealth Engine every 5 minutes from 9:15 AM - 3:30 PM
+            if (now.hour == 9 and now.minute >= 15) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 30):
                 safe_run_wealth_market_hours()
         
         time.sleep(30)  # Check every 30 seconds
