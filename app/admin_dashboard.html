@@ -433,7 +433,10 @@ function playDing() {
         <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px;">Simulator:</span>
         <span style="font-size:11px; color:var(--muted);">Capital (₹)</span>
         <input id="simCapital" type="number" value="500000" style="width:100px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
-        <div id="simResult" style="margin-left:8px; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text); padding:6px 12px; background:var(--card2); border-radius:6px; border:1px solid var(--border);">Sim P&L: —</div>
+        <div style="display:flex; flex-direction:column; background:var(--card2); border-radius:6px; border:1px solid var(--border); padding:4px 8px;">
+          <div id="simResult" style="font-family:var(--font-mono); font-weight:700; font-size:13px; color:var(--text);">Sim P&L: —</div>
+          <div id="simFloating_inline" style="font-family:var(--font-mono); font-size:11px; color:var(--muted);">Floating: —</div>
+        </div>
       </div>
     </div>
 
@@ -1812,9 +1815,17 @@ function updateSim() {
     resEl2.style.color = totalNet >= 0 ? 'var(--accent)' : 'var(--warn)';
   }
   const floatEl = document.getElementById('simFloating');
+  const floatElInline = document.getElementById('simFloating_inline');
+  const floatText = (totalFloating>=0?'+':'') + '₹' + Math.round(totalFloating).toLocaleString('en-IN');
+  const floatColor = totalFloating >= 0 ? 'var(--win)' : 'var(--loss)';
+  
   if(floatEl) {
-    floatEl.textContent = 'Floating: ' + (totalFloating>=0?'+':'') + '₹' + Math.round(totalFloating).toLocaleString('en-IN');
-    floatEl.style.color = totalFloating >= 0 ? 'var(--win)' : 'var(--loss)';
+    floatEl.textContent = 'Floating: ' + floatText;
+    floatEl.style.color = floatColor;
+  }
+  if(floatElInline) {
+    floatElInline.textContent = 'Floating: ' + floatText;
+    floatElInline.style.color = floatColor;
   }
 
   // Calculate Real P&L
