@@ -413,14 +413,28 @@ function playDing() {
 
   <div class="container">
 
-    <!-- PORTFOLIO SIMULATOR -->
-    <div style="display:flex; justify-content:flex-end; gap:12px; margin-bottom:16px; align-items:center;">
-      <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px;">Portfolio Simulator:</span>
-      <span style="font-size:11px; color:var(--muted);">Capital (₹)</span>
-      <input id="simCapital" type="number" value="500000" style="width:100px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
+    <!-- P&L AND SIMULATOR BAR -->
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
       
-      
-      <div id="simResult" style="margin-left:16px; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text); padding:6px 12px; background:var(--card2); border-radius:6px; border:1px solid var(--border);">Est. P&amp;L: —</div>
+      <!-- REAL P&L -->
+      <div style="display:flex; gap:12px;">
+        <div style="padding:6px 12px; background:var(--card); border:1px solid var(--border); border-radius:6px; display:flex; align-items:center; gap:8px;">
+          <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase;">Booked P&L:</span>
+          <span id="realBookedPnl" style="font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text);">—</span>
+        </div>
+        <div style="padding:6px 12px; background:var(--card); border:1px solid var(--border); border-radius:6px; display:flex; align-items:center; gap:8px;">
+          <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase;">Open P&L:</span>
+          <span id="realOpenPnl" style="font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text);">—</span>
+        </div>
+      </div>
+
+      <!-- PORTFOLIO SIMULATOR -->
+      <div style="display:flex; gap:12px; align-items:center;">
+        <span style="font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px;">Simulator:</span>
+        <span style="font-size:11px; color:var(--muted);">Capital (₹)</span>
+        <input id="simCapital" type="number" value="500000" style="width:100px; background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-family:var(--font-mono); font-size:12px;" onchange="updateSim()" onkeyup="updateSim()">
+        <div id="simResult" style="margin-left:8px; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text); padding:6px 12px; background:var(--card2); border-radius:6px; border:1px solid var(--border);">Sim P&L: —</div>
+      </div>
     </div>
 
     <!-- KPI ROW -->
@@ -1802,6 +1816,33 @@ function updateSim() {
     floatEl.textContent = 'Floating: ' + (totalFloating>=0?'+':'') + '₹' + Math.round(totalFloating).toLocaleString('en-IN');
     floatEl.style.color = totalFloating >= 0 ? 'var(--win)' : 'var(--loss)';
   }
+
+  // Calculate Real P&L
+  let realBookedPnl = 0;
+  closedTrades.forEach(t => {
+      realBookedPnl += (t.pnl_rs || 0);
+  });
+
+  let realOpenPnl = 0;
+  openTrades.forEach(t => {
+      if (t.shares_bought && t.current_price) {
+          realOpenPnl += (t.current_price - t.entry_price) * t.shares_bought;
+      } else if (t.pnl_rs) {
+          realOpenPnl += t.pnl_rs;
+      }
+  });
+
+  const rbEl = document.getElementById('realBookedPnl');
+  if(rbEl) {
+      rbEl.textContent = (realBookedPnl>=0?'+':'') + '₹' + Math.round(realBookedPnl).toLocaleString('en-IN');
+      rbEl.style.color = realBookedPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  const roEl = document.getElementById('realOpenPnl');
+  if(roEl) {
+      roEl.textContent = (realOpenPnl>=0?'+':'') + '₹' + Math.round(realOpenPnl).toLocaleString('en-IN');
+      roEl.style.color = realOpenPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+
   renderEquityCurve();
 }
 
