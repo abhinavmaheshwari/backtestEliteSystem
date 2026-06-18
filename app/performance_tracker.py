@@ -71,7 +71,7 @@ def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
     """Batch-fetch latest close prices for a list of NSE symbols."""
     if not symbols:
         return {}
-    tickers = [s if s.endswith(".NS") else f"{s}.NS" for s in symbols]
+    tickers = [s.replace('_', '-') if s.endswith(".NS") else f"{s.replace('_', '-')}.NS" for s in symbols]
     try:
         raw = yf.download(
             tickers,
@@ -122,7 +122,7 @@ def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.Data
             logger.debug(f"⏳ {symbol} | Alert is from today but market not open yet — skipping bar fetch")
             return None
 
-        ticker_sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
+        ticker_sym = symbol.replace('_', '-') if symbol.endswith(".NS") else f"{symbol.replace('_', '-')}.NS"
         start_str  = alert_date.isoformat()
         end_str    = (date.today() + timedelta(days=1)).isoformat()
 
