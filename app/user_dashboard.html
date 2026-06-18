@@ -1624,6 +1624,154 @@ async function fetchTodaysAlertsAndBlink_User(){
 setTimeout(fetchTodaysAlertsAndBlink_User, 2000);
 setInterval(fetchTodaysAlertsAndBlink_User, ALERT_FETCH_INTERVAL);
 </script>
+<!-- CHAT WIDGET (USER) -->
+<div id="chat-widget" style="position:fixed; bottom:20px; right:20px; z-index:9999;">
+  <!-- Chat Button -->
+  <div id="chat-button" onclick="toggleChat()" style="background:var(--accent); color:white; width:60px; height:60px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.3); position:relative; transition:transform 0.2s;">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+    <div id="chat-unread-badge" style="display:none; position:absolute; top:0; right:0; background:var(--red); color:white; width:20px; height:20px; border-radius:50%; font-size:12px; font-weight:bold; align-items:center; justify-content:center; border:2px solid var(--bg);">0</div>
+  </div>
+
+  <!-- Chat Window -->
+  <div id="chat-window" style="display:none; position:absolute; bottom:80px; right:0; width:320px; height:450px; background:var(--card); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,0.5); flex-direction:column; overflow:hidden;">
+    <div style="background:var(--card2); padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+      <div style="font-weight:600; display:flex; align-items:center; gap:8px;">
+        <div class="live-dot" style="margin:0;"></div> Admin Support
+      </div>
+      <button onclick="toggleChat()" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size:18px;">✕</button>
+    </div>
+    
+    <div id="chat-messages" style="flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; font-size:13px;">
+      <div style="text-align:center; color:var(--muted); font-size:11px; margin-bottom:8px;">Start of conversation</div>
+    </div>
+    
+    <div style="padding:12px; border-top:1px solid var(--border); background:var(--card2); display:flex; gap:8px;">
+      <input id="chat-input" type="text" placeholder="Type a message..." style="flex:1; background:var(--bg); border:1px solid var(--border); border-radius:16px; padding:8px 12px; color:var(--text); outline:none;" onkeypress="if(event.key==='Enter') sendChatMessage()">
+      <button onclick="sendChatMessage()" style="background:var(--accent); color:white; border:none; border-radius:50%; width:36px; height:36px; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+let isChatOpen = false;
+let lastMessageCount = 0;
+
+function toggleChat() {
+  isChatOpen = !isChatOpen;
+  document.getElementById('chat-window').style.display = isChatOpen ? 'flex' : 'none';
+  if (isChatOpen) {
+    document.getElementById('chat-input').focus();
+    markMessagesAsRead();
+    scrollToBottom();
+  }
+}
+
+async function markMessagesAsRead() {
+  const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
+  document.getElementById('chat-unread-badge').style.display = 'none';
+  try {
+    await fetch('/api/messages/read', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ user: viewerName, as_admin: false })
+    });
+  } catch (e) {}
+}
+
+async function fetchChatMessages() {
+  const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
+  try {
+    const res = await fetch(`/api/messages?user=${encodeURIComponent(viewerName)}`);
+    if (!res.ok) return;
+    const messages = await res.json();
+    
+    // Only update UI if we have new messages
+    if (messages.length !== lastMessageCount) {
+      renderMessages(messages);
+      
+      // Check for unread from admin
+      const unreadFromAdmin = messages.filter(m => m.is_from_admin && !m.is_read).length;
+      if (unreadFromAdmin > 0 && !isChatOpen) {
+        const badge = document.getElementById('chat-unread-badge');
+        badge.textContent = unreadFromAdmin;
+        badge.style.display = 'flex';
+        // Play notification sound if not open
+        playAlertSound();
+      } else if (isChatOpen && unreadFromAdmin > 0) {
+        markMessagesAsRead();
+      }
+      lastMessageCount = messages.length;
+    }
+  } catch (e) {
+    console.warn("Failed to fetch messages", e);
+  }
+}
+
+function renderMessages(messages) {
+  const container = document.getElementById('chat-messages');
+  let html = '<div style="text-align:center; color:var(--muted); font-size:11px; margin-bottom:8px;">Start of conversation</div>';
+  
+  messages.forEach(m => {
+    const isMe = !m.is_from_admin;
+    const align = isMe ? 'flex-end' : 'flex-start';
+    const bg = isMe ? 'var(--accent)' : 'var(--bg)';
+    const textColor = isMe ? 'white' : 'var(--text)';
+    const borderRadius = isMe ? '16px 16px 4px 16px' : '16px 16px 16px 4px';
+    
+    // Extract HH:MM from created_at
+    const time = m.created_at ? m.created_at.split(' ')[1].substring(0,5) : '';
+    
+    html += `
+      <div style="display:flex; flex-direction:column; align-items:${align}; width:100%;">
+        <div style="background:${bg}; color:${textColor}; padding:8px 14px; border-radius:${borderRadius}; max-width:85%; word-wrap:break-word;">
+          ${m.message}
+        </div>
+        <div style="font-size:10px; color:var(--muted); margin-top:4px;">${time}</div>
+      </div>
+    `;
+  });
+  
+  const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 20;
+  container.innerHTML = html;
+  
+  if (wasAtBottom || isChatOpen) {
+    scrollToBottom();
+  }
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  
+  input.value = '';
+  const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
+  
+  try {
+    await fetch('/api/messages', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ user: viewerName, message: msg, is_from_admin: false })
+    });
+    fetchChatMessages();
+  } catch (e) {
+    console.error("Failed to send message", e);
+  }
+}
+
+// Poll for messages every 3 seconds
+setInterval(fetchChatMessages, 3000);
+// Initial fetch
+setTimeout(fetchChatMessages, 1000);
+</script>
+
 </body>
 </html>
 

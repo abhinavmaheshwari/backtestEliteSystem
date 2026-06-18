@@ -62,7 +62,10 @@ def favicon():
 import logging as _logging
 _logging.getLogger("werkzeug").setLevel(_logging.WARNING)
 
-from database import upsert_user, ping_user_session, cleanup_stale_sessions, get_online_users_and_history
+from database import (
+    upsert_user, ping_user_session, cleanup_stale_sessions, get_online_users_and_history,
+    send_user_message, get_user_messages, mark_user_messages_read, get_unread_message_counts
+)
 
 @app.route("/api/viewers", methods=["POST", "GET"])
 def api_viewers():
@@ -85,13 +88,66 @@ def api_viewers():
 
     # 3. Always return current state (online + history)
     stats = get_online_users_and_history()
+    unread = get_unread_message_counts()
     
     return jsonify({
         "active_count": len(stats["online"]),
         "viewers": [u["name"] for u in stats["online"]],
         "history": stats["history"],
-        "detailed_online": stats["online"]
+        "detailed_online": stats["online"],
+        "unread_messages": unread
     })
+
+@app.route("/api/messages", methods=["GET", "POST"])
+def api_messages():
+    """Get or send messages for a specific user."""
+    if request.method == "GET":
+        user_name = request.args.get("user")
+        if not user_name:
+            return jsonify({"error": "Missing user parameter"}), 400
+        
+        user_id = upsert_user(user_name)
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+            
+        messages = get_user_messages(user_id)
+        return jsonify(messages)
+        
+    elif request.method == "POST":
+        data = request.json or {}
+        user_name = data.get("user")
+        message = data.get("message")
+        is_from_admin = data.get("is_from_admin", False)
+        
+        if not user_name or not message:
+            return jsonify({"error": "Missing user or message"}), 400
+            
+        user_id = upsert_user(user_name)
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+            
+        success = send_user_message(user_id, message, is_from_admin)
+        if success:
+            return jsonify({"status": "success"})
+        else:
+            return jsonify({"error": "Failed to send message"}), 500
+
+@app.route("/api/messages/read", methods=["POST"])
+def api_messages_read():
+    """Mark messages as read for a specific user."""
+    data = request.json or {}
+    user_name = data.get("user")
+    as_admin = data.get("as_admin", False)
+    
+    if not user_name:
+        return jsonify({"error": "Missing user"}), 400
+        
+    user_id = upsert_user(user_name)
+    if not user_id:
+        return jsonify({"error": "User not found"}), 404
+        
+    success = mark_user_messages_read(user_id, as_admin)
+    return jsonify({"status": "success" if success else "error"})
 
 # ── CORS + cache headers on every response ──────────────────────────────────────────
 @app.after_request

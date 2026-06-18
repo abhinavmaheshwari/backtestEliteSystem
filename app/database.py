@@ -472,6 +472,18 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON user_sessions(user_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_is_online ON user_sessions(is_online)")
 
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_messages (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+                        is_from_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                        message TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+                        is_read BOOLEAN DEFAULT FALSE
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id)")
+
                 conn.commit()
 
         _DB_INITIALIZED = True
@@ -2405,3 +2417,81 @@ def get_online_users_and_history():
     except Exception as e:
         logger.error(f"❌ Failed to fetch users and history: {e}")
         return {"online": [], "history": []}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# REAL-TIME MESSAGING SYSTEM
+# ──────────────────────────────────────────────────────────────────────────────
+
+def send_user_message(user_id: int, message: str, is_from_admin: bool = False) -> bool:
+    """Send a message between Admin and a specific User."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO user_messages (user_id, is_from_admin, message)
+                    VALUES (%s, %s, %s)
+                """, (user_id, is_from_admin, message))
+                conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to send message for user {user_id}: {e}")
+        return False
+
+def get_user_messages(user_id: int) -> list:
+    """Fetch all messages for a specific user, ordered chronologically."""
+    try:
+        with get_connection() as conn:
+            from psycopg2.extras import RealDictCursor
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, is_from_admin, message, created_at, is_read 
+                    FROM user_messages 
+                    WHERE user_id = %s 
+                    ORDER BY id ASC
+                """, (user_id,))
+                return [dict(row) for row in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch messages for user {user_id}: {e}")
+        return []
+
+def mark_user_messages_read(user_id: int, as_admin: bool = False) -> bool:
+    """
+    Mark messages as read.
+    If as_admin=True, marks messages FROM the user (is_from_admin=FALSE) as read.
+    If as_admin=False, marks messages FROM the admin (is_from_admin=TRUE) as read.
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE user_messages 
+                    SET is_read = TRUE 
+                    WHERE user_id = %s AND is_from_admin = %s AND is_read = FALSE
+                """, (user_id, not as_admin))
+                conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to mark messages read for user {user_id}: {e}")
+        return False
+
+def get_unread_message_counts() -> dict:
+    """
+    Returns unread counts.
+    Admin needs to know which users have sent unread messages: {user_name: count}
+    """
+    try:
+        with get_connection() as conn:
+            from psycopg2.extras import RealDictCursor
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT u.name, COUNT(m.id) as unread_count
+                    FROM user_messages m
+                    JOIN users u ON m.user_id = u.user_id
+                    WHERE m.is_from_admin = FALSE AND m.is_read = FALSE
+                    GROUP BY u.name
+                """)
+                return {row['name']: row['unread_count'] for row in cur.fetchall()}
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch unread message counts: {e}")
+        return {}
