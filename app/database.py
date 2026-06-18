@@ -145,6 +145,9 @@ def init_db():
                     )
                 """)
                 # ── MIGRATIONS: safe to run every deploy ─────────────────────────────
+                # Drop dependent views before altering columns, they will be recreated below
+                cur.execute("DROP VIEW IF EXISTS v_trade_analytics CASCADE")
+                
                 cur.execute("""
                 DO $$
                 BEGIN
