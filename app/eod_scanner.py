@@ -59,6 +59,10 @@ GAP_LOOKBACK_BARS           = 10
 def start():
     init_db()
     
+    from surveillance import force_refresh_blacklist
+    force_refresh_blacklist()
+
+    
     ist_now = datetime.now(IST)
     logger.info("=" * 80)
     logger.info(f"📊 EOD SCAN START | {ist_now.strftime('%Y-%m-%d %H:%M:%S IST')}")
@@ -140,6 +144,10 @@ def start():
                 symbol   = row["Stock"]
                 category = row["Category"]
                 sector   = row.get("Sector", None)
+
+                from surveillance import get_live_blacklist
+                if symbol in get_live_blacklist():
+                    continue
 
                 if symbol not in all_ticker_data:
                     rejection_counts["no_data"] += 1

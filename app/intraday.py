@@ -74,6 +74,9 @@ def start(run_once=False):
     if prev_delivery_map:
         logger.info(f"📦 Previous-day delivery loaded | {len(prev_delivery_map)} symbols")
 
+    from surveillance import force_refresh_blacklist
+    force_refresh_blacklist()
+
     while True:
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
@@ -160,6 +163,10 @@ def start(run_once=False):
                     symbol   = row["Stock"]
                     category = row["Category"]
                     sector   = row.get("Sector", None)
+
+                    from surveillance import get_live_blacklist
+                    if symbol in get_live_blacklist():
+                        continue
 
                     if symbol not in all_ticker_data:
                         rejection_counts["no_data"] += 1

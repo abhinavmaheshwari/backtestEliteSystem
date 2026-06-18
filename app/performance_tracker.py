@@ -58,6 +58,8 @@ PERF_JSON_PATH = os.path.join(DATA_DIR, "performance_data.json")
 # HELPERS
 # =====================================================================================
 
+from data_provider import get_fetcher
+
 def _parse_dedup_key(breakout_type: str) -> tuple[str, str, str]:
     parts = breakout_type.split("|")
     if len(parts) >= 4:
@@ -68,42 +70,28 @@ def _parse_dedup_key(breakout_type: str) -> tuple[str, str, str]:
 
 
 def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
-    """Batch-fetch latest close prices for a list of NSE symbols."""
+    """Batch-fetch latest close prices for a list of NSE symbols using DataFetcher."""
     if not symbols:
         return {}
-    tickers = [s.replace('_', '-') if s.endswith(".NS") else f"{s.replace('_', '-')}.NS" for s in symbols]
     try:
-        raw = yf.download(
-            tickers,
-            period="2d",
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-        )
+        fetcher = get_fetcher()
+        raw_dict = fetcher.get_batch_ohlcv(symbols, interval="1d", period="2d", retries=2)
         prices = {}
-        if len(tickers) == 1:
-            sym = symbols[0]
-            try:
-                prices[sym] = float(raw["Close"].dropna().iloc[-1])
-            except Exception:
-                pass
-        else:
-            for sym, ticker in zip(symbols, tickers):
+        for sym, df in raw_dict.items():
+            if df is not None and not df.empty and "Close" in df.columns:
                 try:
-                    prices[sym] = float(raw[ticker]["Close"].dropna().iloc[-1])
+                    prices[sym] = float(df["Close"].dropna().iloc[-1])
                 except Exception:
                     pass
         return prices
     except Exception:
-        logger.warning("⚠️ yfinance price fetch failed in performance_tracker")
+        logger.warning("⚠️ DataFetcher price fetch failed in performance_tracker")
         return {}
 
 
 def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.DataFrame]:
     """
-    Fetch 1h bars for *symbol* from the alert date to today.
+    Fetch 1h bars for *symbol* from the alert date to today using DataFetcher.
     Returns a DataFrame with timezone-aware IST index, or None on failure.
 
     All candles whose open-time < alert_time are DROPPED — this is the core rule
@@ -122,27 +110,26 @@ def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.Data
             logger.debug(f"⏳ {symbol} | Alert is from today but market not open yet — skipping bar fetch")
             return None
 
-        ticker_sym = symbol.replace('_', '-') if symbol.endswith(".NS") else f"{symbol.replace('_', '-')}.NS"
-        start_str  = alert_date.isoformat()
-        end_str    = (date.today() + timedelta(days=1)).isoformat()
+        # Determine period since alert
+        days_since = (now_ist.date() - alert_date).days
+        period_str = f"{max(days_since + 2, 5)}d" # ensure we fetch at least enough data
 
-        hist = yf.download(
-            ticker_sym,
-            start=start_str,
-            end=end_str,
-            interval="1h",
-            auto_adjust=True,
-            progress=False,
-        )
+        fetcher = get_fetcher()
+        hist = fetcher.get_ohlcv(symbol, interval="1h", period=period_str, retries=2)
 
-        if hist.empty:
+        if hist is None or hist.empty:
             return None
-
-        if isinstance(hist.columns, pd.MultiIndex):
-            hist.columns = hist.columns.get_level_values(0)
 
         if not {"High", "Low", "Close"}.issubset(hist.columns):
             return None
+
+        # Find datetime column
+        date_col = next((c for c in ["Datetime", "Date", "index"] if c in hist.columns), None)
+        if date_col is None:
+            return None
+
+        hist[date_col] = pd.to_datetime(hist[date_col])
+        hist = hist.set_index(date_col)
 
         # Localise index to IST
         idx = hist.index
@@ -160,6 +147,7 @@ def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.Data
     except Exception:
         logger.debug(f"⚠️ Could not fetch bars for {symbol} (alert={alert_time_str})")
         return None
+
 
 
 def _check_sl_and_target(

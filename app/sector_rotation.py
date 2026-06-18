@@ -45,17 +45,10 @@
 # =====================================================================================
 
 import logging
-# Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
-try:
-    import app.yf_bootstrap
-except Exception:
-    try:
-        import yf_bootstrap
-    except Exception:
-        pass
-import yfinance as yf
+from data_provider import get_fetcher
 from data_fetch_status import mark_success, mark_failure
 import pandas as pd
+
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -456,22 +449,20 @@ def _parse_close_series(df: pd.DataFrame, label: str) -> Optional[pd.Series]:
 
 def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]:
     """
-    Download all tickers in ONE yfinance batch call.
+    Download all tickers in ONE batch call via DataFetcher.
 
     Deduplicates tickers before the request so that sectors sharing a proxy ETF
     (e.g. Infrastructure / Capital Goods / Railways all → INFRAIETF.NS) don't
-    cause the same symbol to appear multiple times in the batch string, which
-    confuses yfinance's MultiIndex column parsing.
+    cause the same symbol to appear multiple times in the batch string.
 
     Returns {ticker_symbol: close_series_or_None} for every requested ticker,
-    including duplicates (they all point to the same Series object).
+    including duplicates.
     """
     results: dict[str, Optional[pd.Series]] = {}
 
     if not tickers:
         return results
 
-    # Deduplicate while preserving order; batch only unique tickers.
     seen: set[str] = set()
     unique_tickers: list[str] = []
     for t in tickers:
@@ -479,78 +470,51 @@ def _batch_download_closes(tickers: list[str]) -> dict[str, Optional[pd.Series]]
             seen.add(t)
             unique_tickers.append(t)
 
-    tickers_str = " ".join(unique_tickers)
     logger.info(
         f"🔄 Sector rotation: batch downloading {len(unique_tickers)} unique tickers "
         f"({len(tickers)} requested, {len(tickers) - len(unique_tickers)} deduped) "
         f"| period={DOWNLOAD_PERIOD}"
     )
 
+    fetcher = get_fetcher()
     try:
-        raw = yf.download(
-            tickers_str,
-            period=DOWNLOAD_PERIOD,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            threads=False,
-            group_by="ticker",
-        )
+        raw_dict = fetcher.get_batch_ohlcv(unique_tickers, interval="1d", period=DOWNLOAD_PERIOD)
 
-        if raw is None or raw.empty:
+        if not raw_dict:
             logger.warning("⚠️  Sector batch download returned empty — all sectors will be skipped")
             try:
                 mark_failure('yfinance', 'Sector batch returned empty')
             except Exception:
-                logger.exception("Failed to report yfinance failure for sector rotation")
+                pass
             for t in tickers:
                 results[t] = None
             return results
 
-        if not isinstance(raw.columns, pd.MultiIndex):
-            # Only one ticker survived — yfinance returns a flat DF.
-            if len(unique_tickers) == 1:
-                series = _parse_close_series(raw, unique_tickers[0])
-                for t in tickers:                  # covers duplicates too
-                    results[t] = series
-            else:
-                logger.warning(
-                    "⚠️  Sector batch returned flat DF for multi-ticker request "
-                    "— skipping to avoid symbol→data mismatch"
-                )
-                for t in tickers:
-                    results[t] = None
-            return results
-
-        # MultiIndex: columns are (Ticker, OHLCV).
-        # Build unique results first, then fan out to duplicates.
         unique_results: dict[str, Optional[pd.Series]] = {}
-        level0 = raw.columns.get_level_values(0)
         for t in unique_tickers:
-            try:
-                if t in level0:
-                    unique_results[t] = _parse_close_series(raw[t], t)
-                else:
-                    logger.debug(f"⚠️  {t} absent from sector batch (likely delisted) — skipped")
-                    unique_results[t] = None
-            except Exception:
-                logger.exception(f"⚠️  Slice error for {t} in sector batch")
+            df = raw_dict.get(t)
+            if df is not None and not df.empty:
+                series = _parse_close_series(df, t)
+                unique_results[t] = series
+            else:
+                logger.debug(f"⚠️  {t} absent from sector batch (likely delisted) — skipped")
                 unique_results[t] = None
 
         # Fan out: every originally requested ticker (including duplicates) gets its result.
         for t in tickers:
             results[t] = unique_results.get(t)
+
         try:
             mark_success('yfinance')
         except Exception:
-            logger.exception("Failed to report yfinance success for sector rotation")
+            pass
 
     except Exception as e:
         logger.exception("⚠️  Sector batch download failed — all sectors will be skipped")
         try:
             mark_failure('yfinance', f"{e} (Sector Rotation Batch)")
         except Exception:
-            logger.exception("Failed to report yfinance failure for sector rotation (exception path)")
+            pass
         for t in tickers:
             results[t] = None
 

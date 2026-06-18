@@ -176,10 +176,15 @@ def _run_scan():
     alerts_by_category = {}
     total_alerts = 0
 
-    for _, row in watchlist.iterrows():
-        symbol   = row["Stock"]
-        category = row["Category"]
+    for idx, (_, row) in enumerate(watchlist.iterrows(), start=1):
+        symbol = "UNKNOWN"
         try:
+            symbol   = row["Stock"]
+            category = row["Category"]
+
+            from surveillance import get_live_blacklist
+            if symbol in get_live_blacklist():
+                continue
 
             if symbol not in all_ticker_data or all_ticker_data[symbol].empty:
                 continue
@@ -506,6 +511,10 @@ def _run_scan():
 
 
 def start() -> int:
+    init_db()
+
+    from surveillance import force_refresh_blacklist
+    force_refresh_blacklist()
     """
     Single-shot scan. Called once by main.py at the 18:30 window.
     Returns the number of alerts generated (0 = no setups found).

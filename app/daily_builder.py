@@ -211,50 +211,12 @@ def _load_blacklist():
     global _BLACKLIST_SYMBOLS
     _BLACKLIST_SYMBOLS.clear()
     
-    # 1. Load Hardcoded Promoter CSV
-    csv_path = os.path.join(os.path.dirname(WATCHLIST_PATH), "promoter_blacklist.csv")
-    if os.path.exists(csv_path):
-        try:
-            df_csv = pd.read_csv(csv_path)
-            for sym in df_csv["symbol"].dropna():
-                _BLACKLIST_SYMBOLS.add(str(sym).strip().upper())
-            logger.info(f"🛡️ Loaded {len(df_csv)} blacklisted promoters from CSV.")
-        except Exception as e:
-            logger.error(f"Failed to load promoter blacklist: {e}")
-
-    # 2. Fetch Live NSE ASM/GSM (Surveillance measures)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "application/json"
-    }
-    
-    try:
-        # Initial call to get cookies
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+    from surveillance import force_refresh_blacklist
+    blacklist = force_refresh_blacklist()
+    for sym in blacklist:
+        _BLACKLIST_SYMBOLS.add(sym)
         
-        # Fetch ASM (Additional Surveillance Measure)
-        asm_res = session.get("https://www.nseindia.com/api/reportASM", headers=headers, timeout=10)
-        if asm_res.status_code == 200:
-            data = asm_res.json()
-            for key in ["longterm", "shortterm"]:
-                if key in data and "data" in data[key]:
-                    for item in data[key]["data"]:
-                        if "symbol" in item:
-                            _BLACKLIST_SYMBOLS.add(item["symbol"].strip().upper())
-                            
-        # Fetch GSM (Graded Surveillance Measure - usually shells / bankruptcy)
-        gsm_res = session.get("https://www.nseindia.com/api/reportGSM", headers=headers, timeout=10)
-        if gsm_res.status_code == 200:
-            data = gsm_res.json()
-            if isinstance(data, list):
-                for item in data:
-                    if "symbol" in item:
-                        _BLACKLIST_SYMBOLS.add(item["symbol"].strip().upper())
-                        
-        logger.info(f"🛡️ Total surveillance + blacklist guard loaded: {len(_BLACKLIST_SYMBOLS)} toxic stocks blocked.")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to fetch NSE surveillance lists: {e}")
+    logger.info(f"🛡️ Total surveillance + blacklist guard loaded: {len(_BLACKLIST_SYMBOLS)} toxic stocks blocked.")
 
 def _fval(row: pd.Series, col_name: str) -> float:
     v = row.get(col_name)

@@ -165,6 +165,5 @@ MAX_TARGET_ATR = {
 # FALLBACK PRICE PROVIDER (when YFinance rate-limited)
 # =====================================================================================
 
-ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "")  # Set via Railway env vars
-ENABLE_PRICE_FALLBACK = os.getenv("ENABLE_PRICE_FALLBACK", "true").lower() == "true"
-
+# ── DATA PROVIDER SETTINGS ──────────────────────────────────────────────────────────
+DATA_PROVIDER = os.getenv("DATA_PROVIDER", "yfinance")  # Switch to "kite" when credentials available

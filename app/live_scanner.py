@@ -74,6 +74,9 @@ def start(run_once=False):
     prev_delivery_map    = fetch_previous_day_delivery()
     _delivery_fetch_date = datetime.now(IST).date()
 
+    from surveillance import force_refresh_blacklist
+    force_refresh_blacklist()
+
     while True:
         ist_now      = datetime.now(IST)
         current_time = ist_now.time()
@@ -179,6 +182,10 @@ def start(run_once=False):
                     symbol   = row["Stock"]
                     category = row["Category"]
                     sector   = row.get("Sector", None)
+
+                    from surveillance import get_live_blacklist
+                    if symbol in get_live_blacklist():
+                        continue
 
                     if symbol not in all_ticker_data:
                         rejection_counts["no_data"] += 1
