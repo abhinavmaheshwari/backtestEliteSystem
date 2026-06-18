@@ -597,21 +597,26 @@ def run_system_scheduler():
         # Weekdays only
         if now.weekday() < 5:  # Mon-Fri
             # 1:00 AM - Daily Builder
-            if now.hour == 1 and now.minute == 0 and not daily_builder_ran:
+            if now.hour == 1 and now.minute >= 0 and not daily_builder_ran:
                 daily_builder_ran = True
                 safe_run_daily_builder()
             elif now.hour != 1:
                 daily_builder_ran = False
             
+            # Refresh now in case daily builder blocked for a long time
+            now = datetime.now(IST)
+            
             # 1:05 AM - Wealth Engine (initial)
-            if now.hour == 1 and now.minute == 5 and not wealth_initial_ran:
+            if now.hour == 1 and now.minute >= 5 and not wealth_initial_ran:
                 wealth_initial_ran = True
                 safe_run_wealth_scan_initial()
             elif now.hour != 1:
                 wealth_initial_ran = False
             
+            now = datetime.now(IST)
+            
             # 8:30 AM - Verify Scans
-            if now.hour == 8 and now.minute == 30 and not verify_scans_ran:
+            if now.hour == 8 and now.minute >= 30 and not verify_scans_ran:
                 verify_scans_ran = True
                 verify_scans()
             elif now.hour != 8:

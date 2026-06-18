@@ -813,7 +813,19 @@
 
         document.getElementById('kpi-total').textContent = stocks.length;
 
-        const buys = stocks.filter(s => (s.Signal || "").includes("BUY")).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
+        // Fetch today's alerts to ensure we only show BUY signals generated today (IST)
+        let todayAlertSymbols = new Set();
+        try {
+            const alertRes = await fetch('/api/wealth/alerts?today=true');
+            if (alertRes.ok) {
+                const alerts = await alertRes.json();
+                alerts.forEach(a => todayAlertSymbols.add(a.symbol));
+            }
+        } catch (e) {
+            console.error("Failed to fetch today's alerts for filtering:", e);
+        }
+
+        const buys = stocks.filter(s => (s.Signal || "").includes("BUY") && todayAlertSymbols.has(s.Stock)).sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0));
         document.getElementById('kpi-buys').textContent = buys.length;
         document.getElementById('buy-count').textContent = buys.length;
 
