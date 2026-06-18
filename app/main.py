@@ -208,6 +208,25 @@ def run_eod_scanner():
         now = datetime.now(IST)
         today_str = now.strftime("%Y-%m-%d")
         
+        # Check database if we already succeeded today
+        try:
+            from database import get_all_scanner_health
+            health_records = get_all_scanner_health()
+            already_ran = False
+            for rec in health_records:
+                if rec.get("scanner_name") == "EOD" and rec.get("status") == "OK" and rec.get("last_success"):
+                    last_success_str = str(rec["last_success"])
+                    if last_success_str.startswith(today_str):
+                        already_ran = True
+                        break
+            
+            if already_ran:
+                logger.info("📊 EOD SCAN | Already successfully executed today. Sleeping until tomorrow...")
+                time.sleep(3600)  # Sleep 1 hour
+                continue
+        except Exception as e:
+            logger.warning(f"Could not verify EOD previous run status: {e}")
+        
         try:
             logger.info(f"📊 EOD SCAN | Starting scan for {today_str}...")
             import eod_scanner
@@ -290,6 +309,25 @@ def run_reversal_scanner():
         wait_for_window("reversal")
         now = datetime.now(IST)
         today_str = now.strftime("%Y-%m-%d")
+        
+        # Check database if we already succeeded today
+        try:
+            from database import get_all_scanner_health
+            health_records = get_all_scanner_health()
+            already_ran = False
+            for rec in health_records:
+                if rec.get("scanner_name") == "REVERSAL" and rec.get("status") == "OK" and rec.get("last_success"):
+                    last_success_str = str(rec["last_success"])
+                    if last_success_str.startswith(today_str):
+                        already_ran = True
+                        break
+            
+            if already_ran:
+                logger.info("🔄 REVERSAL SCAN | Already successfully executed today. Sleeping until tomorrow...")
+                time.sleep(3600)  # Sleep 1 hour
+                continue
+        except Exception as e:
+            logger.warning(f"Could not verify REVERSAL previous run status: {e}")
         
         try:
             logger.info(f"🔄 REVERSAL SCAN | Starting scan for {today_str}...")
