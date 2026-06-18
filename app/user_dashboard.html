@@ -1673,7 +1673,7 @@ function getChatApiBase() {
 }
 
 async function markMessagesAsRead() {
-  const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
+  const viewerName = localStorage.getItem('viewerName') || 'Unknown';
   document.getElementById('chat-unread-badge').style.display = 'none';
   try {
     await fetch(`${getChatApiBase()}/api/messages/read`, {
@@ -1685,7 +1685,7 @@ async function markMessagesAsRead() {
 }
 
 async function fetchChatMessages() {
-  const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
+  const viewerName = localStorage.getItem('viewerName') || 'Unknown';
   try {
     const res = await fetch(`${getChatApiBase()}/api/messages?user=${encodeURIComponent(viewerName)}&t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) return;
@@ -1756,7 +1756,7 @@ async function sendChatMessage() {
   if (!msg) return;
   
   input.value = '';
-  const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
+  const viewerName = localStorage.getItem('viewerName') || 'Unknown';
   
   try {
     await fetch(`${getChatApiBase()}/api/messages`, {
