@@ -481,8 +481,9 @@ def api_todays_alerts():
     """Return alerts fired today (includes seen flags)."""
     try:
         from database import get_todays_alerts
-        from datetime import date as _date
-        today = _date.today().isoformat()
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
         rows = get_todays_alerts(today)
         return jsonify(rows)
     except Exception:
@@ -564,8 +565,9 @@ def api_scanner_status():
     try:
         import os
         from database import get_all_scanner_health, get_scanner_today_trades
-        from datetime import date as _date
-        today_str = _date.today().isoformat()
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        today_str = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
 
         health_rows = get_all_scanner_health()
         result = {}

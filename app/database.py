@@ -2020,15 +2020,19 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
                          position_pct: float = None, position_amount: float = None,
                          portfolio_bucket: str = None, valuation_score: float = None) -> bool:
     """Save BUY alert to wealth_buy_alert with position sizing. Deduplicates by (symbol, alert_date, breakout_type)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    ist_today = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
+    
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                # Use database date function for consistency (no timezone issues)
+                # Use explicit IST date
                 cur.execute("""
                     SELECT id FROM wealth_buy_alert 
-                    WHERE symbol = %s AND alert_date = CURRENT_DATE::TEXT AND breakout_type = %s
+                    WHERE symbol = %s AND alert_date = %s AND breakout_type = %s
                     LIMIT 1
-                """, (symbol, breakout_type))
+                """, (symbol, ist_today, breakout_type))
                 
                 if cur.fetchone():
                     logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
@@ -2039,8 +2043,8 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
                     INSERT INTO wealth_buy_alert 
                     (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date,
                      position_pct, position_amount, portfolio_bucket, valuation_score)
-                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, CURRENT_DATE::TEXT, %s, %s, %s, %s)
-                """, (symbol, alert_price, breakout_type, fm_score, notes,
+                    VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s)
+                """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today,
                       position_pct, position_amount, portfolio_bucket, valuation_score))
                 conn.commit()
         
@@ -2098,14 +2102,18 @@ def update_wealth_alert_status(alert_id: int, status: str, current_price: float 
 
 def get_today_wealth_alerts() -> list:
     """Get all wealth buy alerts for today."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    ist_today = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
+    
     try:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT * FROM wealth_buy_alert 
-                    WHERE alert_date = CURRENT_DATE::TEXT
+                    WHERE alert_date = %s
                     ORDER BY alert_time DESC
-                """)
+                """, (ist_today,))
                 return [dict(row) for row in cur.fetchall()]
     except Exception as e:
         logger.error(f"❌ Failed to fetch today's wealth alerts: {e}")
