@@ -448,6 +448,30 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_is_closed ON wealth_buy_alert(is_closed)")
 
+                # ── Users & Sessions Tables ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id SERIAL PRIMARY KEY,
+                        name TEXT UNIQUE NOT NULL,
+                        role TEXT DEFAULT 'USER',
+                        created_at TEXT NOT NULL DEFAULT (now()::TEXT)
+                    )
+                """)
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'USER'")
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_sessions (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+                        ip_address TEXT,
+                        login_time TEXT NOT NULL DEFAULT (now()::TEXT),
+                        logoff_time TEXT NOT NULL DEFAULT (now()::TEXT),
+                        is_online BOOLEAN DEFAULT TRUE
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON user_sessions(user_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_is_online ON user_sessions(is_online)")
+
                 conn.commit()
 
         _DB_INITIALIZED = True
@@ -2277,3 +2301,107 @@ def update_position_real_time_prices(symbols_metrics: dict) -> int:
     except Exception as e:
         logger.error(f"❌ Failed to update real-time prices: {e}")
         return 0
+
+# ── USER AND SESSION TRACKING ─────────────────────────────────────────────
+
+def upsert_user(name: str) -> int:
+    """Ensure user exists in users table and return their user_id."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Try to insert
+                cur.execute("""
+                    INSERT INTO users (name) VALUES (%s)
+                    ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                    RETURNING user_id
+                """, (name,))
+                result = cur.fetchone()
+                conn.commit()
+                return result[0] if result else None
+    except Exception as e:
+        logger.error(f"❌ Failed to upsert user {name}: {e}")
+        return None
+
+def ping_user_session(user_id: int, ip_address: str):
+    """Update active session or create new one."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Check for active session for this user/ip
+                cur.execute("""
+                    SELECT id FROM user_sessions 
+                    WHERE user_id = %s AND ip_address = %s AND is_online = TRUE
+                    ORDER BY login_time DESC LIMIT 1
+                """, (user_id, ip_address))
+                session = cur.fetchone()
+
+                if session:
+                    # Update logoff_time (last ping)
+                    cur.execute("""
+                        UPDATE user_sessions SET logoff_time = now()::TEXT
+                        WHERE id = %s
+                    """, (session[0],))
+                else:
+                    # Create new session
+                    cur.execute("""
+                        INSERT INTO user_sessions (user_id, ip_address, login_time, logoff_time, is_online)
+                        VALUES (%s, %s, now()::TEXT, now()::TEXT, TRUE)
+                    """, (user_id, ip_address))
+                conn.commit()
+    except Exception as e:
+        logger.error(f"❌ Failed to ping user session {user_id}: {e}")
+
+def cleanup_stale_sessions():
+    """Mark sessions as offline if not pinged within 2 minutes."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE user_sessions
+                    SET is_online = FALSE
+                    WHERE is_online = TRUE
+                    AND EXTRACT(EPOCH FROM (now() - logoff_time::timestamp)) > 120
+                """)
+                conn.commit()
+    except Exception as e:
+        logger.error(f"❌ Failed to cleanup stale sessions: {e}")
+
+def get_online_users_and_history():
+    """Get active viewers and a brief session history."""
+    try:
+        with get_connection() as conn:
+            from psycopg2.extras import RealDictCursor
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Active Viewers
+                cur.execute("""
+                    SELECT u.name, s.ip_address, s.login_time 
+                    FROM user_sessions s
+                    JOIN users u ON s.user_id = u.user_id
+                    WHERE s.is_online = TRUE
+                    ORDER BY s.login_time DESC
+                """)
+                online = cur.fetchall()
+
+                # Session History (last 50)
+                cur.execute("""
+                    SELECT u.name, s.ip_address, s.login_time, s.logoff_time 
+                    FROM user_sessions s
+                    JOIN users u ON s.user_id = u.user_id
+                    WHERE s.is_online = FALSE
+                    ORDER BY s.logoff_time DESC LIMIT 50
+                """)
+                history = cur.fetchall()
+
+        # Format dates/times for cleaner frontend display
+        for row in online:
+            # strip fractional seconds if any
+            row['login_time'] = row['login_time'].split('.')[0] if row['login_time'] else ''
+            
+        for row in history:
+            row['login_time'] = row['login_time'].split('.')[0] if row['login_time'] else ''
+            row['logoff_time'] = row['logoff_time'].split('.')[0] if row['logoff_time'] else ''
+            
+        return {"online": online, "history": history}
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch users and history: {e}")
+        return {"online": [], "history": []}

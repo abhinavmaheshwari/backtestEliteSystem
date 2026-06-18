@@ -62,27 +62,35 @@ def favicon():
 import logging as _logging
 _logging.getLogger("werkzeug").setLevel(_logging.WARNING)
 
-_active_viewers = {}
+from database import upsert_user, ping_user_session, cleanup_stale_sessions, get_online_users_and_history
 
 @app.route("/api/viewers", methods=["POST", "GET"])
 def api_viewers():
-    """Tracks active viewers by IP and Name. Cleans up inactive ones (>120s)."""
-    now = time.time()
+    """Tracks active viewers by IP and Name using DB. Cleans up inactive ones (>120s)."""
+    # 1. First, mark any inactive sessions as offline
+    cleanup_stale_sessions()
+
+    # 2. If it's a heartbeat/ping, update or start their session
     if request.method == "POST":
         data = request.json or {}
-        name = data.get("name", "Unknown")
-        # Get real IP behind proxy (e.g. Railway)
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
-        _active_viewers[ip] = {"name": name, "last_seen": now}
+        name = data.get("name", "Unknown").strip()
+        
+        if name:
+            ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip()
+            # Ensure user exists in users table
+            user_id = upsert_user(name)
+            if user_id:
+                # Ping their session table
+                ping_user_session(user_id, ip)
 
-    # Clean up stale viewers
-    stale_ips = [ip for ip, info in _active_viewers.items() if now - info["last_seen"] > 120]
-    for sip in stale_ips:
-        del _active_viewers[sip]
-
+    # 3. Always return current state (online + history)
+    stats = get_online_users_and_history()
+    
     return jsonify({
-        "active_count": len(_active_viewers),
-        "viewers": [info["name"] for info in _active_viewers.values()]
+        "active_count": len(stats["online"]),
+        "viewers": [u["name"] for u in stats["online"]],
+        "history": stats["history"],
+        "detailed_online": stats["online"]
     })
 
 # ── CORS + cache headers on every response ──────────────────────────────────────────

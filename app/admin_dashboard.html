@@ -400,7 +400,7 @@ function playDing() {
         Wealth System
       </a>
       <button class="refresh-btn" onclick="toggleTheme()" style="font-size:16px; padding:4px 8px; border-radius:50%; width:32px; height:32px; justify-content:center;">🌓</button>
-      <span id="viewerCount" title="Active Viewers" style="font-family:var(--font-mono); font-size:12px; color:var(--accent); display:flex; align-items:center; gap:6px; background:var(--accent-dim); padding:6px 10px; border-radius:6px; border:1px solid rgba(5,150,105,0.2);">
+      <span id="viewerCount" title="Active Viewers" onclick="openUsersModal()" style="cursor:pointer; font-family:var(--font-mono); font-size:12px; color:var(--accent); display:flex; align-items:center; gap:6px; background:var(--accent-dim); padding:6px 10px; border-radius:6px; border:1px solid rgba(5,150,105,0.2); transition:all 0.2s;">
         <div class="live-dot" style="margin:0;"></div> <span id="vCountVal">1</span> online
       </span>
       <span class="header-stats" id="header-stats"></span>
@@ -2601,5 +2601,98 @@ async function fetchTodaysAlertsAndBlink_Admin(){
 setTimeout(fetchTodaysAlertsAndBlink_Admin, 2000);
 setInterval(fetchTodaysAlertsAndBlink_Admin, ALERT_FETCH_INTERVAL_ADMIN);
 </script>
+<!-- Users Modal -->
+<div id="usersModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.8); align-items:center; justify-content:center; backdrop-filter:blur(4px);">
+    <div style="background:var(--bg); border:1px solid var(--border); border-radius:12px; width:90%; max-width:800px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.5); display:flex; flex-direction:column; max-height:85vh;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+            <h2 style="margin:0; font-size:20px; display:flex; align-items:center; gap:8px;"><div class="live-dot" style="margin:0;"></div> User Sessions</h2>
+            <button onclick="closeUsersModal()" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size:24px; line-height:1;">&times;</button>
+        </div>
+        
+        <div style="overflow-y:auto; flex:1;">
+            <h3 style="font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px;">Currently Online</h3>
+            <table style="width:100%; border-collapse:collapse; margin-bottom:24px; font-size:13px;">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border); color:var(--muted); text-align:left;">
+                        <th style="padding:8px;">Name</th>
+                        <th style="padding:8px;">IP Address</th>
+                        <th style="padding:8px;">Login Time</th>
+                    </tr>
+                </thead>
+                <tbody id="usersModalOnlineBody">
+                    <tr><td colspan="3" style="text-align:center; padding:16px; color:var(--muted);">Loading...</td></tr>
+                </tbody>
+            </table>
+
+            <h3 style="font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px;">Recent History (Last 50)</h3>
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border); color:var(--muted); text-align:left;">
+                        <th style="padding:8px;">Name</th>
+                        <th style="padding:8px;">IP Address</th>
+                        <th style="padding:8px;">Login Time</th>
+                        <th style="padding:8px;">Logoff Time</th>
+                    </tr>
+                </thead>
+                <tbody id="usersModalHistoryBody">
+                    <tr><td colspan="4" style="text-align:center; padding:16px; color:var(--muted);">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+function openUsersModal() {
+    document.getElementById('usersModal').style.display = 'flex';
+    fetchUsersData();
+}
+
+function closeUsersModal() {
+    document.getElementById('usersModal').style.display = 'none';
+}
+
+function fetchUsersData() {
+    const urls = ['https://elitebreakoutsystem-production.up.railway.app/api/viewers', '/api/viewers'];
+    let fetched = false;
+
+    Promise.any(urls.map(url => fetch(url).then(r => {
+        if (!r.ok) throw new Error();
+        fetched = true;
+        return r.json();
+    }))).then(data => {
+        const onlineBody = document.getElementById('usersModalOnlineBody');
+        const historyBody = document.getElementById('usersModalHistoryBody');
+        
+        if (data.detailed_online && data.detailed_online.length > 0) {
+            onlineBody.innerHTML = data.detailed_online.map(u => `
+                <tr style="border-bottom:1px solid var(--border);">
+                    <td style="padding:8px; font-weight:600; color:var(--green);">${u.name}</td>
+                    <td style="padding:8px; font-family:var(--font-mono);">${u.ip_address}</td>
+                    <td style="padding:8px; font-family:var(--font-mono);">${u.login_time}</td>
+                </tr>
+            `).join('');
+        } else {
+            onlineBody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:16px; color:var(--muted);">No users currently online</td></tr>';
+        }
+
+        if (data.history && data.history.length > 0) {
+            historyBody.innerHTML = data.history.map(u => `
+                <tr style="border-bottom:1px solid var(--border);">
+                    <td style="padding:8px; font-weight:600;">${u.name}</td>
+                    <td style="padding:8px; font-family:var(--font-mono); color:var(--muted);">${u.ip_address}</td>
+                    <td style="padding:8px; font-family:var(--font-mono); color:var(--muted);">${u.login_time}</td>
+                    <td style="padding:8px; font-family:var(--font-mono); color:var(--muted);">${u.logoff_time}</td>
+                </tr>
+            `).join('');
+        } else {
+            historyBody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--muted);">No session history</td></tr>';
+        }
+    }).catch(e => {
+        console.error("Failed to load user data", e);
+    });
+}
+</script>
+
 </body>
 </html>
