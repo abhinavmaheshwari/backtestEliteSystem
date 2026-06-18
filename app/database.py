@@ -503,13 +503,17 @@ def init_db():
                         SELECT 1 FROM information_schema.columns
                         WHERE table_name = 'wealth_buy_alert' AND column_name = 'created_at' AND data_type = 'text'
                     ) THEN
+                        ALTER TABLE wealth_buy_alert ALTER COLUMN created_at DROP DEFAULT;
                         ALTER TABLE wealth_buy_alert ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+                        ALTER TABLE wealth_buy_alert ALTER COLUMN created_at SET DEFAULT NOW();
                     END IF;
                     IF EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_name = 'wealth_buy_alert' AND column_name = 'status_updated_at' AND data_type = 'text'
                     ) THEN
+                        ALTER TABLE wealth_buy_alert ALTER COLUMN status_updated_at DROP DEFAULT;
                         ALTER TABLE wealth_buy_alert ALTER COLUMN status_updated_at TYPE TIMESTAMPTZ USING status_updated_at::timestamptz;
+                        ALTER TABLE wealth_buy_alert ALTER COLUMN status_updated_at SET DEFAULT NOW();
                     END IF;
                 END $$;
                 """)
