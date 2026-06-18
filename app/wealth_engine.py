@@ -16,7 +16,7 @@ except Exception:
 import yfinance as yf
 from datetime import datetime, date
 
-from database import get_db_connection
+from database import get_connection
 from config import ENABLE_AI_SENTIMENT_SCORE
 from collections import defaultdict
 import concurrent.futures
