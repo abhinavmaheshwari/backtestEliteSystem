@@ -555,8 +555,9 @@ function playDing() {
               <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('CMP')">CMP <span id="wl-sort-CMP"></span></th>
               <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Market Cap Cr')">Market Cap (Cr) <span id="wl-sort-Market_Cap_Cr"></span></th>
               <th style="cursor:pointer;" onclick="sortWatchlist('Category')">Category <span id="wl-sort-Category"></span></th>
-              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Total Points')">Pts <span id="wl-sort-Total_Points"></span></th>
-              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Alpha Score')">Alpha <span id="wl-sort-Alpha_Score"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('Fundamental Score')">Score <span id="wl-sort-Fundamental_Score"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('ROE %')">ROE % <span id="wl-sort-ROE_%"></span></th>
+              <th style="cursor:pointer;text-align:right" onclick="sortWatchlist('YOY Profit %')">YOY Profit % <span id="wl-sort-YOY_Profit_%"></span></th>
             </tr>
           </thead>
           <tbody id="watchlistBody"></tbody>
@@ -2291,7 +2292,7 @@ if (checkViewerName()) {
 }
 
 let WATCHLIST_DATA = [];
-let wlSortCol = 'Alpha Score';
+let wlSortCol = 'Fundamental Score';
 let wlSortAsc = false;
 
 async function loadWatchlist() {
@@ -2410,8 +2411,9 @@ function renderWatchlist() {
           <td style="text-align:right">₹${d.CMP ? d.CMP.toLocaleString('en-IN') : '-'}</td>
           <td style="text-align:right">${d['Market Cap Cr'] ? d['Market Cap Cr'].toLocaleString('en-IN') : '-'}</td>
           <td>${catsHtml}</td>
-          <td style="text-align:right; font-weight:600;">${d['Total Points'] || 0}</td>
-          <td style="text-align:right; color:var(--accent); font-weight:700;">${d['Alpha Score'] || 0}</td>
+          <td style="text-align:right; font-weight:600;">${d['Fundamental Score'] || 0}</td>
+          <td style="text-align:right; color:var(--accent); font-weight:700;">${d['ROE %'] ? Number(d['ROE %']).toFixed(1) + '%' : '-'}</td>
+          <td style="text-align:right; color:var(--win); font-weight:700;">${d['YOY Profit %'] ? Number(d['YOY Profit %']).toFixed(1) + '%' : '-'}</td>
         </tr>`;
     }).join('');
 }
