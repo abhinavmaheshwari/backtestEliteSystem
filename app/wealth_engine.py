@@ -552,6 +552,24 @@ def run_wealth_scan():
 
         df = pd.read_parquet(WATCHLIST_PATH)
 
+        # INJECT ORPHANED OPEN POSITIONS: If a stock is currently held but fell out of the fundamental watchlist,
+        # we MUST still evaluate it so it can trigger a SELL signal.
+        try:
+            from database import get_connection
+            from psycopg2.extras import RealDictCursor
+            with get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT DISTINCT symbol FROM wealth_buy_alert WHERE is_closed = FALSE")
+                    open_symbols = [row['symbol'] for row in cur.fetchall()]
+            
+            missing_symbols = [sym for sym in open_symbols if sym not in df["Stock"].values]
+            if missing_symbols:
+                logger.info(f"Injecting {len(missing_symbols)} orphaned open positions back into evaluation pipeline...")
+                missing_df = pd.DataFrame([{"Stock": sym} for sym in missing_symbols])
+                df = pd.concat([df, missing_df], ignore_index=True)
+        except Exception as e:
+            logger.warning(f"Failed to fetch open positions for injection: {e}")
+
         logger.info(f"💰 [WEALTH ENGINE] Calculating Fund Manager v2 metrics for {len(df)} elite stocks...")
 
         nifty_6m_ret, nifty_dist_52w = fetch_nifty_macro_state()
@@ -789,7 +807,7 @@ def run_wealth_scan():
             # Fetch REAL-TIME prices for all open positions (for accurate P&L calculation)
             try:
                 open_symbols = wealth_df["Stock"].unique().tolist()
-                realtime_prices = {}
+                realtime_metrics = {}
                 if open_symbols:
                     # Fetch all prices in parallel using yfinance
                     for symbol in open_symbols:
@@ -797,14 +815,20 @@ def run_wealth_scan():
                             ticker = yf.Ticker(f"{symbol}.NS")
                             info = ticker.info
                             current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+                            
+                            symbol_row = wealth_df[wealth_df["Stock"] == symbol]
+                            current_score = None
+                            if not symbol_row.empty:
+                                current_score = symbol_row.iloc[0].get("Hold_Score")
+
                             if current_price and current_price > 0:
-                                realtime_prices[symbol] = current_price
+                                realtime_metrics[symbol] = {"price": current_price, "score": current_score}
                         except Exception:
                             pass  # Skip symbols that fail price fetch
                 
-                # Update all open positions with real-time prices
-                if realtime_prices:
-                    update_position_real_time_prices(realtime_prices)
+                # Update all open positions with real-time metrics
+                if realtime_metrics:
+                    update_position_real_time_prices(realtime_metrics)
             except Exception as e:
                 logger.warning(f"⚠️  Could not fetch real-time prices: {e}")
             

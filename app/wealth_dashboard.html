@@ -439,7 +439,8 @@
           <th>PnL (₹)</th>
           <th>Return %</th>
           <th>Type</th>
-          <th>Score</th>
+          <th>Entry Score</th>
+          <th>Today's Score</th>
           <th>Status</th>
           <th>Actions</th>
         </tr></thead>
@@ -1060,6 +1061,7 @@
         const statusColor = status === 'BUY' ? 'var(--green)' : status === 'SELL' ? 'var(--red)' : status === 'HOLD' ? 'var(--amber)' : 'var(--muted)';
         const breakoutType = alert.breakout_type || '-';
         const fmScore = alert.fm_score ? alert.fm_score.toFixed(1) : '-';
+        const currentScore = alert.current_score ? alert.current_score.toFixed(1) : '-';
         const alertDate = alert.alert_date || '-';
         const alertTime = alert.alert_time ? (alert.alert_time.includes('T') ? alert.alert_time.split('T')[1].substring(0, 5) : alert.alert_time.substring(0, 5)) : '';
         
@@ -1079,10 +1081,11 @@
             <td class="mono" style="color:var(--accent); font-weight:bold;">${posPct}</td>
             <td class="mono" style="color:var(--text); font-weight:600;">${posShares}</td>
             <td class="mono" style="color: ${pnlRsColor}; font-weight: 600;">${pnlRsFmt}</td>
-            <td class="mono" style="color: ${returnColor}; font-weight: 600;">${returnPct}%</td>
+            <td class="mono" style="color:${pnlRsColor}; font-weight:bold;">${returnPct}%</td>
             <td>${breakoutType}</td>
-            <td><span class="score-badge ${getScoreCls(fmScore)}">${fmScore}</span></td>
-            <td><span style="color: ${statusColor}; font-weight: 600;">${status}</span></td>
+            <td class="mono" style="font-weight:600;">${fmScore}</td>
+            <td class="mono" style="font-weight:600; color:var(--accent);">${currentScore}</td>
+            <td><span class="badge badge-${status.toLowerCase()}">${status}</span></td>
             <td style="text-align: center;">
               <a href="https://www.tradingview.com/chart/?symbol=NSE:${symbol}" target="_blank" rel="noopener noreferrer" style="color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer; transition: all 0.3s;" onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'">📊 TV</a>
             </td>

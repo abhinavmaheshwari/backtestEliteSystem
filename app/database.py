@@ -411,6 +411,7 @@ def init_db():
                         fm_score REAL,
                         status TEXT DEFAULT 'ACTIVE',
                         current_price REAL,
+                        current_score REAL,
                         status_updated_at TEXT DEFAULT (now()::TEXT),
                         notes TEXT,
                         created_at TEXT NOT NULL DEFAULT (now()::TEXT),
@@ -439,6 +440,7 @@ def init_db():
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS position_shares INTEGER")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS portfolio_bucket TEXT")
                 cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS valuation_score REAL")
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS current_score REAL")
                 
                 # Create indexes (after columns are guaranteed to exist)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_symbol ON wealth_buy_alert(symbol)")
@@ -2245,11 +2247,11 @@ def update_position_current_price(symbol: str, current_price: float) -> bool:
         return False
 
 
-def update_position_real_time_prices(symbols_prices: dict) -> int:
-    """Batch update current_price for open positions with real-time prices.
+def update_position_real_time_prices(symbols_metrics: dict) -> int:
+    """Batch update current_price and current_score for open positions.
     
     Args:
-        symbols_prices: Dict of {symbol: current_price}
+        symbols_metrics: Dict of {symbol: {"price": float, "score": float}}
     
     Returns:
         Count of updated positions
@@ -2258,16 +2260,19 @@ def update_position_real_time_prices(symbols_prices: dict) -> int:
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                for symbol, price in symbols_prices.items():
+                for symbol, metrics in symbols_metrics.items():
+                    price = metrics.get("price")
+                    score = metrics.get("score")
+                    
                     if symbol and price is not None and price > 0:
                         cur.execute("""
                             UPDATE wealth_buy_alert 
-                            SET current_price = %s, status_updated_at = now()::TEXT
+                            SET current_price = %s, current_score = %s, status_updated_at = now()::TEXT
                             WHERE symbol = %s AND is_closed = FALSE
-                        """, (price, symbol))
+                        """, (price, score, symbol))
                         updated_count += cur.rowcount
                 conn.commit()
-        logger.info(f"✅ Updated {updated_count} position(s) with real-time prices")
+        logger.info(f"✅ Updated {updated_count} position(s) with real-time metrics")
         return updated_count
     except Exception as e:
         logger.error(f"❌ Failed to update real-time prices: {e}")
