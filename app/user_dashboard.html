@@ -1687,7 +1687,7 @@ async function markMessagesAsRead() {
 async function fetchChatMessages() {
   const viewerName = localStorage.getItem('viewer_name') || 'Unknown';
   try {
-    const res = await fetch(`${getChatApiBase()}/api/messages?user=${encodeURIComponent(viewerName)}`);
+    const res = await fetch(`${getChatApiBase()}/api/messages?user=${encodeURIComponent(viewerName)}&t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) return;
     const messages = await res.json();
     
