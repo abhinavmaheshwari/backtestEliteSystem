@@ -277,8 +277,13 @@ def _run_scan():
                 "📊 MACD Bullish Cross"
             ]
 
+            signal_str = "Reversal"
             today_str  = ist_now.strftime("%Y-%m-%d")
             dedup_key  = f"{category}|{symbol}|{today_str}|REVERSAL"
+
+            from database import check_recent_alert
+            if check_recent_alert(symbol, "REVERSAL", dedup_key, 240):
+                continue
 
             candle_range   = float(latest["High"]) - float(latest["Low"])
             candle_high    = float(latest["High"])

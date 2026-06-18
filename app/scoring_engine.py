@@ -232,7 +232,7 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
 
     # ── DISQUALIFIER 5: RSI BEARISH DIVERGENCE ──────────────────────────────────────
     if "RSI" in ticker.columns:
-        lookback = RSI_DIVERGENCE_LOOKBACK.get(timeframe, 6)
+        lookback = 14
         if len(ticker) > lookback:
             rsi_now    = float(latest["RSI"])
             rsi_prev   = float(ticker["RSI"].iloc[-1 - lookback])
@@ -284,19 +284,23 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
             return True, reason
 
     # ── DISQUALIFIER 7: PRE-BREAKOUT EXHAUSTION (DOJI CLUSTER) ─────────────────────
-    if len(ticker) >= 4:
+    if len(ticker) >= 21:
         exhaustion_count = 0
+        avg_vol_20 = float(ticker["Volume"].iloc[-21:-1].mean())
         for i in range(-4, -1):
             c    = float(ticker["Close"].iloc[i])
             o    = float(ticker["Open"].iloc[i])
             h    = float(ticker["High"].iloc[i])
             l    = float(ticker["Low"].iloc[i])
+            vol  = float(ticker["Volume"].iloc[i])
             rng  = h - l
             body = abs(c - o)
-            if rng > 0 and (body / rng) < 0.25:
+            is_doji = (body / rng) < 0.25 if rng > 0 else False
+            is_low_volume = vol < avg_vol_20
+            if is_doji and is_low_volume:
                 exhaustion_count += 1
         if exhaustion_count >= 3:
-            reason = f"{exhaustion_count} doji/narrow candles in last 4 bars (exhaustion before breakout)"
+            reason = f"{exhaustion_count} doji/narrow candles on low volume in last 4 bars (exhaustion before breakout)"
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason
 
@@ -354,18 +358,19 @@ def check_hard_disqualifiers(ticker, latest, volume_ratio, symbol=None, timefram
 
     # ── DISQUALIFIER 10: THIN SPREAD TRAP ───────────────────────────────────────
     #
-    # Candle range < 0.3% of price on a breakout candle = no real conviction.
+    # Candle range < scaled_threshold = no real conviction.
     # Thin-spread breakouts are common in illiquid or manipulated stocks where
     # a small order can push price above a level without genuine demand.
     #
     candle_range_d10 = float(latest["High"]) - float(latest["Low"])
     close_val = float(latest["Close"])
     if close_val > 0 and candle_range_d10 > 0:
-        range_pct = candle_range_d10 / close_val
-        if range_pct < MIN_CANDLE_RANGE_PCT:
+        min_tick = 0.05
+        scaled_threshold = max(0.003 * close_val, min_tick * 5)
+        if candle_range_d10 < scaled_threshold:
             reason = (
-                f"Thin spread: candle range {range_pct:.3%} < {MIN_CANDLE_RANGE_PCT:.1%} "
-                f"of price (no conviction — possible manipulation)"
+                f"Thin spread: candle range ₹{candle_range_d10:.2f} < ₹{scaled_threshold:.2f} "
+                f"(no conviction — possible manipulation)"
             )
             logger.warning(f"🚫 {tag}DISQ: {reason}")
             return True, reason

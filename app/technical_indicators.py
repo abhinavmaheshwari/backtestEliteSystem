@@ -236,13 +236,20 @@ def apply_indicators(df: pd.DataFrame, timeframe: str = "1d", daily_ohlc: pd.Dat
     #  -1  = OBV falling (volume diverges from price — distribution/fake)
     #   0  = OBV flat (no conviction either way)
     #
-    if "Volume" in df.columns and len(df) >= 6:
-        # Calculate OBV
-        obv_direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
-        obv = (obv_direction * df["Volume"]).cumsum()
-
+    if "Volume" in df.columns and len(df) >= 50:
+        import numpy as np
+        
+        # Calculate OBV direction
+        obv_direction = np.sign(df["Close"].diff())
+        obv_direction.iloc[0] = 0
+        
+        # 50-bar rolling OBV
+        rolling_obv = (obv_direction * df["Volume"]).rolling(50, min_periods=50).sum()
+        
         # 5-bar OBV slope via linear regression approximation (simple diff)
-        obv_slope = obv.diff(5)
+        obv_slope = rolling_obv.diff(5)
+        
+        # If rolling OBV is NaN (e.g. first 49 bars), the slope will be NaN, and apply will return 0
         df["OBV_TREND"] = obv_slope.apply(
             lambda x: 1 if (pd.notna(x) and x > 0) else (-1 if (pd.notna(x) and x < 0) else 0)
         )

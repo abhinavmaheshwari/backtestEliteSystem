@@ -324,6 +324,7 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_symbol ON alerts(symbol)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_date ON alerts(alert_date)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_symbol_date ON alerts(symbol, alert_date)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_cooldown ON alerts (symbol, scanner, breakout_type, alert_time DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_scanner_health_name ON scanner_health(scanner_name)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_data_fetch_health_source ON data_fetch_health(source_name)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_data_cache_metadata_key ON data_cache_metadata(key)")
@@ -690,6 +691,22 @@ def update_alert_outcome(
                 if not success:
                     conn.rollback()
 
+def check_recent_alert(symbol: str, scanner: str, breakout_type: str, lookback_minutes: int) -> bool:
+    """Returns True if a duplicate alert exists within the cooldown window."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+    
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM alerts
+                WHERE symbol = %s
+                AND scanner = %s
+                AND breakout_type = %s
+                AND alert_time > %s
+                LIMIT 1
+            """, (symbol, scanner, breakout_type, cutoff))
+            return cur.fetchone() is not None
 
 def get_all_alerts() -> list[dict]:
     """Return every alert, newest first — including outcome columns.

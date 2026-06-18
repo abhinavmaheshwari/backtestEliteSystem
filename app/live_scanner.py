@@ -436,6 +436,11 @@ def start(run_once=False):
                     today_str  = datetime.now(IST).strftime("%Y-%m-%d")
                     dedup_key  = f"{category}|{signal_str}|{today_str}|1H"
 
+                    from database import check_recent_alert
+                    if check_recent_alert(symbol, "LIVE", dedup_key, 240):
+                        rejection_counts["duplicate"] += 1
+                        continue
+
                     # ── Dynamic S/R and Indicator-based SL + Target (LIVE_1H mode) ──
                     current_atr = float(latest["ATR"]) if "ATR" in ticker.columns and not pd.isna(latest.get("ATR")) else None
                     sl_result = compute_sl_and_target(

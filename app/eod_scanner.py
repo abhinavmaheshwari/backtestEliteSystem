@@ -378,6 +378,11 @@ def start():
                 today_str  = ist_now.strftime("%Y-%m-%d")
                 dedup_key  = f"{category}|{signal_str}|{today_str}|EOD"
 
+                from database import check_recent_alert
+                if check_recent_alert(symbol, "EOD", dedup_key, 390):
+                    rejection_counts["duplicate"] += 1
+                    continue
+
                 # ── Dynamic S/R and Indicator-based SL + Target (EOD mode) ───────
                 sl_result = compute_sl_and_target(
                     entry_price=candle_close,

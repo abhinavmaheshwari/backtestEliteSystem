@@ -129,11 +129,12 @@ def _is_volume_confirmed(df: pd.DataFrame, min_ratio: float = None) -> bool:
         min_ratio = MIN_BREAKOUT_VOLUME_RATIO
 
     n = len(df)
-    if n < 21 or "Volume" not in df.columns:
-        return True  # no data to check — don't block
+    lookback = min(50, n - 1)
+    if lookback < 20:
+        return True  # Insufficient history for reliable Z-score
 
     vol_now = float(df["Volume"].iloc[-1])
-    vol_series = df["Volume"].iloc[-21:-1]
+    vol_series = df["Volume"].iloc[-(lookback+1):-1]
     vol_avg = float(vol_series.mean())
     vol_std = float(vol_series.std())
 
@@ -263,6 +264,12 @@ def detect_breakouts(df: pd.DataFrame, timeframe: str = "15m") -> dict[str, floa
         prev_high = float(prev_high)
 
         # ── ANTI-FAKE-BREAKOUT GATE: Closing-price confirmation ───────────────
+        #
+        # Prior_High Definition:
+        # Prior_High = rolling max of the prior `window` candles (excluding the current candle).
+        # Represents the highest price the market has tested and rejected over the lookback period.
+        # This is a continuous resistance proxy, not a discrete swing-high pivot.
+        # window = 20 (15m), 20 (1h), 20 (EOD) — see config.BREAKOUT_LOOKBACK_BARS
         #
         # Old: close > prev_high  (wick-only breakouts pass)
         # New: THREE conditions must ALL pass:
