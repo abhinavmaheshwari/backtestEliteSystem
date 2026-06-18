@@ -850,11 +850,26 @@
           </tr>
         `).join('') : `<tr><td colspan="12" class="empty">No active buy signals — wait for score ≥ 85 with price above 200 SMA</td></tr>`;
 
+        // Fetch Today's Closed Positions
+        let closedToday = [];
+        try {
+            const closedRes = await fetch('/api/wealth/closed-positions?days=1');
+            if (closedRes.ok) {
+                const closedData = await closedRes.json();
+                // Filter for today (IST)
+                const todayStr = new Date().toLocaleString("en-CA", {timeZone: "Asia/Kolkata"}).split(',')[0];
+                closedToday = closedData.filter(p => p.exit_date && p.exit_date.startsWith(todayStr));
+            }
+        } catch(e) { console.error("Failed to fetch today's closed positions", e); }
+
         // Sells Table
         const sells = stocks.filter(s => (s.Signal || "").includes("SELL")).sort((a,b) => (a.FM_Score || 0) - (b.FM_Score || 0));
-        document.getElementById('kpi-sells').textContent = sells.length === 0 ? '-' : sells.length;
-        document.getElementById('sells-count').textContent = sells.length;
-        document.querySelector('#tbl-sells tbody').innerHTML = sells.length ? sells.map(r => `
+        const totalSellsCount = sells.length + closedToday.length;
+        
+        document.getElementById('kpi-sells').textContent = totalSellsCount === 0 ? '-' : totalSellsCount;
+        document.getElementById('sells-count').textContent = totalSellsCount;
+        
+        let sellsHtml = sells.map(r => `
           <tr class="${newSellSignals.has(r.Stock) ? 'buy-signal-blink' : ''}">
             <td class="sym">${r.Stock}</td>
             <td><span class="score-badge ${getScoreCls(r.FM_Score)}">${r.FM_Score || 0}</span></td>
@@ -864,7 +879,24 @@
             <td>${sectorTag(r.Sector)}</td>
             <td>${getSigHtml(r.Signal)}</td>
           </tr>
-        `).join('') : `<tr><td colspan="7" class="empty">No sell alerts currently</td></tr>`;
+        `).join('');
+
+        let closedRowsHtml = closedToday.map(r => `
+          <tr style="background: rgba(239, 68, 68, 0.05);">
+            <td class="sym">${r.symbol} <span style="font-size:9px; background:var(--red); color:#000; padding:2px 4px; border-radius:3px; margin-left:4px; font-weight:bold;">CLOSED</span></td>
+            <td><span class="score-badge" style="background:var(--card2); color:var(--muted)">-</span></td>
+            <td class="mono" style="color:var(--muted)">-</td>
+            <td class="mono">Exit: ₹${(parseFloat(r.exit_price)||0).toFixed(2)}</td>
+            <td style="color:var(--muted)">-</td>
+            <td style="color:var(--muted)">-</td>
+            <td style="color:var(--red); font-weight:bold;">
+                ${r.exit_signal || 'SELL'} (P&L: ${r.pnl_pct > 0 ? '+' : ''}${(parseFloat(r.pnl_pct)||0).toFixed(1)}%)
+            </td>
+          </tr>
+        `).join('');
+
+        const combinedHtml = sellsHtml + closedRowsHtml;
+        document.querySelector('#tbl-sells tbody').innerHTML = combinedHtml || `<tr><td colspan="7" class="empty">No sell alerts or closed positions today</td></tr>`;
 
         // Top 20
         const top20 = [...stocks].sort((a,b) => (b.FM_Score || 0) - (a.FM_Score || 0)).slice(0, 20);
