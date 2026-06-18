@@ -2829,7 +2829,7 @@ async function fetchAdminChatMessages() {
             const unreadFromUser = messages.filter(m => !m.is_from_admin && !m.is_read).length;
             if (unreadFromUser > 0) {
                 markMessagesAsReadAdmin();
-                playAlertSound(); // Ding when user replies
+                playLoudNotificationSound(); // Ding when user replies
             }
             adminLastMessageCount = messages.length;
         }

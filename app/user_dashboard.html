@@ -1702,7 +1702,7 @@ async function fetchChatMessages() {
         badge.textContent = unreadFromAdmin;
         badge.style.display = 'flex';
         // Play notification sound if not open
-        playAlertSound();
+        playLoudNotificationSound();
       } else if (isChatOpen && unreadFromAdmin > 0) {
         markMessagesAsRead();
       }
