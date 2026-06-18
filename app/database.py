@@ -145,6 +145,35 @@ def init_db():
                     )
                 """)
                 # ── MIGRATIONS: safe to run every deploy ─────────────────────────────
+                cur.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'alerts'
+                        AND column_name = 'alert_time'
+                        AND data_type = 'text'
+                    ) THEN
+                        ALTER TABLE alerts ALTER COLUMN alert_time TYPE TIMESTAMPTZ USING alert_time::timestamptz;
+                        ALTER TABLE alerts ALTER COLUMN alert_time SET DEFAULT NOW();
+                    END IF;
+                END $$;
+                """)
+                cur.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'alerts'
+                        AND column_name = 'score'
+                        AND data_type = 'integer'
+                    ) THEN
+                        ALTER TABLE alerts ALTER COLUMN score TYPE REAL USING score::real;
+                    END IF;
+                END $$;
+                """)
+                cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
+                cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
                 for col_sql in [
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS stop_loss    REAL",
                     "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS target_price REAL",
@@ -178,6 +207,19 @@ def init_db():
                         weights JSONB NOT NULL,
                         created_at TEXT NOT NULL DEFAULT (now()::TEXT)
                     )
+                """)
+                cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'chk_weights_json'
+                    ) THEN
+                        ALTER TABLE score_weight_log 
+                            ADD CONSTRAINT chk_weights_json 
+                            CHECK (weights ? 'volume_breakout' AND weights ? 'rsi_divergence' AND weights ? 'ema_crossover') 
+                            NOT VALID;
+                    END IF;
+                END $$;
                 """)
 
                 # ── Bayesian Model Updates (Pending Admin Approval) ──────────────────
@@ -449,7 +491,42 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_date ON wealth_buy_alert(alert_date)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_status ON wealth_buy_alert(status)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wealth_alert_is_closed ON wealth_buy_alert(is_closed)")
-                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_wealth_alert ON wealth_buy_alert(symbol, alert_date, COALESCE(breakout_type, ''))")
+                
+                # Audit and status columns migration
+                cur.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'wealth_buy_alert' AND column_name = 'created_at' AND data_type = 'text'
+                    ) THEN
+                        ALTER TABLE wealth_buy_alert ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz;
+                    END IF;
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'wealth_buy_alert' AND column_name = 'status_updated_at' AND data_type = 'text'
+                    ) THEN
+                        ALTER TABLE wealth_buy_alert ALTER COLUMN status_updated_at TYPE TIMESTAMPTZ USING status_updated_at::timestamptz;
+                    END IF;
+                END $$;
+                """)
+                cur.execute("ALTER TABLE wealth_buy_alert ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+
+                # Clean up breakout_type and add constraint safely
+                cur.execute("DROP INDEX IF EXISTS unique_wealth_alert")
+                cur.execute("UPDATE wealth_buy_alert SET breakout_type = '' WHERE breakout_type IS NULL")
+                cur.execute("ALTER TABLE wealth_buy_alert ALTER COLUMN breakout_type SET DEFAULT ''")
+                cur.execute("ALTER TABLE wealth_buy_alert ALTER COLUMN breakout_type SET NOT NULL")
+                cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'uq_wealth_symbol_date_type'
+                    ) THEN
+                        ALTER TABLE wealth_buy_alert ADD CONSTRAINT uq_wealth_symbol_date_type UNIQUE (symbol, alert_date, breakout_type);
+                    END IF;
+                END $$;
+                """)
 
                 # ── Users & Sessions Tables ──
                 cur.execute("""
@@ -2091,13 +2168,19 @@ def save_wealth_buy_alert(symbol: str, alert_price: float, breakout_type: str = 
                             (symbol, alert_price, breakout_type, fm_score, status, notes, alert_date, alert_time,
                              position_pct, position_amount, position_shares, portfolio_bucket, valuation_score)
                             VALUES (%s, %s, %s, %s, 'ACTIVE', %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (symbol, alert_date, COALESCE(breakout_type, '')) DO NOTHING
-                        """, (symbol, alert_price, breakout_type, fm_score, notes, ist_today, ist_time,
+                            ON CONFLICT ON CONSTRAINT uq_wealth_symbol_date_type
+                            DO UPDATE SET fm_score = EXCLUDED.fm_score, updated_at = NOW()
+                        """, (symbol, alert_price, breakout_type or '', fm_score, notes, ist_today, ist_time,
                               position_pct, position_amount, position_shares, portfolio_bucket, valuation_score))
+                        
                         
                         if cur.rowcount == 0:
                             logger.info(f"⏭️  BUY alert already saved today: {symbol} {breakout_type}")
                             return False  # Duplicate, skip
+                        elif cur.rowcount == 1 and cur.statusmessage == 'INSERT 0 1':
+                            pass # Normal insert
+                        else:
+                            pass # Updated existing
                             
                         conn.commit()
                         success = True
@@ -2295,7 +2378,7 @@ def update_position_current_price(symbol: str, current_price: float) -> bool:
             with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE wealth_buy_alert 
-                    SET current_price = %s, status_updated_at = now()::TEXT
+                    SET current_price = %s, status_updated_at = NOW()
                     WHERE symbol = %s AND is_closed = FALSE
                 """, (current_price, symbol))
                 conn.commit()
@@ -2328,7 +2411,7 @@ def update_position_real_time_prices(symbols_metrics: dict) -> int:
                             if symbol and price is not None and price > 0:
                                 cur.execute("""
                                     UPDATE wealth_buy_alert 
-                                    SET current_price = %s, current_score = %s, status_updated_at = now()::TEXT
+                                    SET current_price = %s, current_score = %s, status_updated_at = NOW()
                                     WHERE symbol = %s AND is_closed = FALSE
                                 """, (price, score, symbol))
                                 updated_count += cur.rowcount
