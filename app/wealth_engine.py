@@ -823,7 +823,7 @@ def run_wealth_scan():
                     # Fetch all prices in parallel using yfinance
                     for symbol in open_symbols:
                         try:
-                            ticker = yf.Ticker(f"{symbol}.NS")
+                            ticker = yf.Ticker(f"{symbol.replace('_', '-')}.NS")
                             info = ticker.info
                             current_price = info.get("currentPrice") or info.get("regularMarketPrice")
                             

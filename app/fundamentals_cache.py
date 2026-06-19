@@ -74,7 +74,7 @@ def compute_piotroski(ticker_info: dict, financials: pd.DataFrame) -> int:
 
 def fetch_single_piotroski(symbol: str) -> dict:
     try:
-        t = yf.Ticker(f"{symbol}.NS")
+        t = yf.Ticker(f"{symbol.replace('_', '-')}.NS")
         info = t.info
         
         # Combine financials and balance sheet to have all required rows

@@ -784,7 +784,7 @@ _news_lock = threading.Lock()
 def api_news(symbol):
     """Fetch recent 3 news headlines for a symbol with 15-min caching."""
     # Append .NS for Yahoo Finance compatibility if not present and if it doesn't have an extension
-    yf_symbol = symbol if "." in symbol else f"{symbol}.NS"
+    yf_symbol = symbol.replace('_', '-') if "." in symbol else f"{symbol.replace('_', '-')}.NS"
     
     with _news_lock:
         cached = _news_cache.get(yf_symbol)
@@ -826,7 +826,7 @@ import json
 @app.route("/api/notices/<symbol>")
 def api_notices(symbol):
     """Fetch recent corporate announcements from NSE via requests.Session to bypass WAF."""
-    yf_symbol = symbol.replace('.NS', '')
+    yf_symbol = symbol.replace('.NS', '').replace('_', '-')
     url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={yf_symbol}"
     
     headers = {
