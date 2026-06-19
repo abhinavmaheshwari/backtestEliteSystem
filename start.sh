@@ -1,19 +1,32 @@
 #!/bin/bash
 
-echo "🚀 Starting Elite Breakout System Supervisor..."
+# Force backtest mode globally
+export BACKTEST_MODE=true
 
-while true; do
-    echo "▶️ Launching app/main.py..."
-    python3 app/main.py
-    EXIT_CODE=$?
+echo "=========================================================================="
+echo "🚀 Starting Elite Backtest Engine on Railway"
+echo "=========================================================================="
+
+# 1. Start the Flask Dashboard in the background
+# Railway requires a service to bind to the $PORT within 60s, or it marks the deploy as failed.
+# Starting the dashboard first guarantees the deploy succeeds.
+echo "🌐 Starting Dashboard Server..."
+python3 -m flask --app app.dashboard_server run --host 0.0.0.0 --port "${PORT:-8080}" &
+DASHBOARD_PID=$!
+
+# 2. Run the heavy backtest simulation sequentially in the background
+# This will log to the Railway console while the dashboard remains accessible.
+echo "⏳ Launching Backtest Simulation pipeline..."
+(
+    echo "[1/2] Pre-fetching historical cache (this prevents yfinance IP bans)..."
+    python3 app/prefetch_cache.py
     
-    echo "⚠️ main.py crashed or exited with code $EXIT_CODE."
+    echo "[2/2] Running Backtest Time-Machine..."
+    python3 backtest_engine.py
     
-    if [ $EXIT_CODE -eq 0 ]; then
-        echo "🛑 Clean exit detected. Stopping supervisor loop."
-        break
-    fi
-    
-    echo "⏳ Respawning in 5 seconds to allow Railway health checks and port releases..."
-    sleep 5
-done
+    echo "✅ Backtest Simulation Pipeline Complete!"
+) &
+
+# Wait for the web server to keep the container alive
+wait $DASHBOARD_PID
+
