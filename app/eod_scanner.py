@@ -114,7 +114,7 @@ def start():
             logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting EOD scan.")
             try:
                 from database import upsert_scanner_health
-                upsert_scanner_health("EOD V3", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+                upsert_scanner_health("EOD V3", "DOWN", error_msg="CRITICAL: YFinance returned 0 data. Rate limited.")
             except Exception:
                 pass
             return

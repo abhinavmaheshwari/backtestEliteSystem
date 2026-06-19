@@ -137,7 +137,7 @@ def start(run_once=False):
                 logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting 15m scan.")
                 try:
                     from database import upsert_scanner_health
-                    upsert_scanner_health("INTRADAY", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+                    upsert_scanner_health("INTRADAY", "DOWN", error_msg="CRITICAL: YFinance returned 0 data. Rate limited.")
                 except Exception:
                     pass
                 return

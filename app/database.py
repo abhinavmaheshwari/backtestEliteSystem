@@ -773,6 +773,7 @@ def classify_error_severity(error_msg: str) -> str:
     
     # CRITICAL patterns: code/infrastructure issues that crash the scanner
     critical_patterns = [
+        'critical',
         'syntax error',
         'import error',
         'indentation error',

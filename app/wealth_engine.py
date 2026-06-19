@@ -664,7 +664,7 @@ def run_wealth_scan():
         if not tech_df.empty and (tech_df.get("cmp") is None or tech_df["cmp"].isnull().all() or (tech_df["cmp"] == 0).all()):
             logger.error("❌ YFinance returned 0 prices. API might be down or rate-limited. Aborting this scan cycle.")
             try:
-                upsert_scanner_health("Wealth Engine", "DOWN", error_msg="YFinance returned 0 prices. Rate limited.")
+                upsert_scanner_health("Wealth Engine", "DOWN", error_msg="CRITICAL: YFinance returned 0 prices. Rate limited.")
             except Exception:
                 pass
             return

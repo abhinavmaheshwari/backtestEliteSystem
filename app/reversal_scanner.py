@@ -174,7 +174,7 @@ def _run_scan():
         logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting Reversal scan.")
         try:
             from database import upsert_scanner_health
-            upsert_scanner_health("REVERSAL", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+            upsert_scanner_health("REVERSAL", "DOWN", error_msg="CRITICAL: YFinance returned 0 data. Rate limited.")
         except Exception:
             pass
         return []
