@@ -549,16 +549,28 @@ def run_system_scheduler():
         logger.info("🕒 SCHEDULER | [8:30 AM] Verifying file readiness")
         now = datetime.now(IST)
 
-        # 1. Verify Watchlist — use timezone-aware mtime check
+        # 1. Verify Watchlist — use robust embedded date check to prevent clock-skew issues
         try:
             if not os.path.exists(WATCHLIST_PATH):
-                logger.warning("⚠️ Watchlist missing or stale! Forcing rebuild.")
+                logger.warning("⚠️ Watchlist missing! Forcing rebuild.")
                 safe_run_daily_builder()
             else:
-                mtime_ts = os.path.getmtime(WATCHLIST_PATH)
-                mtime = datetime.fromtimestamp(mtime_ts, IST)
-                if mtime.date() < now.date():
-                    logger.warning("⚠️ Watchlist stale! Forcing rebuild.")
+                import pandas as pd
+                try:
+                    df = pd.read_parquet(WATCHLIST_PATH)
+                    if "Scan Time" in df.columns and not df.empty:
+                        scan_date_str = str(df["Scan Time"].iloc[0])[:10]
+                        scan_date = datetime.strptime(scan_date_str, "%Y-%m-%d").date()
+                        if scan_date < now.date():
+                            logger.warning(f"⚠️ Watchlist stale! Embedded date is {scan_date}, expected {now.date()}. Forcing rebuild.")
+                            safe_run_daily_builder()
+                        else:
+                            logger.info("✅ Watchlist embedded date is fresh.")
+                    else:
+                        logger.warning("⚠️ Watchlist missing 'Scan Time' column! Forcing rebuild.")
+                        safe_run_daily_builder()
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to read Watchlist parquet ({e}). Forcing rebuild.")
                     safe_run_daily_builder()
         except Exception:
             logger.exception("Failed to verify watchlist; forcing rebuild.")

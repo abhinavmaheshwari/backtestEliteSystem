@@ -23,11 +23,12 @@ _lock = threading.Lock()
 CACHE_TTL_SECONDS = PRICE_CACHE_TTL_SECONDS
 
 # Map interval string to required freshness cadence (seconds)
+# TTLs are strictly smaller than candle size to prevent stale-but-not-expired candles
 _INTERVAL_CADENCE = {
-    '1m': 60,
-    '15m': 900,
-    '1h': 3600,
-    '1d': 24 * 3600,
+    '1m': 30,         # 30 seconds
+    '15m': 300,       # 5 minutes
+    '1h': 600,        # 10 minutes
+    '1d': 1800,       # 30 minutes
 }
 
 def _is_market_hours() -> bool:
