@@ -1581,6 +1581,29 @@ function playLoudNotificationSound() {
   } catch(e) { console.warn("Audio playback blocked", e); }
 }
 
+function playSoftTickSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    
+    // Soft tick/click sound (WhatsApp style)
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.05);
+    
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
+    
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.1);
+  } catch(e) { console.warn("Audio playback blocked", e); }
+}
+
 async function fetchTodaysAlertsAndBlink_User(){
   try{
     const today = new Date();
@@ -1702,8 +1725,9 @@ async function fetchChatMessages() {
         badge.textContent = unreadFromAdmin;
         badge.style.display = 'flex';
         // Play notification sound if not open
-        playLoudNotificationSound();
+        playSoftTickSound();
       } else if (isChatOpen && unreadFromAdmin > 0) {
+        playSoftTickSound();
         markMessagesAsRead();
       }
       lastMessageCount = messages.length;
