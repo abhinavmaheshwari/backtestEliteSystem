@@ -4,8 +4,15 @@ import logging
 import threading
 from datetime import datetime, timezone
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+BACKTEST_MODE = os.getenv("BACKTEST_MODE", "false").lower() == "true"
+
+def get_simulated_now():
+    """Returns freezegun-mocked now() during backtest, real now() in live."""
+    return datetime.now()
 
 # Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
 try:
@@ -48,9 +55,42 @@ os.makedirs(CACHE_DIR, exist_ok=True)
     retry=retry_if_exception_type(Exception),
     reraise=True
 )
-def _fetch_history_with_retry(yf_symbol: str, period: str = "1y", auto_adjust: bool = True) -> pd.DataFrame:
+def _fetch_history_with_retry(yf_symbol: str, period: str = "1y", auto_adjust: bool = True, interval: str = "1d") -> pd.DataFrame:
+    # --- BACKTEST OVERRIDE ---
+    if BACKTEST_MODE:
+        import os
+        from config import DATA_DIR
+        path = os.path.join(DATA_DIR, "backtest_data", f"{yf_symbol}_{interval}.parquet")
+        if os.path.exists(path):
+            df = pd.read_parquet(path)
+            # CRITICAL: Always truncate — this is the anti-lookahead guard
+            simulated_now = get_simulated_now()
+            
+            # Ensure proper timezone comparison
+            if df.index.tz is None:
+                # If naive, assume it's IST
+                sim_now_naive = simulated_now.replace(tzinfo=None)
+                df = df[df.index <= pd.Timestamp(sim_now_naive)]
+            else:
+                # Localize simulated_now to IST
+                sim_now_aware = simulated_now
+                if sim_now_aware.tzinfo is None:
+                    sim_now_aware = sim_now_aware.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                # Convert both to UTC to compare safely
+                df_utc = df.index.tz_convert('UTC')
+                sim_utc = pd.Timestamp(sim_now_aware).tz_convert('UTC')
+                df = df[df_utc <= sim_utc]
+            
+            if df.empty:
+                raise ValueError(f"Empty backtest history returned for {yf_symbol} after truncation to {simulated_now}")
+            return df
+        else:
+            logger.warning(f"Backtest data missing for {yf_symbol} at {path}")
+            return pd.DataFrame()
+            
+    # --- LIVE MODE ---
     ticker = yf.Ticker(yf_symbol)
-    hist = ticker.history(period=period, auto_adjust=auto_adjust)
+    hist = ticker.history(period=period, interval=interval, auto_adjust=auto_adjust)
     if hist is None or hist.empty:
         raise ValueError(f"Empty history returned for {yf_symbol}")
         
@@ -173,7 +213,7 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                     try:
                         _YF_SEMAPHORE.acquire()
                         try:
-                            fetched = _fetch_history_with_retry(yf_symbol, period)
+                            fetched = _fetch_history_with_retry(yf_symbol, period, interval=resolution)
                         finally:
                             _YF_SEMAPHORE.release()
                         if not fetched.empty:
@@ -224,7 +264,7 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                     break
 
         try:
-            fetched = _fetch_history_with_retry(yf_symbol, period)
+            fetched = _fetch_history_with_retry(yf_symbol, period, interval=resolution)
             if fetched is None or fetched.empty:
                 raise ValueError('Empty fetch')
             # persist

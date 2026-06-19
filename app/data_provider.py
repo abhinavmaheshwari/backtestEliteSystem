@@ -4,8 +4,17 @@ import yfinance as yf
 import time
 import random
 import logging
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+BACKTEST_MODE = os.getenv("BACKTEST_MODE", "false").lower() == "true"
+
+def get_simulated_now():
+    """Returns freezegun-mocked now() during backtest, real now() in live."""
+    return datetime.now()
 
 class DataFetcher(ABC):
     @abstractmethod
@@ -35,6 +44,29 @@ class YFinanceFetcher(DataFetcher):
 
     def get_ohlcv(self, symbol: str, interval: str, period: str, retries: int = 3) -> pd.DataFrame:
         ns_sym = self._normalize_symbol(symbol)
+        
+        if BACKTEST_MODE:
+            from config import DATA_DIR
+            path = os.path.join(DATA_DIR, "backtest_data", f"{ns_sym}_{interval}.parquet")
+            if os.path.exists(path):
+                df = pd.read_parquet(path)
+                simulated_now = get_simulated_now()
+                
+                if df.index.tz is None:
+                    sim_now_naive = simulated_now.replace(tzinfo=None)
+                    df = df[df.index <= pd.Timestamp(sim_now_naive)]
+                else:
+                    sim_now_aware = simulated_now
+                    if sim_now_aware.tzinfo is None:
+                        sim_now_aware = sim_now_aware.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                    df_utc = df.index.tz_convert('UTC')
+                    sim_utc = pd.Timestamp(sim_now_aware).tz_convert('UTC')
+                    df = df[df_utc <= sim_utc]
+                return df.copy()
+            else:
+                logger.warning(f"Backtest data missing for {ns_sym} at {path}")
+                return None
+
         for attempt in range(retries):
             try:
                 df = yf.download(ns_sym, interval=interval, period=period, progress=False, auto_adjust=True, threads=False)
@@ -54,6 +86,33 @@ class YFinanceFetcher(DataFetcher):
 
     def get_batch_ohlcv(self, symbols: list[str], interval: str, period: str, retries: int = 3) -> dict[str, pd.DataFrame]:
         normalized_map = {self._normalize_symbol(s): s for s in symbols}
+        all_data = {}
+        
+        if BACKTEST_MODE:
+            from config import DATA_DIR
+            simulated_now = get_simulated_now()
+            
+            for ns_sym, raw_sym in normalized_map.items():
+                path = os.path.join(DATA_DIR, "backtest_data", f"{ns_sym}_{interval}.parquet")
+                if os.path.exists(path):
+                    df = pd.read_parquet(path)
+                    
+                    if df.index.tz is None:
+                        sim_now_naive = simulated_now.replace(tzinfo=None)
+                        df = df[df.index <= pd.Timestamp(sim_now_naive)]
+                    else:
+                        sim_now_aware = simulated_now
+                        if sim_now_aware.tzinfo is None:
+                            sim_now_aware = sim_now_aware.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                        df_utc = df.index.tz_convert('UTC')
+                        sim_utc = pd.Timestamp(sim_now_aware).tz_convert('UTC')
+                        df = df[df_utc <= sim_utc]
+                        
+                    if not df.empty:
+                        df = df.reset_index().copy()
+                        all_data[raw_sym] = df
+            return all_data
+
         tickers_str = " ".join(normalized_map.keys())
         
         for attempt in range(retries):
@@ -66,7 +125,6 @@ class YFinanceFetcher(DataFetcher):
                 if not isinstance(raw.columns, pd.MultiIndex) and len(symbols) > 1:
                     raise ValueError("yfinance returned flat DF instead of MultiIndex for batch")
                 
-                all_data = {}
                 if isinstance(raw.columns, pd.MultiIndex):
                     level0 = raw.columns.get_level_values(0)
                     for ns_sym, raw_sym in normalized_map.items():
