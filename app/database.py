@@ -326,7 +326,6 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_symbol_date ON alerts(symbol, alert_date)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_cooldown ON alerts (symbol, scanner, breakout_type, alert_time DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_scanner_health_name ON scanner_health(scanner_name)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_data_fetch_health_source ON data_fetch_health(source_name)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_data_cache_metadata_key ON data_cache_metadata(key)")
 
                 # ── Trade analytics view mapping JSONB context to columns ───────────
@@ -396,6 +395,7 @@ def init_db():
                     )
                 """)
                 cur.execute("ALTER TABLE data_fetch_health ADD COLUMN IF NOT EXISTS is_acknowledged BOOLEAN DEFAULT TRUE")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_data_fetch_health_source ON data_fetch_health(source_name)")
 
                 # ── Manual Portfolio Tracker ──────────────────────────────────────
                 cur.execute("""
