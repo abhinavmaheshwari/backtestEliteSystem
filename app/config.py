@@ -58,37 +58,37 @@ SCORE_THRESHOLDS = {
 # SCAN CONFIGURATION
 # =====================================================================================
 
-SCAN_CONFIG = {
-    "15m": {
-        "MIN_SIGNALS":        2,
-        "MIN_BODY_RATIO":     0.60,
-        "MIN_CLOSE_POSITION": 0.70,
-        "MAX_UPPER_WICK":     0.20,
-        "MIN_VOLUME_RATIO":   2.5,
-        "MIN_VOLUME_AVG":     150_000,
-        "MIN_RSI":            52,
-        "MAX_RSI":            87,
-    },
-    "1h": {
-        "MIN_SIGNALS":        3,
-        "MIN_BODY_RATIO":     0.55,
-        "MIN_CLOSE_POSITION": 0.65,
-        "MAX_UPPER_WICK":     0.25,
-        "MIN_VOLUME_RATIO":   2.0,
-        "MIN_VOLUME_AVG":     100_000,
-        "MIN_RSI":            55,
-        "MAX_RSI":            86,  
-    },
-    "1d": {
-        "MIN_SIGNALS":        1,
-        "MIN_BODY_RATIO":     0.45,
-        "MIN_CLOSE_POSITION": 0.65,
-        "MAX_UPPER_WICK":     0.35,
-        "MIN_VOLUME_RATIO":   1.8,
-        "MIN_VOLUME_AVG":     50_000,
-        "MIN_RSI":            55,
-        "MAX_RSI":            88,  
-    },
+INTRADAY_CONFIG = {
+    "MIN_SIGNALS":        2,
+    "MIN_BODY_RATIO":     0.60,
+    "MIN_CLOSE_POSITION": 0.70,
+    "MAX_UPPER_WICK":     0.20,
+    "MIN_VOLUME_RATIO":   2.5,
+    "MIN_VOLUME_AVG":     150_000,
+    "MIN_RSI":            52,
+    "MAX_RSI":            87,
+}
+
+LIVE_1H_CONFIG = {
+    "MIN_SIGNALS":        3,
+    "MIN_BODY_RATIO":     0.55,
+    "MIN_CLOSE_POSITION": 0.65,
+    "MAX_UPPER_WICK":     0.25,
+    "MIN_VOLUME_RATIO":   2.0,
+    "MIN_VOLUME_AVG":     100_000,
+    "MIN_RSI":            55,
+    "MAX_RSI":            86,
+}
+
+EOD_CONFIG = {
+    "MIN_SIGNALS":        1,
+    "MIN_BODY_RATIO":     0.45,
+    "MIN_CLOSE_POSITION": 0.65,
+    "MAX_UPPER_WICK":     0.35,
+    "MIN_VOLUME_RATIO":   1.8,
+    "MIN_VOLUME_AVG":     50_000,
+    "MIN_RSI":            55,
+    "MAX_RSI":            88,
 }
 
 ADX_MIN_THRESHOLD = 25

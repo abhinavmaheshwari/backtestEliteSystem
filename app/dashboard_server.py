@@ -198,9 +198,18 @@ def performance_json():
         from database import get_system_state
         val = get_system_state("performance_data")
         if val:
-            return Response(val, mimetype="application/json")
-    except Exception:
-        logger.exception("❌ Failed to load performance data from DB")
+            import json
+            # Explicit validation to ensure payload is not malformed
+            parsed = json.loads(val)
+            # Ensure required top-level keys exist
+            required_keys = {"generated_at", "trades", "summary", "equity_curve", "monthly", "by_scanner", "by_category"}
+            if required_keys.issubset(parsed.keys()):
+                # Re-serialize to string since Response expects string/bytes
+                return Response(val, mimetype="application/json")
+            else:
+                logger.error("❌ Performance data missing required keys. Using fallback.")
+    except Exception as e:
+        logger.exception(f"❌ Failed to load or parse performance data from DB: {e}")
 
     # Return empty-but-valid structure so dashboard doesn't fall back to demo data
     empty = {

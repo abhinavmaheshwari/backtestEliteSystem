@@ -24,7 +24,7 @@ from sector_rotation import get_sector_scores
 from config import (
     WATCHLIST_PATH,
     SCORE_THRESHOLDS,
-    SCAN_CONFIG,
+    EOD_CONFIG,
     BATCH_DOWNLOAD_SIZE,
     ADX_MIN_THRESHOLD,
     MAX_PRE_BREAKOUT_RED_CANDLES,
@@ -38,14 +38,14 @@ logger = logging.getLogger(__name__)
 IST        = ZoneInfo("Asia/Kolkata")
 CHUNK_SIZE = 10
 
-MIN_SIGNALS             = SCAN_CONFIG["1d"]["MIN_SIGNALS"]
-MIN_BODY_RATIO          = SCAN_CONFIG["1d"]["MIN_BODY_RATIO"]
-MIN_CLOSE_POSITION      = SCAN_CONFIG["1d"]["MIN_CLOSE_POSITION"]
-MAX_UPPER_WICK_RATIO    = SCAN_CONFIG["1d"]["MAX_UPPER_WICK"]
-MIN_VOLUME_RATIO        = SCAN_CONFIG["1d"]["MIN_VOLUME_RATIO"]    
-MIN_AVG_VOLUME_SHARES   = SCAN_CONFIG["1d"]["MIN_VOLUME_AVG"]      
-MIN_RSI                 = SCAN_CONFIG["1d"]["MIN_RSI"]             
-MAX_RSI                 = SCAN_CONFIG["1d"]["MAX_RSI"]             
+MIN_SIGNALS             = EOD_CONFIG["MIN_SIGNALS"]
+MIN_BODY_RATIO          = EOD_CONFIG["MIN_BODY_RATIO"]
+MIN_CLOSE_POSITION      = EOD_CONFIG["MIN_CLOSE_POSITION"]
+MAX_UPPER_WICK_RATIO    = EOD_CONFIG["MAX_UPPER_WICK"]
+MIN_VOLUME_RATIO        = EOD_CONFIG["MIN_VOLUME_RATIO"]    
+MIN_AVG_VOLUME_SHARES   = EOD_CONFIG["MIN_VOLUME_AVG"]      
+MIN_RSI                 = EOD_CONFIG["MIN_RSI"]             
+MAX_RSI                 = EOD_CONFIG["MAX_RSI"]             
 MIN_SCORE               = SCORE_THRESHOLDS["1d"]                   
 
 # MIN_STOCK_PRICE imported from config (₹100)
