@@ -4,8 +4,6 @@ import logging
 import yfinance as yf
 import pandas as pd
 from requests_cache import CachedSession
-from pyrate_limiter import Duration, RequestRate, Limiter
-from requests_ratelimiter import LimiterSession
 
 from config import DATA_DIR
 from watchlist_cache import get_watchlist
@@ -13,17 +11,12 @@ from watchlist_cache import get_watchlist
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# Cache session and rate limiter setup (as per user specifications)
-class CachedLimiterSession(CachedSession, LimiterSession):
-    pass
-
-session = CachedLimiterSession(
-    limiter=Limiter(RequestRate(2, Duration.SECOND * 5)),  # 2 requests per 5 seconds
-    bucket_class=dict,
+session = CachedSession(
+    'yfinance_backtest_cache',
     backend='sqlite',
-    cache_name='yfinance_backtest_cache',
     expire_after=-1  # Never expire
 )
+
 
 START_DATE = "2026-01-01"
 END_DATE   = "2026-06-19"
@@ -78,6 +71,8 @@ def prefetch_all():
                     logger.info(f"Cached {ns_sym} 1d: {len(df_1d)} bars")
                 else:
                     logger.warning(f"No 1d data for {ns_sym}")
+                    
+                time.sleep(2.5) # manual rate limit to respect yfinance
             else:
                 logger.info(f"Already cached {ns_sym} 1d")
         except Exception as e:
@@ -104,6 +99,8 @@ def prefetch_all():
                         df_chunk = df_chunk.dropna(how='all')
                         if not df_chunk.empty:
                             all_chunks.append(df_chunk)
+                        
+                        time.sleep(2.5) # manual rate limit to respect yfinance
                     
                     if all_chunks:
                         df_intraday = pd.concat(all_chunks)

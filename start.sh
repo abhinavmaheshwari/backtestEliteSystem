@@ -2,6 +2,7 @@
 
 # Force backtest mode globally
 export BACKTEST_MODE=true
+export PYTHONPATH="$(pwd)/app:$(pwd)"
 
 echo "=========================================================================="
 echo "🚀 Starting Elite Backtest Engine on Railway"
@@ -11,7 +12,7 @@ echo "==========================================================================
 # Railway requires a service to bind to the $PORT within 60s, or it marks the deploy as failed.
 # Starting the dashboard first guarantees the deploy succeeds.
 echo "🌐 Starting Dashboard Server..."
-python3 -m flask --app app.dashboard_server run --host 0.0.0.0 --port "${PORT:-8080}" &
+PYTHONPATH="$(pwd)/app" python3 -m flask --app app.dashboard_server run --host 0.0.0.0 --port "${PORT:-8080}" &
 DASHBOARD_PID=$!
 
 # 2. Run the heavy backtest simulation sequentially in the background
