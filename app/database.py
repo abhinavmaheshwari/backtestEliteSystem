@@ -327,47 +327,6 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_cooldown ON alerts (symbol, scanner, breakout_type, alert_time DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_scanner_health_name ON scanner_health(scanner_name)")
 
-                # ── Trade analytics view mapping JSONB context to columns ───────────
-                cur.execute("""
-                    CREATE OR REPLACE VIEW v_trade_analytics AS
-                    SELECT 
-                        id,
-                        symbol,
-                        alert_time,
-                        alert_date,
-                        scanner,
-                        category,
-                        entry_price,
-                        stop_loss,
-                        target_price,
-                        status,
-                        exit_price,
-                        pnl_pct,
-                        closed_at,
-                        -- Technical indicators
-                        (context->'technicals'->>'above_ema20')::boolean AS above_ema20,
-                        (context->'technicals'->>'above_sma50')::boolean AS above_sma50,
-                        (context->'technicals'->>'golden_cross')::boolean AS golden_cross,
-                        (context->'technicals'->>'body_ratio')::float AS body_ratio,
-                        (context->'technicals'->>'delivery_pct')::float AS delivery_pct,
-                        (context->'technicals'->>'rsi')::float AS rsi,
-                        (context->'technicals'->>'volume_ratio')::float AS volume_ratio,
-                        -- Session prices
-                        (context->'session'->>'open')::float AS session_open,
-                        (context->'session'->>'day_high')::float AS session_day_high,
-                        (context->'session'->>'day_low')::float AS session_day_low,
-                        -- Fundamentals
-                        (context->'fundamentals'->>'peg')::float AS peg,
-                        (context->'fundamentals'->>'yoy_rev')::float AS yoy_rev,
-                        (context->'fundamentals'->>'yoy_profit')::float AS yoy_profit,
-                        (context->'fundamentals'->>'roe')::float AS roe,
-                        -- Execution strategies
-                        context->'execution'->>'sl_method' AS sl_method,
-                        context->'execution'->>'t_method' AS t_method,
-                        context->'execution'->>'trail_note' AS trail_note
-                    FROM alerts;
-                """)
-
                 # ── Data cache metadata table (cache keys, last fetched, cadence) ──
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS data_cache_metadata (
@@ -652,6 +611,47 @@ ALTER TABLE bayesian_model_updates ADD CONSTRAINT chk_bayes_status CHECK (status
                     """)
                 except Exception as e:
                     logger.error(f"Failed to run V5 migrations: {e}")
+
+                # ── Trade analytics view mapping JSONB context to columns ───────────
+                cur.execute("""
+                    CREATE OR REPLACE VIEW v_trade_analytics AS
+                    SELECT 
+                        id,
+                        symbol,
+                        alert_time,
+                        alert_date,
+                        scanner,
+                        category,
+                        entry_price,
+                        stop_loss,
+                        target_price,
+                        status,
+                        exit_price,
+                        pnl_pct,
+                        closed_at,
+                        -- Technical indicators
+                        (context->'technicals'->>'above_ema20')::boolean AS above_ema20,
+                        (context->'technicals'->>'above_sma50')::boolean AS above_sma50,
+                        (context->'technicals'->>'golden_cross')::boolean AS golden_cross,
+                        (context->'technicals'->>'body_ratio')::float AS body_ratio,
+                        (context->'technicals'->>'delivery_pct')::float AS delivery_pct,
+                        (context->'technicals'->>'rsi')::float AS rsi,
+                        (context->'technicals'->>'volume_ratio')::float AS volume_ratio,
+                        -- Session prices
+                        (context->'session'->>'open')::float AS session_open,
+                        (context->'session'->>'day_high')::float AS session_day_high,
+                        (context->'session'->>'day_low')::float AS session_day_low,
+                        -- Fundamentals
+                        (context->'fundamentals'->>'peg')::float AS peg,
+                        (context->'fundamentals'->>'yoy_rev')::float AS yoy_rev,
+                        (context->'fundamentals'->>'yoy_profit')::float AS yoy_profit,
+                        (context->'fundamentals'->>'roe')::float AS roe,
+                        -- Execution strategies
+                        context->'execution'->>'sl_method' AS sl_method,
+                        context->'execution'->>'t_method' AS t_method,
+                        context->'execution'->>'trail_note' AS trail_note
+                    FROM alerts;
+                """)
 
                 conn.commit()
 
