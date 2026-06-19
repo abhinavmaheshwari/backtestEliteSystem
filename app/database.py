@@ -531,6 +531,9 @@ def init_db():
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id)")
 
+                # Commit the tables created so far before attempting migrations
+                conn.commit()
+
                 # ── V5 MIGRATIONS (Timestamps, Dedup, Status Enums) ──────────────
                 try:
                     cur.execute("""
@@ -611,6 +614,8 @@ ALTER TABLE bayesian_model_updates ADD CONSTRAINT chk_bayes_status CHECK (status
                     """)
                 except Exception as e:
                     logger.error(f"Failed to run V5 migrations: {e}")
+                    conn.rollback()  # Clear the aborted transaction state
+
 
                 # ── Trade analytics view mapping JSONB context to columns ───────────
                 cur.execute("""
