@@ -692,6 +692,13 @@ def _main_impl():
     except Exception as e:
         logger.warning(f"⚠️ DB re-run guard check failed: {e}. Proceeding with daily builder scan.")
 
+    import os
+    from config import WATCHLIST_PATH
+    if os.environ.get("BACKTEST_MODE") == "true":
+        if os.path.exists(WATCHLIST_PATH):
+            logger.info("⏭️ [BACKTEST MODE] Static fundamental watchlist already exists. Skipping TradingView scan.")
+            return
+
     state = load_checkpoint()
 
     with _exclusion_lock:
