@@ -839,17 +839,8 @@ function renderKPIs(s) {
   const mm = String(nowIst.getMonth() + 1).padStart(2, '0');
   const dd = String(nowIst.getDate()).padStart(2, '0');
   const todayStr = `${yy}-${mm}-${dd}`;
-  const mainScanners = ['INTRADAY', '1H', 'EOD', 'REVERSAL', 'Wealth Engine'];
-  let todaysCount = 0;
-  if (window._scannerStats) {
-      for (const sc of mainScanners) {
-          if (window._scannerStats[sc]) {
-              todaysCount += (window._scannerStats[sc].today_alerts || 0);
-          }
-      }
-  } else {
-      todaysCount = ALL_TRADES.filter(t => (t.alert_time||t.entry_date||'').startsWith(todayStr)).length;
-  }
+  
+  const todaysCount = ALL_TRADES.filter(t => (t.alert_time||t.entry_date||'').startsWith(todayStr)).length;
 
   const defs = [
     {id:'today',   label:"Today's Alerts", value:todaysCount,       cls:'blue',   sub:'new today',             filter:t=>(t.alert_time||t.entry_date||'').startsWith(todayStr)},
@@ -2326,25 +2317,10 @@ async function initDashboard() {
   updateSim();
 
   // Auto-refresh scanner status every 60s
-  
-  let prevTotalAlerts = -1;
-  let isFirstScannerCheck = true;  // Skip alert on initial check
   setInterval(async () => {
     const live = await loadScannerStatus();
     if (live) {
       window._scannerStats = {...(window._scannerStats||{}), ...live};
-      let currentAlerts = 0;
-      for (const [key, val] of Object.entries(window._scannerStats)) {
-          if (key !== 'AI Worker' && !key.startsWith('API_')) {
-              currentAlerts += val.today_alerts || 0;
-          }
-      }
-      let added = currentAlerts - prevTotalAlerts;
-      if (prevTotalAlerts !== -1 && added > 0 && !isFirstScannerCheck) {
-          triggerAlertFlashing();
-      }
-      prevTotalAlerts = currentAlerts;
-      isFirstScannerCheck = false;
       renderScannerGrid(window._scannerStats);
       loadNonCriticalErrors();
     }
