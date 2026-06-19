@@ -134,7 +134,13 @@ def start(run_once=False):
                 daily_context_data = future_1d.result()
 
             if not all_ticker_data:
-                raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+                logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting 15m scan.")
+                try:
+                    from database import upsert_scanner_health
+                    upsert_scanner_health("INTRADAY", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+                except Exception:
+                    pass
+                return
                 
             logger.info(f"📥 Data downloaded | 15m: {len(all_ticker_data)} | Daily: {len(daily_context_data)}")
             

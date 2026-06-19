@@ -171,7 +171,13 @@ def _run_scan():
     all_ticker_data = fetch_watchlist_data(watchlist, period="1y", interval="1d")
 
     if not all_ticker_data:
-        raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+        logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting Reversal scan.")
+        try:
+            from database import upsert_scanner_health
+            upsert_scanner_health("REVERSAL", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+        except Exception:
+            pass
+        return []
 
     alerts_by_category = {}
     total_alerts = 0

@@ -135,7 +135,13 @@ def start(run_once=False):
                 daily_context_data = future_1d.result()
 
             if not all_ticker_data:
-                raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+                logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting 1H scan.")
+                try:
+                    from database import upsert_scanner_health
+                    upsert_scanner_health("1H Breakout", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+                except Exception:
+                    pass
+                return
 
             try:
                 rotation_result = get_sector_scores()

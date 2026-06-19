@@ -662,7 +662,12 @@ def run_wealth_scan():
 
         tech_df = pd.DataFrame(technicals)
         if not tech_df.empty and (tech_df.get("cmp") is None or tech_df["cmp"].isnull().all() or (tech_df["cmp"] == 0).all()):
-            raise Exception("YFinance returned 0 prices. API might be down or rate-limited.")
+            logger.error("❌ YFinance returned 0 prices. API might be down or rate-limited. Aborting this scan cycle.")
+            try:
+                upsert_scanner_health("Wealth Engine", "DOWN", error_msg="YFinance returned 0 prices. Rate limited.")
+            except Exception:
+                pass
+            return
 
         wealth_df = pd.merge(df, tech_df, on="Stock", how="left")
 

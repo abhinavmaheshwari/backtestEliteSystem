@@ -29,6 +29,8 @@ class YFinanceFetcher(DataFetcher):
         # yfinance requires .NS suffix; KiteConnect uses raw NSE symbol
         # also handle underscore to hyphen conversion commonly needed for yfinance
         sym = symbol.replace("_", "-")
+        if sym.startswith("^"):
+            return sym
         return f"{sym}.NS" if not sym.endswith(".NS") else sym
 
     def get_ohlcv(self, symbol: str, interval: str, period: str, retries: int = 3) -> pd.DataFrame:

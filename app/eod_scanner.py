@@ -111,7 +111,13 @@ def start():
                     all_ticker_data = future.result()
 
         if not all_ticker_data:
-            raise Exception("YFinance returned 0 data. API might be down or rate-limited.")
+            logger.error("❌ YFinance returned 0 data. API might be down or rate-limited. Aborting EOD scan.")
+            try:
+                from database import upsert_scanner_health
+                upsert_scanner_health("EOD V3", "DOWN", error_msg="YFinance returned 0 data. Rate limited.")
+            except Exception:
+                pass
+            return
 
         # FIX: NSE bhavcopy for today may not be published until ~19:00–19:30 IST.
         # If today's file returned empty, fall back to the most recent available trading day.
