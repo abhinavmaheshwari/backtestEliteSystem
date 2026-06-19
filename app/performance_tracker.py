@@ -22,7 +22,7 @@
 import os
 import json
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import pandas as pd
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -89,21 +89,36 @@ def _fetch_current_prices(symbols: list[str]) -> dict[str, float]:
         return {}
 
 
-def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.DataFrame]:
+def _fetch_post_alert_bars(symbol: str, alert_time_val: Union[str, datetime]) -> Optional[pd.DataFrame]:
     """
-    Fetch 1h bars for *symbol* from the alert date to today using DataFetcher.
-    Returns a DataFrame with timezone-aware IST index, or None on failure.
-
-    All candles whose open-time < alert_time are DROPPED — this is the core rule
-    that prevents pre-alert price action from triggering SL or Target.
+    Fetch 5m bars for *symbol* from the alert date to today using DataFetcher.
+    Filters out any bars that occurred before the alert_time.
     """
     try:
-        alert_dt_naive = datetime.fromisoformat(alert_time_str)
-        alert_dt_ist   = alert_dt_naive.replace(tzinfo=IST)
-        alert_date     = alert_dt_ist.date()
+        if isinstance(alert_time_val, datetime):
+            # If it's timezone aware, convert to IST then naive it.
+            if alert_time_val.tzinfo is not None:
+                alert_dt_ist = alert_time_val.astimezone(IST)
+            else:
+                alert_dt_ist = alert_time_val.replace(tzinfo=IST)
+        else:
+            alert_time_str = str(alert_time_val).replace("Z", "+00:00")
+            alert_dt_naive = datetime.fromisoformat(alert_time_str)
+            if alert_dt_naive.tzinfo is not None:
+                alert_dt_ist = alert_dt_naive.astimezone(IST)
+            else:
+                alert_dt_ist = alert_dt_naive.replace(tzinfo=IST)
+                
+        alert_date = alert_dt_ist.date()
+
+        # If the alert was recorded after market close (e.g. delayed run or EOD),
+        # resetting the filter to market open ensures we evaluate that day's candles
+        # instead of dropping them all and never triggering the SL.
+        if alert_dt_ist.time() >= dt_time(15, 30):
+            alert_dt_ist = alert_dt_ist.replace(hour=9, minute=15, second=0, microsecond=0)
 
         # Guard: if alert is from today and market hasn't opened yet (before 09:15 IST),
-        # no 1h bars exist — return None immediately to avoid yfinance "delisted" noise.
+        # no 5m bars exist — return None immediately to avoid yfinance "delisted" noise.
         now_ist = datetime.now(IST)
         market_open_ist = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
         if alert_date == now_ist.date() and now_ist < market_open_ist:
@@ -112,10 +127,20 @@ def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.Data
 
         # Determine period since alert
         days_since = (now_ist.date() - alert_date).days
-        period_str = f"{max(days_since + 2, 5)}d" # ensure we fetch at least enough data
+        period_days = max(days_since + 2, 5)
+        period_str = f"{period_days}d"
+
+        # Yahoo Finance limits: 5m data is only available for the last 60 days.
+        # We use 5m for maximum precision on SL/Target tracking if possible.
+        if period_days <= 59:
+            interval = "5m"
+        elif period_days <= 720:
+            interval = "1h"
+        else:
+            interval = "1d"
 
         fetcher = get_fetcher()
-        hist = fetcher.get_ohlcv(symbol, interval="1h", period=period_str, retries=2)
+        hist = fetcher.get_ohlcv(symbol, interval=interval, period=period_str, retries=2)
 
         if hist is None or hist.empty:
             return None
@@ -145,7 +170,7 @@ def _fetch_post_alert_bars(symbol: str, alert_time_str: str) -> Optional[pd.Data
         return hist if not hist.empty else None
 
     except Exception:
-        logger.debug(f"⚠️ Could not fetch bars for {symbol} (alert={alert_time_str})")
+        logger.exception(f"⚠️ Could not fetch bars for {symbol} (alert={alert_time_val})")
         return None
 
 
