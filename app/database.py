@@ -552,8 +552,15 @@ BEGIN
     END;
     $func$ LANGUAGE plpgsql IMMUTABLE;';
 
+    -- Drop defaults that prevent casting
+    ALTER TABLE alerts ALTER COLUMN created_at DROP DEFAULT;
+    ALTER TABLE alerts ALTER COLUMN updated_at DROP DEFAULT;
+    ALTER TABLE score_weight_log ALTER COLUMN created_at DROP DEFAULT;
+    ALTER TABLE bayesian_model_updates ALTER COLUMN created_at DROP DEFAULT;
+    ALTER TABLE telegram_queue ALTER COLUMN created_at DROP DEFAULT;
+
     -- Convert alerts
-    ALTER TABLE alerts ALTER COLUMN closed_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(closed_at);
+    ALTER TABLE alerts ALTER COLUMN closed_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(closed_at::text);
     ALTER TABLE alerts ALTER COLUMN created_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(created_at::text);
     ALTER TABLE alerts ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(updated_at::text);
     
@@ -561,29 +568,36 @@ BEGIN
     ALTER TABLE score_weight_log ALTER COLUMN created_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(created_at::text);
 
     -- Convert bayesian_model_updates
-    ALTER TABLE bayesian_model_updates ALTER COLUMN approved_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(approved_at);
-    ALTER TABLE bayesian_model_updates ALTER COLUMN rejected_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(rejected_at);
-    ALTER TABLE bayesian_model_updates ALTER COLUMN applied_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(applied_at);
+    ALTER TABLE bayesian_model_updates ALTER COLUMN approved_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(approved_at::text);
+    ALTER TABLE bayesian_model_updates ALTER COLUMN rejected_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(rejected_at::text);
+    ALTER TABLE bayesian_model_updates ALTER COLUMN applied_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(applied_at::text);
     ALTER TABLE bayesian_model_updates ALTER COLUMN created_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(created_at::text);
-    ALTER TABLE bayesian_model_updates ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(expires_at);
+    ALTER TABLE bayesian_model_updates ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(expires_at::text);
 
     -- Convert scanner_health
-    ALTER TABLE scanner_health ALTER COLUMN last_success TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_success);
-    ALTER TABLE scanner_health ALTER COLUMN first_error_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(first_error_at);
-    ALTER TABLE scanner_health ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(updated_at);
+    ALTER TABLE scanner_health ALTER COLUMN last_success TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_success::text);
+    ALTER TABLE scanner_health ALTER COLUMN first_error_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(first_error_at::text);
+    ALTER TABLE scanner_health ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(updated_at::text);
 
     -- Convert telegram_queue
     ALTER TABLE telegram_queue ALTER COLUMN created_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(created_at::text);
-    ALTER TABLE telegram_queue ALTER COLUMN sent_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(sent_at);
+    ALTER TABLE telegram_queue ALTER COLUMN sent_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(sent_at::text);
+
+    -- Restore defaults as TIMESTAMPTZ
+    ALTER TABLE alerts ALTER COLUMN created_at SET DEFAULT now();
+    ALTER TABLE alerts ALTER COLUMN updated_at SET DEFAULT now();
+    ALTER TABLE score_weight_log ALTER COLUMN created_at SET DEFAULT now();
+    ALTER TABLE bayesian_model_updates ALTER COLUMN created_at SET DEFAULT now();
+    ALTER TABLE telegram_queue ALTER COLUMN created_at SET DEFAULT now();
 
     -- Convert data_fetch_health
-    ALTER TABLE data_fetch_health ALTER COLUMN last_success TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_success);
-    ALTER TABLE data_fetch_health ALTER COLUMN last_failure TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_failure);
-    ALTER TABLE data_fetch_health ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(updated_at);
+    ALTER TABLE data_fetch_health ALTER COLUMN last_success TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_success::text);
+    ALTER TABLE data_fetch_health ALTER COLUMN last_failure TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_failure::text);
+    ALTER TABLE data_fetch_health ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(updated_at::text);
     
     -- Convert fetch_errors
-    ALTER TABLE fetch_errors ALTER COLUMN first_seen TYPE TIMESTAMPTZ USING safe_cast_timestamptz(first_seen);
-    ALTER TABLE fetch_errors ALTER COLUMN last_seen TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_seen);
+    ALTER TABLE fetch_errors ALTER COLUMN first_seen TYPE TIMESTAMPTZ USING safe_cast_timestamptz(first_seen::text);
+    ALTER TABLE fetch_errors ALTER COLUMN last_seen TYPE TIMESTAMPTZ USING safe_cast_timestamptz(last_seen::text);
 END $$;
 
 -- 2. Convert alert_date to DATE
@@ -597,6 +611,7 @@ BEGIN
     END;
     $func$ LANGUAGE plpgsql IMMUTABLE;';
     
+    ALTER TABLE alerts ALTER COLUMN alert_date DROP DEFAULT;
     ALTER TABLE alerts ALTER COLUMN alert_date TYPE DATE USING safe_cast_date(alert_date::text);
     ALTER TABLE alerts ALTER COLUMN alert_date SET DEFAULT CURRENT_DATE;
 END $$;
@@ -606,11 +621,22 @@ ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_symbol_breakout_type_alert_d
 ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_dedup_idx;
 ALTER TABLE alerts ADD CONSTRAINT alerts_dedup_idx UNIQUE (symbol, breakout_type, scanner, alert_date);
 
--- 4. Add status CHECK constraints
-ALTER TABLE alerts ADD CONSTRAINT chk_alerts_status CHECK (status IN ('OPEN', 'WIN', 'LOSS', 'CLOSED')) NOT VALID;
-ALTER TABLE scanner_health ADD CONSTRAINT chk_scanner_status CHECK (status IN ('OK', 'DOWN', 'IDLE')) NOT VALID;
-ALTER TABLE telegram_queue ADD CONSTRAINT chk_tg_status CHECK (status IN ('pending', 'sent')) NOT VALID;
-ALTER TABLE bayesian_model_updates ADD CONSTRAINT chk_bayes_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')) NOT VALID;
+-- 4. Add status CHECK constraints (safe)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_alerts_status') THEN
+        ALTER TABLE alerts ADD CONSTRAINT chk_alerts_status CHECK (status IN ('OPEN', 'WIN', 'LOSS', 'CLOSED')) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_scanner_status') THEN
+        ALTER TABLE scanner_health ADD CONSTRAINT chk_scanner_status CHECK (status IN ('OK', 'DOWN', 'IDLE')) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_tg_status') THEN
+        ALTER TABLE telegram_queue ADD CONSTRAINT chk_tg_status CHECK (status IN ('pending', 'sent')) NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_bayes_status') THEN
+        ALTER TABLE bayesian_model_updates ADD CONSTRAINT chk_bayes_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')) NOT VALID;
+    END IF;
+END $$;
                     """)
                 except Exception as e:
                     logger.error(f"Failed to run V5 migrations: {e}")
@@ -1159,11 +1185,13 @@ def get_ai_concall_stats() -> dict:
                 total = total_row[0] if total_row else 0
                 cur.execute("SELECT symbol, created_at FROM ai_concall_cache_v3 ORDER BY created_at DESC LIMIT 1")
                 last = cur.fetchone()
+                conn.commit()
                 if last:
                     return {"total_cached": int(total), "last_symbol": last[0], "last_updated": last[1]}
                 return {"total_cached": int(total), "last_symbol": None, "last_updated": None}
             except Exception as e:
                 logger.error(f"Error getting ai concall stats: {e}")
+                conn.rollback()
                 return {"total_cached": 0, "last_symbol": None, "last_updated": None}
 
 
@@ -1178,11 +1206,13 @@ def get_promoter_pledge_stats() -> dict:
                 total = total_row[0] if total_row else 0
                 cur.execute("SELECT symbol, updated_at FROM promoter_pledge_cache ORDER BY updated_at DESC LIMIT 1")
                 last = cur.fetchone()
+                conn.commit()
                 if last:
                     return {"total_cached": int(total), "last_symbol": last[0], "last_updated": last[1]}
                 return {"total_cached": int(total), "last_symbol": None, "last_updated": None}
             except Exception as e:
                 logger.error(f"Error getting pledge stats: {e}")
+                conn.rollback()
                 return {"total_cached": 0, "last_symbol": None, "last_updated": None}
 
 def get_recent_concall_analysis(symbol: str, max_age_days: int = 60):
@@ -1198,6 +1228,7 @@ def get_recent_concall_analysis(symbol: str, max_age_days: int = 60):
                 LIMIT 1
             """, (symbol, max_age_days))
             row = cur.fetchone()
+            conn.commit()
             if row:
                 return row[0]
             return None

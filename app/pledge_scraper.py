@@ -10,6 +10,8 @@ from data_fetch_status import mark_success, mark_failure
 
 logger = logging.getLogger(__name__)
 
+BACKTEST_MODE = os.getenv("BACKTEST_MODE", "false").lower() == "true"
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=5),
@@ -31,6 +33,9 @@ def fetch_promoter_pledge(symbol: str):
     Primarily relies on the PostgreSQL cache populated by the pledge_worker.
     Makes ONE quick fallback attempt if cache is missing.
     """
+    if BACKTEST_MODE:
+        return 0.0
+
     init_db()
 
     # 1. Check DB Cache

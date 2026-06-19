@@ -82,10 +82,10 @@ def _fetch_history_with_retry(yf_symbol: str, period: str = "1y", auto_adjust: b
                 df = df[df_utc <= sim_utc]
             
             if df.empty:
-                raise ValueError(f"Empty backtest history returned for {yf_symbol} after truncation to {simulated_now}")
+                logger.debug(f"Empty backtest history returned for {yf_symbol} after truncation to {simulated_now}")
             return df
         else:
-            logger.warning(f"Backtest data missing for {yf_symbol} at {path}")
+            logger.warning(f"Backtest data missing for {yf_symbol} at {path}. Skipping yfinance live fetch in BACKTEST_MODE.")
             return pd.DataFrame()
             
     # --- LIVE MODE ---
@@ -264,7 +264,12 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
                     break
 
         try:
-            fetched = _fetch_history_with_retry(yf_symbol, period, interval=resolution)
+            _YF_SEMAPHORE.acquire()
+            try:
+                fetched = _fetch_history_with_retry(yf_symbol, period, interval=resolution)
+            finally:
+                _YF_SEMAPHORE.release()
+                
             if fetched is None or fetched.empty:
                 raise ValueError('Empty fetch')
             # persist

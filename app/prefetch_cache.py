@@ -18,17 +18,16 @@ session = CachedSession(
 )
 
 
-START_DATE = "2026-01-01"
+START_DATE_1D = "2026-01-01"
 END_DATE   = "2026-06-19"
 BACKTEST_DATA_DIR = os.path.join(DATA_DIR, "backtest_data")
 os.makedirs(BACKTEST_DATA_DIR, exist_ok=True)
 
-# yfinance only provides 5m data for the last 60 days per request.
+# yfinance only provides 5m/15m data for the last 60 days per request.
 # We must fetch in chunks to go further back.
 CHUNKS_5M = [
-    ("2026-01-01", "2026-02-28"),
-    ("2026-03-01", "2026-04-30"),
-    ("2026-05-01", "2026-06-19"),
+    ("2026-04-25", "2026-05-25"),
+    ("2026-05-25", "2026-06-19"),
 ]
 
 def _normalize_symbol(symbol: str) -> str:
@@ -55,8 +54,8 @@ def prefetch_all():
             path_1d = os.path.join(BACKTEST_DATA_DIR, f"{ns_sym}_1d.parquet")
             if not os.path.exists(path_1d):
                 df_1d = yf.download(
-                    ns_sym, start=START_DATE, end=END_DATE,
-                    interval="1d", session=session,
+                    ns_sym, start=START_DATE_1D, end=END_DATE,
+                    interval="1d",
                     auto_adjust=True, progress=False, threads=False
                 )
                 
@@ -89,7 +88,7 @@ def prefetch_all():
                     for chunk_start, chunk_end in CHUNKS_5M:
                         df_chunk = yf.download(
                             ns_sym, start=chunk_start, end=chunk_end,
-                            interval=interval, session=session,
+                            interval=interval,
                             auto_adjust=True, progress=False, threads=False
                         )
                         # Cleanup multiindex
