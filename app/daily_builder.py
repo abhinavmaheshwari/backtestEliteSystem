@@ -764,8 +764,8 @@ def _main_impl():
                 upload_parquet_to_db("daily_builder_excluded", EXCLUSION_CSV)
                 logger.info("☁️ [DAILY BUILDER] Backed up exclusion log to Postgres cache.")
                 
-                save_df_to_table("excluded", pd.DataFrame(exclusion_snapshot))
-                logger.info("☁️ [DAILY BUILDER] Saved exclusion log to the 'excluded' database table.")
+                save_df_to_table("daily_excluded_watchlist", pd.DataFrame(exclusion_snapshot))
+                logger.info("☁️ [DAILY BUILDER] Saved exclusion log to the 'daily_excluded_watchlist' database table.")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to upload exclusion log to Postgres: {e}")
 
@@ -795,8 +795,8 @@ def _main_impl():
             upload_parquet_to_db("daily_builder", OUTPUT_PARQUET)
             logger.info("☁️ [DAILY BUILDER] Backed up fundamental watchlist to Postgres cache.")
             
-            save_df_to_table("included", final_df)
-            logger.info("☁️ [DAILY BUILDER] Saved fundamental watchlist to the 'included' database table.")
+            save_df_to_table("daily_watchlist", final_df)
+            logger.info("☁️ [DAILY BUILDER] Saved fundamental watchlist to the 'daily_watchlist' database table.")
         except Exception as e:
             logger.warning(f"⚠️ Failed to upload watchlist to Postgres: {e}")
         

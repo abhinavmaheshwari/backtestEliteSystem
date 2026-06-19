@@ -1639,18 +1639,18 @@ def save_df_to_table(table_name: str, df: pd.DataFrame):
     logger.info(f"✅ Saved {len(df)} rows to table '{table_name}' in database.")
 
 def check_data_exists_for_today() -> bool:
-    """Checks if the public table 'included' (fundamental watchlist) contains data for today's IST date."""
+    """Checks if the public table 'daily_watchlist' (fundamental watchlist) contains data for today's IST date."""
     init_db()
     from zoneinfo import ZoneInfo
     today_str = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
-                # 1. First check if 'included' table exists
+                # 1. First check if 'daily_watchlist' table exists
                 cur.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.tables 
-                        WHERE table_name = 'included'
+                        WHERE table_name = 'daily_watchlist'
                     )
                 """)
                 if not cur.fetchone()[0]:
@@ -1660,7 +1660,7 @@ def check_data_exists_for_today() -> bool:
                 cur.execute("""
                     SELECT column_name 
                     FROM information_schema.columns 
-                    WHERE table_name = 'included'
+                    WHERE table_name = 'daily_watchlist'
                 """)
                 db_cols = [row[0].lower() for row in cur.fetchall()]
                 date_col = None
@@ -1673,7 +1673,7 @@ def check_data_exists_for_today() -> bool:
                     return False
                 
                 # 3. Check row count for today
-                cur.execute(f"SELECT COUNT(*) FROM included WHERE {date_col} = %s", (today_str,))
+                cur.execute(f"SELECT COUNT(*) FROM daily_watchlist WHERE {date_col} = %s", (today_str,))
                 count = cur.fetchone()[0]
                 return count > 0
     except Exception as e:
