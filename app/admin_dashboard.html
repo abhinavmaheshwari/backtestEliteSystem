@@ -2307,8 +2307,8 @@ async function initDashboard() {
 
   const s = data.summary;
   document.getElementById('header-stats').textContent = `${s.win_rate}% WR · ${s.winners}W ${s.losers}L ${s.open_positions} open`;
-  renderKPIs(s);
   ALL_TRADES = data.trades;
+  renderKPIs(s);
   populateFilters(data.trades);
   renderTradeTable();
   renderScannerGrid(data.scanner_stats);
