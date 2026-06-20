@@ -560,6 +560,7 @@ BEGIN
     ALTER TABLE telegram_queue ALTER COLUMN created_at DROP DEFAULT;
 
     -- Convert alerts
+    DROP VIEW IF EXISTS v_trade_analytics CASCADE;
     ALTER TABLE alerts ALTER COLUMN closed_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(closed_at::text);
     ALTER TABLE alerts ALTER COLUMN created_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(created_at::text);
     ALTER TABLE alerts ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING safe_cast_timestamptz(updated_at::text);
