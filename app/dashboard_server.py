@@ -553,10 +553,8 @@ def api_data_fetch_health():
 def api_todays_alerts():
     """Return alerts fired today (includes seen flags)."""
     try:
-        from database import get_todays_alerts
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        today = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
+        from database import get_todays_alerts, _get_current_system_date_str
+        today = _get_current_system_date_str()
         rows = get_todays_alerts(today)
         return jsonify(rows)
     except Exception:

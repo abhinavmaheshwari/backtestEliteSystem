@@ -740,16 +740,17 @@ def save_alert_if_new(
         with get_connection() as conn:
             success = False
             try:
+                alert_date_str = str(alert_time).split(' ')[0]
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO alerts
-                            (symbol, breakout_type, alert_time, scanner, category,
+                            (symbol, breakout_type, alert_time, alert_date, scanner, category,
                              entry_price, stop_loss, target_price, signals, score,
                              rsi, volume_ratio, status, context, capital_allocated, shares_bought,
                              model_version, bayesian_regime, bayesian_weights, data_partition)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (symbol, breakout_type, scanner, alert_date) DO NOTHING
-                    """, (symbol, breakout_type, alert_time, scanner, category,
+                    """, (symbol, breakout_type, alert_time, alert_date_str, scanner, category,
                           entry_price, stop_loss, target_price, signals, score,
                           rsi, volume_ratio, context_str, capital_allocated, shares_bought,
                           model_version, bayesian_regime, weights_str, data_partition))
@@ -1056,6 +1057,16 @@ def get_scanner_today_trades(scanner_name: str, today_str: str) -> list[dict]:
 
     logger.debug("🗑️  cleanup_old_alerts called — deletion disabled, all data retained.")
 
+
+def _get_current_system_date_str() -> str:
+    import os
+    if os.getenv("BACKTEST_MODE", "false").lower() == "true":
+        sim_date = get_system_state("simulated_date")
+        if sim_date:
+            return sim_date
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
 
 def get_todays_alerts(today_str: str) -> list[dict]:
     """Return all alerts for the provided alert_date (YYYY-MM-DD)."""
@@ -2385,9 +2396,7 @@ def update_wealth_alert_status(alert_id: int, status: str, current_price: float 
 
 def get_today_wealth_alerts() -> list:
     """Get all wealth buy alerts for today."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    ist_today = datetime.now(ZoneInfo('Asia/Kolkata')).strftime('%Y-%m-%d')
+    ist_today = _get_current_system_date_str()
     
     try:
         with get_connection() as conn:

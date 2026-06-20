@@ -823,9 +823,13 @@ def run_wealth_scan():
                     # Fetch all prices in parallel using yfinance
                     for symbol in open_symbols:
                         try:
-                            ticker = yf.Ticker(f"{symbol.replace('_', '-')}.NS")
-                            info = ticker.info
-                            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+                            if os.getenv("BACKTEST_MODE", "false").lower() == "true":
+                                symbol_row = wealth_df[wealth_df["Stock"] == symbol]
+                                current_price = float(symbol_row.iloc[0].get("cmp")) if not symbol_row.empty else None
+                            else:
+                                ticker = yf.Ticker(f"{symbol.replace('_', '-')}.NS")
+                                info = ticker.info
+                                current_price = info.get("currentPrice") or info.get("regularMarketPrice")
                             
                             symbol_row = wealth_df[wealth_df["Stock"] == symbol]
                             current_score = None
@@ -847,8 +851,15 @@ def run_wealth_scan():
             
             # Auto-close positions when SELL signal detected
             sell_signals = wealth_df[wealth_df["Signal"].str.contains("SELL", na=False)]
+            # Optimization: Only attempt to close positions that are actually active
+            from database import get_wealth_buy_alerts
+            active_alerts = get_wealth_buy_alerts()
+            active_symbols = {a["symbol"] for a in active_alerts if a["status"] == "ACTIVE"}
+
             for _, row in sell_signals.iterrows():
                 symbol = row.get("Stock")
+                if symbol not in active_symbols:
+                    continue
                 cmp = row.get("cmp")
                 signal_text = row.get("Signal")
                 if symbol and cmp:

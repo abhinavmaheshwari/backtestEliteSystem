@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 NSE_CAL = mcal.get_calendar("NSE")
 START   = datetime(2026, 1, 1)
+try:
+    from database import get_system_state
+    sim_date_str = get_system_state("simulated_date")
+    if sim_date_str:
+        START = datetime.strptime(sim_date_str, "%Y-%m-%d")
+except Exception:
+    pass
+
 END     = datetime(2026, 6, 19)
 
 def get_trading_days(start, end):
@@ -29,8 +37,14 @@ def simulate_day(sim_date: datetime):
     logger.info(f"🚀 SIMULATING DAY: {date_str}")
     logger.info("=" * 80)
     
+    try:
+        from database import save_system_state
+        save_system_state("simulated_date", date_str)
+    except Exception as e:
+        logger.error(f"Failed to save simulated_date: {e}")
+    
     # --- Pre-market: 1:00 AM ---
-    with freeze_time(f"{date_str} 01:00:00", tz_offset=0):
+    with freeze_time(f"{date_str} 01:00:00", tz_offset=5.5):
         # Timezone for freezegun can be tricky; we'll assume it mocks local time 
         # which our app sets to IST via ZoneInfo
         logger.info(f"[{date_str} 01:00:00] Running daily_builder")
@@ -40,7 +54,7 @@ def simulate_day(sim_date: datetime):
             logger.error(f"daily_builder failed: {e}")
     
     # --- Wealth scan: 1:05 AM ---
-    with freeze_time(f"{date_str} 01:05:00", tz_offset=0):
+    with freeze_time(f"{date_str} 01:05:00", tz_offset=5.5):
         logger.info(f"[{date_str} 01:05:00] Running wealth_engine")
         try:
             wealth_engine.run_wealth_scan()
@@ -53,7 +67,7 @@ def simulate_day(sim_date: datetime):
     
     while tick <= market_close:
         tick_str = tick.strftime("%Y-%m-%d %H:%M:%S")
-        with freeze_time(tick_str, tz_offset=0):
+        with freeze_time(tick_str, tz_offset=5.5):
             logger.info(f"[{tick_str}] Intraday tick")
             try:
                 intraday.start(run_once=True)
@@ -68,14 +82,14 @@ def simulate_day(sim_date: datetime):
         tick += timedelta(minutes=15)  # Our intraday runs on 15m intervals in price_fetcher actually
     
     # --- EOD processing ---
-    with freeze_time(f"{date_str} 15:35:00", tz_offset=0):
+    with freeze_time(f"{date_str} 15:35:00", tz_offset=5.5):
         logger.info(f"[{date_str} 15:35:00] Running performance_tracker")
         try:
             performance_tracker.build_performance_data()
         except Exception as e:
             logger.error(f"performance_tracker failed: {e}")
     
-    with freeze_time(f"{date_str} 18:30:00", tz_offset=0):
+    with freeze_time(f"{date_str} 18:30:00", tz_offset=5.5):
         logger.info(f"[{date_str} 18:30:00] Running EOD and Reversal scanners")
         try:
             eod_scanner.start()

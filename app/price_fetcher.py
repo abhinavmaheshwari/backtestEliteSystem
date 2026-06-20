@@ -48,6 +48,23 @@ _price_cache_lock = threading.Lock()
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "price_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+_BACKTEST_PARQUET_STORE = {}
+
+def _get_backtest_parquet(yf_symbol: str, interval: str) -> pd.DataFrame:
+    key = f"{yf_symbol}_{interval}"
+    if key not in _BACKTEST_PARQUET_STORE:
+        import os
+        from config import DATA_DIR
+        path = os.path.join(DATA_DIR, "backtest_data", f"{key}.parquet")
+        if os.path.exists(path):
+            _BACKTEST_PARQUET_STORE[key] = pd.read_parquet(path)
+        else:
+            _BACKTEST_PARQUET_STORE[key] = pd.DataFrame()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Backtest data missing for {yf_symbol} at {path}. Skipping yfinance live fetch in BACKTEST_MODE.")
+    return _BACKTEST_PARQUET_STORE[key]
+
 # Retry wrapper for network calls
 @retry(
     stop=stop_after_attempt(3),
@@ -58,34 +75,44 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 def _fetch_history_with_retry(yf_symbol: str, period: str = "1y", auto_adjust: bool = True, interval: str = "1d") -> pd.DataFrame:
     # --- BACKTEST OVERRIDE ---
     if BACKTEST_MODE:
-        import os
-        from config import DATA_DIR
-        path = os.path.join(DATA_DIR, "backtest_data", f"{yf_symbol}_{interval}.parquet")
-        if os.path.exists(path):
-            df = pd.read_parquet(path)
+        df_full = _get_backtest_parquet(yf_symbol, interval)
+        if not df_full.empty:
             # CRITICAL: Always truncate — this is the anti-lookahead guard
             simulated_now = get_simulated_now()
             
             # Ensure proper timezone comparison
-            if df.index.tz is None:
+            if df_full.index.tz is None:
                 # If naive, assume it's IST
                 sim_now_naive = simulated_now.replace(tzinfo=None)
-                df = df[df.index <= pd.Timestamp(sim_now_naive)]
+                if interval == "1d":
+                    cutoff = pd.Timestamp(sim_now_naive)
+                    # Exclude the current day's daily bar if the market hasn't closed yet
+                    if cutoff.time() < pd.Timestamp("15:30:00").time():
+                        cutoff = cutoff.replace(hour=0, minute=0, second=0) - pd.Timedelta(seconds=1)
+                    df = df_full[df_full.index <= cutoff]
+                else:
+                    df = df_full[df_full.index < pd.Timestamp(sim_now_naive)]
             else:
                 # Localize simulated_now to IST
                 sim_now_aware = simulated_now
                 if sim_now_aware.tzinfo is None:
+                    from zoneinfo import ZoneInfo
                     sim_now_aware = sim_now_aware.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
                 # Convert both to UTC to compare safely
-                df_utc = df.index.tz_convert('UTC')
+                df_utc = df_full.index.tz_convert('UTC')
                 sim_utc = pd.Timestamp(sim_now_aware).tz_convert('UTC')
-                df = df[df_utc <= sim_utc]
+                if interval == "1d":
+                    if sim_now_aware.time() < pd.Timestamp("15:30:00").time():
+                        cutoff_local = sim_now_aware.replace(hour=0, minute=0, second=0) - pd.Timedelta(seconds=1)
+                        sim_utc = pd.Timestamp(cutoff_local).tz_convert('UTC')
+                    df = df_full[df_utc <= sim_utc]
+                else:
+                    df = df_full[df_utc < sim_utc]
             
             if df.empty:
                 logger.debug(f"Empty backtest history returned for {yf_symbol} after truncation to {simulated_now}")
-            return df
+            return df.copy()
         else:
-            logger.warning(f"Backtest data missing for {yf_symbol} at {path}. Skipping yfinance live fetch in BACKTEST_MODE.")
             return pd.DataFrame()
             
     # --- LIVE MODE ---
@@ -164,6 +191,9 @@ def fetch_historical_data(symbol: str, period: str = "1y", resolution: str = "1d
     yf_symbol = _symbol_to_yf(symbol)
     if dataset_key is None:
         dataset_key = f"price_{resolution}"
+
+    if BACKTEST_MODE:
+        return _fetch_history_with_retry(yf_symbol, period, interval=resolution)
 
     ds = DATASETS.get(dataset_key, {})
     cadence = ds.get("cadence", 24 * 3600)

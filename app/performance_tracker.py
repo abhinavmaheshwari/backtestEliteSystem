@@ -24,7 +24,7 @@ import json
 import logging
 from typing import Optional, Tuple, Union
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 
 # Ensure tzcache writable location before importing yfinance (robust import to support different cwd)
@@ -130,14 +130,17 @@ def _fetch_post_alert_bars(symbol: str, alert_time_val: Union[str, datetime]) ->
         period_days = max(days_since + 2, 5)
         period_str = f"{period_days}d"
 
-        # Yahoo Finance limits: 5m data is only available for the last 60 days.
-        # We use 5m for maximum precision on SL/Target tracking if possible.
-        if period_days <= 59:
-            interval = "5m"
-        elif period_days <= 720:
-            interval = "1h"
+        if os.getenv("BACKTEST_MODE", "false").lower() == "true":
+            interval = "15m"
         else:
-            interval = "1d"
+            # Yahoo Finance limits: 5m data is only available for the last 60 days.
+            # We use 5m for maximum precision on SL/Target tracking if possible.
+            if period_days <= 59:
+                interval = "5m"
+            elif period_days <= 720:
+                interval = "1h"
+            else:
+                interval = "1d"
 
         fetcher = get_fetcher()
         hist = fetcher.get_ohlcv(symbol, interval=interval, period=period_str, retries=2)

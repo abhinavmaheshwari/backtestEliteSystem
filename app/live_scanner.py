@@ -86,6 +86,8 @@ def start(run_once=False):
 
         if weekday >= 5 or not market_open:
             logger.info("⏰ Outside 1H window | sleep 5m")
+            if run_once:
+                return
             time.sleep(300)
             continue
 
@@ -179,6 +181,8 @@ def start(run_once=False):
                 pass
 
             if nifty_intraday_down:
+                if run_once:
+                    return
                 time.sleep(300)
                 continue
 
@@ -367,6 +371,21 @@ def start(run_once=False):
                     if symbol in daily_context_data and not daily_context_data[symbol].empty:
                         daily_df = daily_context_data[symbol].copy()
                         if len(daily_df) >= 20:
+                            import os
+                            if isinstance(daily_df.index, pd.DatetimeIndex):
+                                if os.getenv("BACKTEST_MODE") == "true":
+                                    from price_fetcher import get_simulated_now
+                                    today_idx = pd.Timestamp(get_simulated_now().date())
+                                else:
+                                    today_idx = pd.Timestamp(datetime.now(IST).date())
+                            else:
+                                if os.getenv("BACKTEST_MODE") == "true":
+                                    from price_fetcher import get_simulated_now
+                                    today_idx = get_simulated_now().strftime("%Y-%m-%d")
+                                else:
+                                    today_idx = datetime.now(IST).strftime("%Y-%m-%d")
+                                    
+                            daily_df.loc[today_idx, "Close"] = cmp
                             daily_df["EMA20_D"] = daily_df["Close"].ewm(span=20, adjust=False).mean()
                             latest_daily_close = float(daily_df["Close"].iloc[-1])
                             latest_daily_ema20 = float(daily_df["EMA20_D"].iloc[-1])
@@ -633,4 +652,6 @@ def start(run_once=False):
             elapsed    = (datetime.now(IST) - scan_start).total_seconds()
             sleep_time = max(0, 300 - elapsed)
 
+        if run_once:
+            break
         time.sleep(sleep_time)

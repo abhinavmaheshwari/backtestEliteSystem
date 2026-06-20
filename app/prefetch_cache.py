@@ -18,7 +18,7 @@ session = CachedSession(
 )
 
 
-START_DATE_1D = "2026-01-01"
+START_DATE_1D = "2025-01-01"
 END_DATE   = "2026-06-19"
 BACKTEST_DATA_DIR = os.path.join(DATA_DIR, "backtest_data")
 os.makedirs(BACKTEST_DATA_DIR, exist_ok=True)

@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 BACKTEST_MODE = os.getenv("BACKTEST_MODE", "false").lower() == "true"
 
+_PARQUET_CACHE = {}
+
 def get_simulated_now():
     """Returns freezegun-mocked now() during backtest, real now() in live."""
     return datetime.now()
@@ -49,19 +51,33 @@ class YFinanceFetcher(DataFetcher):
             from config import DATA_DIR
             path = os.path.join(DATA_DIR, "backtest_data", f"{ns_sym}_{interval}.parquet")
             if os.path.exists(path):
-                df = pd.read_parquet(path)
+                if path not in _PARQUET_CACHE:
+                    _PARQUET_CACHE[path] = pd.read_parquet(path)
+                df = _PARQUET_CACHE[path]
                 simulated_now = get_simulated_now()
                 
                 if df.index.tz is None:
                     sim_now_naive = simulated_now.replace(tzinfo=None)
-                    df = df[df.index <= pd.Timestamp(sim_now_naive)]
+                    if interval == "1d":
+                        cutoff = pd.Timestamp(sim_now_naive)
+                        if cutoff.time() < pd.Timestamp("15:30:00").time():
+                            cutoff = cutoff.replace(hour=0, minute=0, second=0) - pd.Timedelta(seconds=1)
+                        df = df[df.index <= cutoff]
+                    else:
+                        df = df[df.index < pd.Timestamp(sim_now_naive)]
                 else:
                     sim_now_aware = simulated_now
                     if sim_now_aware.tzinfo is None:
                         sim_now_aware = sim_now_aware.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
                     df_utc = df.index.tz_convert('UTC')
                     sim_utc = pd.Timestamp(sim_now_aware).tz_convert('UTC')
-                    df = df[df_utc <= sim_utc]
+                    if interval == "1d":
+                        if sim_now_aware.time() < pd.Timestamp("15:30:00").time():
+                            cutoff_local = sim_now_aware.replace(hour=0, minute=0, second=0) - pd.Timedelta(seconds=1)
+                            sim_utc = pd.Timestamp(cutoff_local).tz_convert('UTC')
+                        df = df[df_utc <= sim_utc]
+                    else:
+                        df = df[df_utc < sim_utc]
                 return df.copy()
             else:
                 logger.warning(f"Backtest data missing for {ns_sym} at {path}")
@@ -95,18 +111,32 @@ class YFinanceFetcher(DataFetcher):
             for ns_sym, raw_sym in normalized_map.items():
                 path = os.path.join(DATA_DIR, "backtest_data", f"{ns_sym}_{interval}.parquet")
                 if os.path.exists(path):
-                    df = pd.read_parquet(path)
+                    if path not in _PARQUET_CACHE:
+                        _PARQUET_CACHE[path] = pd.read_parquet(path)
+                    df = _PARQUET_CACHE[path]
                     
                     if df.index.tz is None:
                         sim_now_naive = simulated_now.replace(tzinfo=None)
-                        df = df[df.index <= pd.Timestamp(sim_now_naive)]
+                        if interval == "1d":
+                            cutoff = pd.Timestamp(sim_now_naive)
+                            if cutoff.time() < pd.Timestamp("15:30:00").time():
+                                cutoff = cutoff.replace(hour=0, minute=0, second=0) - pd.Timedelta(seconds=1)
+                            df = df[df.index <= cutoff]
+                        else:
+                            df = df[df.index < pd.Timestamp(sim_now_naive)]
                     else:
                         sim_now_aware = simulated_now
                         if sim_now_aware.tzinfo is None:
                             sim_now_aware = sim_now_aware.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
                         df_utc = df.index.tz_convert('UTC')
                         sim_utc = pd.Timestamp(sim_now_aware).tz_convert('UTC')
-                        df = df[df_utc <= sim_utc]
+                        if interval == "1d":
+                            if sim_now_aware.time() < pd.Timestamp("15:30:00").time():
+                                cutoff_local = sim_now_aware.replace(hour=0, minute=0, second=0) - pd.Timedelta(seconds=1)
+                                sim_utc = pd.Timestamp(cutoff_local).tz_convert('UTC')
+                            df = df[df_utc <= sim_utc]
+                        else:
+                            df = df[df_utc < sim_utc]
                         
                     if not df.empty:
                         df = df.reset_index().copy()

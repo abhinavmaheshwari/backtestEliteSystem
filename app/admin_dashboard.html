@@ -730,12 +730,12 @@ function openChart(symbol) {
   }
 
 async function loadData() {
-  const urls = [
-    'https://elitebreakoutsystem-production.up.railway.app/data/performance_data.json',
-    '../data/performance_data.json', './data/performance_data.json', 'performance_data.json',
-  ];
-  for (const url of urls) {
-    try { const r = await fetch(url); if (r.ok) return r.json(); } catch {}
+  const url = '/data/performance_data.json';
+  try { 
+    const r = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' }); 
+    if (r.ok) return r.json(); 
+  } catch (e) {
+    console.error("Failed to load performance data", e);
   }
   console.warn('Using demo data');
   return getDemoData();
