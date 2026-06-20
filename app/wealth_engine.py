@@ -124,6 +124,10 @@ def calculate_wealth_technicals(symbol: str, nifty_6m_ret: float) -> dict:
                 "liquidity": liquidity
             }
         except Exception as e:
+            if os.environ.get("BACKTEST_MODE") == "true":
+                # Do not retry in backtest mode if data is missing, as it wastes time.
+                return defaults
+                
             logger.warning(f"Attempt {attempt+1}/{RETRY_ATTEMPTS} failed for {symbol}: {e}")
             if attempt < RETRY_ATTEMPTS - 1:
                 time.sleep(2 ** attempt)
